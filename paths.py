@@ -15,23 +15,14 @@
   1. 环境变量 MS_PB_DATA_DIR 指定了目录 → 用它（测试和排障用）；
   2. exe 同目录可写 → 用 <exe 目录>\\元神工具箱-data；
   3. 不可写（典型：被放进 C:\\Program Files）→ 回落到 %APPDATA%\\元神工具箱。
-
-升级路径：
-  · 更早版本（数据只在 %APPDATA%\\ms-pb-viewer）→ 把配置与登录凭据搬进新位置；
-  · 0.10.0（数据目录叫 ms-pb-viewer-data）→ 整个目录原地改名成新名字。
 """
 
 import os
-import shutil
 import sys
 
 DATA_DIR_NAME = "元神工具箱-data"
-OLD_DATA_DIR_NAME = "ms-pb-viewer-data"
 ROAMING_DIR_NAME = "元神工具箱"
 ENV_OVERRIDE = "MS_PB_DATA_DIR"
-
-# 会被搬迁的旧文件（内容都是本机 DPAPI 密文或纯文本设置，同机搬迁有效）
-_MIGRATE = ("config.json", "openms.json")
 
 _cache = None
 
@@ -65,54 +56,12 @@ def _writable(path):
         return False
 
 
-def _migrate(target):
-    """旧版数据在 %APPDATA%\\ms-pb-viewer：搬到 target，只搬缺的那几个。
-
-    用 move 而不是 copy：目标里已经有了就跳过，所以重复启动不会覆盖新数据；
-    搬完源目录空了就删掉，避免用户在两个地方各有一份「看起来都能删」的数据。
-    """
-    src = roaming_dir()
-    if os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(target)):
-        return []
-    if not os.path.isdir(src):
-        return []
-    moved = []
-    for name in _MIGRATE:
-        s, d = os.path.join(src, name), os.path.join(target, name)
-        if os.path.isfile(s) and not os.path.exists(d):
-            try:
-                os.makedirs(target, exist_ok=True)
-                shutil.move(s, d)
-                moved.append(name)
-            except OSError:
-                pass
-    try:
-        if not os.listdir(src):
-            os.rmdir(src)
-    except OSError:
-        pass
-    return moved
-
-
-def _adopt_old_portable():
-    """0.10.0 的数据目录叫 ms-pb-viewer-data：新名字的目录还不存在时，整个改名过来。"""
-    old = os.path.join(base_dir(), OLD_DATA_DIR_NAME)
-    new = portable_dir()
-    if os.path.isdir(old) and not os.path.exists(new):
-        try:
-            os.rename(old, new)
-        except OSError:
-            pass
-
-
 def data_dir():
-    """返回数据目录（首次调用时决定位置并完成旧数据搬迁）。"""
+    """返回数据目录（首次调用时决定位置）。"""
     global _cache
     if _cache:
         return _cache
     env = os.environ.get(ENV_OVERRIDE)
-    if not env:
-        _adopt_old_portable()
     cand = os.path.abspath(env) if env else portable_dir()
     if os.path.isdir(cand) or _writable(cand):
         path = cand
@@ -127,7 +76,6 @@ def data_dir():
         except OSError:
             pass
     _cache = path
-    _migrate(path)
     return path
 
 

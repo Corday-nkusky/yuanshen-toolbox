@@ -99,8 +99,8 @@ def save_config(**kw):
 def load_roots(seen=None):
     """配置里的录像目录列表：[{"path": ..., "on": True}]。
 
-    兼容 v0.7 及以前的单值 ``root``。顺手做三件事：去重（同一个目录被加了两次）、
-    丢掉已经不存在的目录（移动硬盘拔掉、元扫雷卸载后路径变了）、保持原顺序
+    顺手做三件事：去重（同一个目录被加了两次）、丢掉已经不存在的目录
+    （移动硬盘拔掉、元扫雷卸载后路径变了）、保持原顺序
     （第一个是「主目录」，record.ini 对账就找它）。
     """
     cfg = seen if seen is not None else load_config()
@@ -112,8 +112,6 @@ def load_roots(seen=None):
                 out.append({"path": it, "on": True})
             elif isinstance(it, dict) and it.get("path"):
                 out.append({"path": str(it["path"]), "on": bool(it.get("on", True))})
-    if not out and cfg.get("root"):
-        out.append({"path": str(cfg["root"]), "on": True})
     keep, done = [], set()
     for it in out:
         p = it["path"]

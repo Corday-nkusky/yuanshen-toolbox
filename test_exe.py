@@ -90,17 +90,19 @@ def shot(hwnd, name):
     return capture(hwnd, os.path.join(HERE, name))
 
 
-def run_case(label, exe, workdir, cfg_root=None, wait=14):
+def run_case(label, exe, workdir, cfg_root=None, wait=14, clean=True):
     print("\n===", label)
-    cfg_dir = os.path.join(os.environ["APPDATA"], "元神工具箱")
+    cfg_dir = os.path.join(os.path.dirname(exe), "元神工具箱-data")
     cfg_path = os.path.join(cfg_dir, "config.json")
-    if cfg_root is None:
-        if os.path.exists(cfg_path):
-            os.remove(cfg_path)
-    else:
-        os.makedirs(cfg_dir, exist_ok=True)
-        with open(cfg_path, "w", encoding="utf-8") as fh:
-            json.dump({"root": cfg_root}, fh, ensure_ascii=False)
+    if clean:
+        if cfg_root is None:
+            if os.path.exists(cfg_path):
+                os.remove(cfg_path)
+        else:
+            os.makedirs(cfg_dir, exist_ok=True)
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump({"roots": [{"path": cfg_root, "on": True}]},
+                          fh, ensure_ascii=False)
 
     p = subprocess.Popen([exe], cwd=workdir)
     wins = []
@@ -133,9 +135,10 @@ def run_case(label, exe, workdir, cfg_root=None, wait=14):
 if __name__ == "__main__":
     real = os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4", "replay")
     run_case("auto", EXE, os.path.dirname(EXE), cfg_root=real)
-    # 无配置 + 放在元扫雷目录：应自动认出 replay，不弹选择框
+    # 无配置 + 放在元扫雷目录：应自动认出 replay，不弹选择框（clean=False：别动真机配置）
     run_case("inplace", os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4",
                                      "元神工具箱.exe"),
-             os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4"), cfg_root=None)
+             os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4"), cfg_root=None,
+             clean=False)
     run_case("firstrun", EXE, os.path.dirname(EXE), cfg_root=None, wait=8)
     print("\nDONE")
