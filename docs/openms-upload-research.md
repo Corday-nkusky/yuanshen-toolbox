@@ -268,7 +268,7 @@ VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
 ### 6.2 具体做法
 
 ```
-%APPDATA%\ms-pb-viewer\openms.json
+%APPDATA%\元神工具箱\openms.json
 {
   "username": "xxx",
   "session_id_enc": "<DPAPI 密文，base64>",

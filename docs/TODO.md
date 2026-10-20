@@ -25,7 +25,7 @@
       「写 `logs\crash-*.txt`」这一段，弹窗本身在**打包后的 exe** 里没验。
       需要一个 `--crash-test` 开关（主动抛异常）人工点一次。
 - [ ] **数据目录不可写时的回落**：`paths.data_dir()` 的逻辑是「exe 旁便携目录不可写 → 回落到
-      `%APPDATA%\ms-pb-viewer`」，真机上没造出过不可写场景（比如 exe 放在 `C:\Program Files`）。
+      `%APPDATA%\元神工具箱`」，真机上没造出过不可写场景（比如 exe 放在 `C:\Program Files`）。
 - [ ] **日志滚动**：`RotatingFileHandler` 设的是 1 MB × 3，从没跑到过第一次切分。
 - [ ] **上传台账淘汰**：`journal.MAX_ITEMS = 8000`，超出后按时间淘汰最旧的键。现在台账里条数远没到上限，
       淘汰分支没跑过。
@@ -48,9 +48,9 @@
   —— 同一个人在不同软件不同时期的标识写法实测能变出八九种（拼写、大小写、地区、编号、有没有
   括号都不一样），白名单会误杀自己；而下载来的录像里那个名字字段是可以被本地 profile 改写或
   冒用的，也不能当证据。
-- **exe 文件名与数据目录不随品牌改名**：程序叫「元神工具箱」，但可执行文件仍是
-  `ms-pb-viewer.exe`、数据目录仍是 `ms-pb-viewer-data\`。改名会让老用户的 `config.json`、
-  `openms.json`（登录态）、`scan-cache.db` 全部失效，所以宁可名字不一致。
+- **数据目录整体改名（0.11.0）的迁移只测了目录级**：`ms-pb-viewer-data\` →
+  `元神工具箱-data\` 是启动时整个 `os.rename`，逻辑简单；但「旧目录被占用改名失败」
+  的场景（比如用户同时开着旧版 exe）只靠静默吞 OSError，用户会看到全新数据目录。
 - **首扫时长取决于录像条数**：2 万局、冷缓存约 3 分钟（`read_video` 逐局重演），
   有进度条但不是能加速的东西。缓存命中后 1 秒出头。
 
@@ -64,7 +64,7 @@
 ## 每次发版前的手工验收
 
 1. `python test_arb.py`、`python test_resume_ui.py`、`python test_retry.py` 三个退出码都是 0。
-2. `build.cmd` → 覆盖 `%APPDATA%\Metasweeper3.3.4\ms-pb-viewer.exe` → `--probe` → 日志里
+2. `build.cmd` → 覆盖 `%APPDATA%\Metasweeper3.3.4\元神工具箱.exe` → `--probe` → 日志里
    `启动 vX.Y.Z` 与 `APP_VER` 一致。
 3. 真机开一次：概览 / PB / 前端成绩 / 上传四页各看一眼（行高、对齐、滚动条）。
 4. 有账号时确认「网站已有 N」与站点实际条数一致（去重键没漂）。

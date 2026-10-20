@@ -3,7 +3,7 @@
      dpiAware，运行时再调 SetProcessDpiAwareness 会被系统拒绝，窗口就会被
      Windows 按缩放比例虚拟化放大（字变糊、坐标错位）。 -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="ms-pb-viewer" version="1.0.0.0"
+  <assemblyIdentity type="win32" name="yuanshen-toolbox" version="1.0.0.0"
                     processorArchitecture="*"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>

@@ -20,17 +20,16 @@
 ## 下载
 
 到 [Releases](https://github.com/Corday-nkusky/yuanshen-toolbox/releases/latest) 下最新的
-`ms-pb-viewer.exe`（单文件，约 27 MB），双击即用，不需要安装、不需要 Python。
+`元神工具箱.exe`（单文件，约 27 MB），双击即用，不需要安装、不需要 Python。
 
-> 程序文件名沿用早期的 `ms-pb-viewer.exe`、数据目录沿用 `ms-pb-viewer-data\`，
-> 没有跟着改名 —— 改名会让老用户的配置、登录状态、扫描缓存全部失效。
-> 界面、窗口标题、横幅里显示的都是「元神工具箱」。
+> 0.10.0 及更早版本的文件名叫 `ms-pb-viewer.exe`、数据目录叫 `ms-pb-viewer-data\`；
+> 从 0.11.0 起统一为 `元神工具箱.exe` / `元神工具箱-data\`，旧数据目录会在启动时自动改名，不丢数据。
 
 ---
 
 ## 用法
 
-1. 下载 `ms-pb-viewer.exe`，**推荐放到元扫雷 `replay` 目录的同一级**
+1. 下载 `元神工具箱.exe`，**推荐放到元扫雷 `replay` 目录的同一级**
    （也就是 `Metasweeper<版本号>` 目录里）。不知道 `replay` 在哪的话，
    打开元扫雷菜单「查看 → 录像目录」（快捷键 `W`）就能打开它，返回上一级就是推荐安装位置：
 
@@ -58,7 +57,7 @@
 > 录像，自动收进来就会把别人的成绩算成你的。要加就在「路径…」里手动添加，
 > 添加前程序会问一句「这里面的每一条录像都算你自己打的，确定吗」。
 
-> 目录和登录状态都记在 exe 旁边的 `ms-pb-viewer-data\` 里（见「数据存在哪」），
+> 目录和登录状态都记在 exe 旁边的 `元神工具箱-data\` 里（见「数据存在哪」），
 > 删掉这个文件夹就回到全新状态。
 
 > 扫描会递归子目录（方便按年份/级别分文件夹的存档），但**最多 20000 个子目录**
@@ -138,7 +137,7 @@
 所有运行期产生的东西都在 **exe 同目录的一个文件夹**里，不散落在 `%APPDATA%`：
 
 ```
-<exe 所在目录>\ms-pb-viewer-data\
+<exe 所在目录>\元神工具箱-data\
     config.json        录像目录等界面设置
     openms.json        用户名 + 密码/会话的 DPAPI 密文
     uploads.json       上传台账（断点续传用，只记去重键与时间）
@@ -153,11 +152,12 @@
 
 | 情况 | 实际位置 |
 |---|---|
-| exe 放在不可写的地方（如 `C://Program Files`） | 自动回落到 `%APPDATA%\ms-pb-viewer\`，「诊断…」里会写明 |
+| exe 放在不可写的地方（如 `C://Program Files`） | 自动回落到 `%APPDATA%\元神工具箱\`，「诊断…」里会写明 |
 | 一键打包的临时解压目录 | `%TEMP%\_MEIxxxx`，程序退出即删除（PyInstaller 行为） |
 
-从旧版本（数据只在 `%APPDATA%\ms-pb-viewer`）升级时，`config.json` 与 `openms.json`
-会自动搬过来，不用重新登录；搬完空的旧目录会被删掉。
+从旧版本升级时数据自动跟过来：0.10.0 及更早的 `ms-pb-viewer-data\` 会被整体改名成
+`元神工具箱-data\`；数据只在 `%APPDATA%\ms-pb-viewer` 的更老版本，`config.json` 与
+`openms.json` 会自动搬过来，不用重新登录；搬完空的旧目录会被删掉。
 
 ### 日志与崩溃
 
@@ -195,7 +195,7 @@
 
 密码也会一并存下来（只用于下次自动填好输入框）。
 
-凭据存在数据目录的 `openms.json`（默认 `<exe 所在目录>\ms-pb-viewer-data\`），
+凭据存在数据目录的 `openms.json`（默认 `<exe 所在目录>\元神工具箱-data\`），
 密码与 Cookie 都是 **Windows DPAPI 密文**（绑当前 Windows 用户 + 本机，换机器解不开），
 文件里查不到明文。
 
@@ -575,7 +575,7 @@ python test_tabs.py           # 四页签截图，产出 tab_*.png
 python test_upload.py         # 上传页交互测试（只选不传）
 python test_upload.py --live 2   # 真传 2 条，验证全链路
 python test_arb.py            # 阿比特 / 多目录 / 缓存回归
-build.cmd                     # 打包成 dist\ms-pb-viewer.exe（先 pip install pyinstaller）
+build.cmd                     # 打包成 dist\元神工具箱.exe（先 pip install pyinstaller）
 ```
 
 打包需要安装了 tkinter 的 Python（pip 版 Python 默认不带 tkinter，

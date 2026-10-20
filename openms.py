@@ -114,7 +114,7 @@ def dpapi_decrypt(b64):
 
 # ---------------------------------------------------------------- 本地存储
 class Store:
-    """<数据目录>\\openms.json（默认在 exe 旁边的 ms-pb-viewer-data\\）
+    """<数据目录>\\openms.json（默认在 exe 旁边的 元神工具箱-data\\）
 
     只落三样东西：用户名、DPAPI 密文密码、DPAPI 密文 session_id。
     没有明文凭据；密文拷到别的电脑也解不开。

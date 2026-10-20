@@ -7,10 +7,10 @@ rem   pip install pyinstaller ms-toollib
 rem 若默认 python 不合适，先 set PYTHON=<你的python.exe完整路径> 再运行本脚本
 if not defined PYTHON set PYTHON=python
 
-echo 正在打包 ms-pb-viewer.exe …
+echo 正在打包 元神工具箱.exe …
 "%PYTHON%" -m PyInstaller ^
   --onefile --windowed --noconfirm --clean ^
-  --name ms-pb-viewer ^
+  --name 元神工具箱 ^
   --manifest "%~dp0app.manifest" ^
   --icon "%~dp0icon.ico" ^
   --add-data "%~dp0icon.ico;." ^
@@ -28,5 +28,5 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo 完成：dist\ms-pb-viewer.exe
+echo 完成：dist\元神工具箱.exe
 pause

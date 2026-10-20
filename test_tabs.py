@@ -1,6 +1,6 @@
 """三个页签各截一张图（含 PB 的 NF/FL 过滤），用于验收与更新 README 预览图。
 
-用法：python test_tabs.py            # 用 dist\\ms-pb-viewer.exe
+用法：python test_tabs.py            # 用 dist\\元神工具箱.exe
       python test_tabs.py --src      # 用源码跑（同一套逻辑，方便改样式后快速看）
 """
 import ctypes
@@ -19,7 +19,7 @@ except Exception:
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXE = os.path.join(HERE, "dist", "ms-pb-viewer.exe")
+EXE = os.path.join(HERE, "dist", "元神工具箱.exe")
 PYC = r"C:\Users\TANGWENJIAN\.workbuddy\binaries\python\envs\packtk\Scripts\python.exe"
 REPLAY = os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4", "replay")
 

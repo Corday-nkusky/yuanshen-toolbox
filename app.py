@@ -27,7 +27,7 @@ import paths
 
 APP_TITLE = "元神工具箱"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.10.0"
+APP_VER = "0.11.0"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
 BUNDLED_FONTS = ("MiSans-Regular.ttf", "MiSans-Demibold.ttf")
@@ -932,7 +932,7 @@ class DiagnosticsDialog(tk.Toplevel):
                  font=FONT_MONO, anchor="w", justify="left").pack(
             fill="x", padx=sc(12), pady=(sc(9), sc(2)))
         where = ("便携模式：数据就在 exe 旁边" if paths.is_portable()
-                 else "exe 所在目录不可写，数据落在 %APPDATA%\\ms-pb-viewer")
+                 else "exe 所在目录不可写，数据落在 %APPDATA%\\元神工具箱")
         tk.Label(box, text=where + "。删掉这个文件夹 = 清空本地全部数据（含登录状态）。",
                  bg=C_PANEL, fg=C_DIM, font=FONT_SMALL, anchor="w",
                  justify="left", wraplength=sc(660)).pack(
@@ -995,7 +995,7 @@ class DiagnosticsDialog(tk.Toplevel):
         self.lbl_msg.config(text="扫描缓存已清空（0.0 MB）", fg=C_OK)
 
     def export(self):
-        name = "ms-pb-viewer-diagnostics-%s.zip" % datetime.now().strftime("%Y%m%d-%H%M%S")
+        name = "元神工具箱-诊断包-%s.zip" % datetime.now().strftime("%Y%m%d-%H%M%S")
         target = filedialog.asksaveasfilename(
             parent=self, title="保存诊断包", defaultextension=".zip",
             initialfile=name, initialdir=paths.data_dir(),

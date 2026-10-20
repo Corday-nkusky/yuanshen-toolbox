@@ -3,7 +3,7 @@
 设计目标：**用户能一键清干净**。所以默认全部落在 exe 同目录的一个文件夹里，
 而不是散在 %APPDATA%。删掉那个文件夹 = 回到全新状态（含登录态、目录记忆、日志）。
 
-    <exe 所在目录>\\ms-pb-viewer-data\\
+    <exe 所在目录>\\元神工具箱-data\\
         config.json      录像目录等界面设置
         openms.json      openms.top 用户名 + DPAPI 密文（密码 / session_id）
         uploads.json     上传台账（断点续传用）
@@ -13,19 +13,21 @@
 
 三种情况按顺序判定：
   1. 环境变量 MS_PB_DATA_DIR 指定了目录 → 用它（测试和排障用）；
-  2. exe 同目录可写 → 用 <exe 目录>\\ms-pb-viewer-data；
-  3. 不可写（典型：被放进 C:\\Program Files）→ 回落到 %APPDATA%\\ms-pb-viewer。
+  2. exe 同目录可写 → 用 <exe 目录>\\元神工具箱-data；
+  3. 不可写（典型：被放进 C:\\Program Files）→ 回落到 %APPDATA%\\元神工具箱。
 
-从旧版本（只有 %APPDATA% 那一份）升级时，会把配置与登录凭据搬到新位置，
-不搬的话用户会被迫重新登录一次。
+升级路径：
+  · 更早版本（数据只在 %APPDATA%\\ms-pb-viewer）→ 把配置与登录凭据搬进新位置；
+  · 0.10.0（数据目录叫 ms-pb-viewer-data）→ 整个目录原地改名成新名字。
 """
 
 import os
 import shutil
 import sys
 
-DATA_DIR_NAME = "ms-pb-viewer-data"
-ROAMING_DIR_NAME = "ms-pb-viewer"
+DATA_DIR_NAME = "元神工具箱-data"
+OLD_DATA_DIR_NAME = "ms-pb-viewer-data"
+ROAMING_DIR_NAME = "元神工具箱"
 ENV_OVERRIDE = "MS_PB_DATA_DIR"
 
 # 会被搬迁的旧文件（内容都是本机 DPAPI 密文或纯文本设置，同机搬迁有效）
@@ -92,20 +94,30 @@ def _migrate(target):
     return moved
 
 
+def _adopt_old_portable():
+    """0.10.0 的数据目录叫 ms-pb-viewer-data：新名字的目录还不存在时，整个改名过来。"""
+    old = os.path.join(base_dir(), OLD_DATA_DIR_NAME)
+    new = portable_dir()
+    if os.path.isdir(old) and not os.path.exists(new):
+        try:
+            os.rename(old, new)
+        except OSError:
+            pass
+
+
 def data_dir():
     """返回数据目录（首次调用时决定位置并完成旧数据搬迁）。"""
     global _cache
     if _cache:
         return _cache
     env = os.environ.get(ENV_OVERRIDE)
-    if env:
-        path = os.path.abspath(env)
+    if not env:
+        _adopt_old_portable()
+    cand = os.path.abspath(env) if env else portable_dir()
+    if os.path.isdir(cand) or _writable(cand):
+        path = cand
     else:
-        cand = portable_dir()
-        if os.path.isdir(cand) or _writable(cand):
-            path = cand
-        else:
-            path = roaming_dir()
+        path = roaming_dir()
     try:
         os.makedirs(path, exist_ok=True)
     except OSError:

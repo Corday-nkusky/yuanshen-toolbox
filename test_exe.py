@@ -57,7 +57,7 @@ def capture(hwnd, path):
     return img.size
 
 
-EXE = r"D:\metasweeper-pb\dist\ms-pb-viewer.exe"
+EXE = r"D:\metasweeper-pb\dist\元神工具箱.exe"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -92,7 +92,7 @@ def shot(hwnd, name):
 
 def run_case(label, exe, workdir, cfg_root=None, wait=14):
     print("\n===", label)
-    cfg_dir = os.path.join(os.environ["APPDATA"], "ms-pb-viewer")
+    cfg_dir = os.path.join(os.environ["APPDATA"], "元神工具箱")
     cfg_path = os.path.join(cfg_dir, "config.json")
     if cfg_root is None:
         if os.path.exists(cfg_path):
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     run_case("auto", EXE, os.path.dirname(EXE), cfg_root=real)
     # 无配置 + 放在元扫雷目录：应自动认出 replay，不弹选择框
     run_case("inplace", os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4",
-                                     "ms-pb-viewer.exe"),
+                                     "元神工具箱.exe"),
              os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4"), cfg_root=None)
     run_case("firstrun", EXE, os.path.dirname(EXE), cfg_root=None, wait=8)
     print("\nDONE")
