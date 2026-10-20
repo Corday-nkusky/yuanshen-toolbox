@@ -20,16 +20,18 @@
 ## 下载
 
 到 [Releases](https://github.com/Corday-nkusky/yuanshen-toolbox/releases/latest) 下最新的
-`元神工具箱.exe`（单文件，约 27 MB），双击即用，不需要安装、不需要 Python。
+`YuanshenToolbox.exe`（单文件，约 27 MB），双击即用，不需要安装、不需要 Python。
 
-> 0.10.0 及更早版本的文件名叫 `ms-pb-viewer.exe`、数据目录叫 `ms-pb-viewer-data\`；
-> 从 0.11.0 起统一为 `元神工具箱.exe` / `元神工具箱-data\`，旧数据目录会在启动时自动改名，不丢数据。
+> GitHub 的附件名不支持中文，所以发布时叫 `YuanshenToolbox.exe`；下载后**名字随意改**
+> （推荐改成 `元神工具箱.exe`），程序照常运行。数据目录固定叫 `元神工具箱-data\`，
+> 跟 exe 叫什么无关。0.10.0 及更早版本的数据目录 `ms-pb-viewer-data\` 会在启动时自动改名，不丢数据。
 
 ---
 
 ## 用法
 
-1. 下载 `元神工具箱.exe`，**推荐放到元扫雷 `replay` 目录的同一级**
+1. 下载 `YuanshenToolbox.exe`（GitHub 不支持中文附件名；下载后可改名，不影响任何功能），
+   **推荐放到元扫雷 `replay` 目录的同一级**
    （也就是 `Metasweeper<版本号>` 目录里）。不知道 `replay` 在哪的话，
    打开元扫雷菜单「查看 → 录像目录」（快捷键 `W`）就能打开它，返回上一级就是推荐安装位置：
 
