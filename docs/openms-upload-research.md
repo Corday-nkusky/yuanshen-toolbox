@@ -152,7 +152,7 @@ POST /common/uploadvideo/
 Content-Type: multipart/form-data; boundary=...
 Cookie: session_id=...
 
-file=@b_0_1.774_9_5.073_Corday(Tongcheng).evf
+file=@b_0_1.774_9_5.073_PlayerName(Region).evf
 skipTournamentCheck=false
 ```
 
@@ -245,7 +245,7 @@ VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
 这三条不解决，传上去也是白传：
 
 1. **实名**：站点是实名制，未实名直接拒绝上传（`realname_required`）。
-2. **标识**：元扫雷 `gameSetting.ini` 里 `player_identifier = Corday(Tongcheng)`，
+2. **标识**：元扫雷 `gameSetting.ini` 里 `player_identifier = PlayerName(Region)`，
    必须在站点「个人主页 → 标识管理」里**一字不差**地存在。
    → 登录后可以 `GET /api/userprofile/identifier` 拉列表，本地就能比对并预警。
 3. **配额**：默认 100 个。本机完成局 35 个，PB + Top5 去重后大约 40~60 个文件，**够用但要注意**。
@@ -325,7 +325,7 @@ VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
 
 ## 9. 需要你拍板的 4 件事
 
-1. **账号是否已实名？标识 `Corday(Tongcheng)` 是否已在站点「标识管理」里？**
+1. **账号是否已实名？标识 `PlayerName(Region)` 是否已在站点「标识管理」里？**
    （这条不确认，做出来可能传 40 个全部落在 `d 标识不匹配`）
 2. **上传范围**：只传 PB 榜上的（去重后约 30~40 个），还是所有完成局（35 个）？
 3. **能否接受"每 90 天手动登录一次"**？还是要我研究验证码自动识别（不推荐）？
