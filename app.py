@@ -1076,7 +1076,8 @@ class PathsDialog(tk.Toplevel):
         self.lbl_tip = tk.Label(
             wrap, text="启动时只自动找元扫雷的 replay 目录；阿比特的录像目录一律要手动添加。\n"
                        "加进来的目录会被当作「全是你自己打的」，别把下载来观摩的录像留在里面。\n"
-                       "阿比特的 .avf 按内容解析，不看文件名；上传前要先去网站登记阿比特的标识。",
+                       "阿比特的 .avf 按内容解析，不看文件名；打比赛产生的录像标识带比赛编号，\n"
+                       "先去网站把完整标识登记上，否则上传会被记成「标识不符」。",
             bg=C_BG, fg=C_DIM, font=FONT_SMALL, anchor="w", justify="left",
             wraplength=sc(690))
         self.lbl_tip.pack(fill="x", pady=(sc(8), 0))
