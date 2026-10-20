@@ -17,7 +17,8 @@
 
 ## 下载
 
-到 [Releases](../../releases) 下最新的 `ms-pb-viewer.exe`，单文件，双击即用。
+到 [Releases](https://github.com/Corday-nkusky/yuanshen-toolbox/releases/latest) 下最新的
+`ms-pb-viewer.exe`（单文件，约 27 MB），双击即用，不需要安装、不需要 Python。
 
 > 程序文件名沿用早期的 `ms-pb-viewer.exe`、数据目录沿用 `ms-pb-viewer-data\`，
 > 没有跟着改名 —— 改名会让老用户的配置、登录状态、扫描缓存全部失效。
