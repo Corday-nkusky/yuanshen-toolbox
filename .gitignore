@@ -1,0 +1,28 @@
+# --- 构建产物 ---
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# --- 运行时数据（exe 旁边的便携数据目录）---
+ms-pb-viewer-data/
+
+# --- 截图 / 临时产物（docs/ 里的预览图除外）---
+tab_*.png
+shot_*.png
+dlg_login.png
+icon_src.png
+probe_out.txt
+probe_*.txt
+*.log
+
+# --- 图标设计草稿（最终只保留 icon.ico）---
+art/
+art2/
+
+# --- 研究用快照：第三方源码 / 站点后端，不随仓库分发 ---
+_ms/oms_src/
+_ms/*.rs
+_ms/tree.json
+_ms/*.html
