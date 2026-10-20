@@ -14,6 +14,7 @@ import queue
 from datetime import datetime
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
@@ -1583,7 +1584,7 @@ class App(tk.Tk):
         _, self.tbl_recent = self._table(page, cols, height=5)
 
         # 首扫时盖在内容区正中（place 不进布局，扫完 place_forget）
-        self.lbl_boot = tk.Label(page, text="正在读取录像…\n首次扫描要逐局重演，稍等一下",
+        self.lbl_boot = tk.Label(page, text="正在读取录像…\n初始化要逐局重演录像，会比较慢，请耐心等待",
                                  bg=C_BG, fg=C_DIM, font=FONT_SECTION, justify="center",
                                  padx=sc(18), pady=sc(8))
 
@@ -2402,11 +2403,18 @@ class App(tk.Tk):
                         self.set_status("正在扫描…0 / %d 个录像" % payload, "dim")
                 elif kind == "scan":
                     pct = self._progress_set(payload)
+                    eta = self._scan_eta_text()
                     # 队列里可能一次积压上百个点，只在百分比真的变了才刷文字
                     if pct is not None and pct != self._scan_pct:
                         self._scan_pct = pct
-                        self.set_status("正在扫描…已读 %d / %d 个录像（%d%%）"
-                                        % (payload, self._scan_total, pct), "dim")
+                        txt = "正在扫描…已读 %d / %d 个录像（%d%%）" \
+                              % (payload, self._scan_total, pct)
+                        if eta:
+                            txt += "，预计还需 %s" % eta
+                        self.set_status(txt, "dim")
+                        if eta:
+                            self.lbl_boot.config(
+                                text="正在读取录像…\n预计还需 %s —— 初始化较慢，请耐心等待" % eta)
                     elif pct is None:
                         self.set_status("正在扫描…已读到 %d 个录像" % payload, "dim")
                 elif kind == "up_end":
@@ -2628,6 +2636,7 @@ class App(tk.Tk):
         self._scan_total = 0
         self._scan_done = 0
         self._scan_pct = -1
+        self._scan_t0 = time.monotonic()
         if not self.pbar_box.winfo_ismapped():
             self.pbar_box.pack(side="bottom", fill="x", padx=sc(20), pady=(sc(6), 0))
         self.pbar.config(mode="indeterminate", value=0, maximum=100)
@@ -2656,6 +2665,20 @@ class App(tk.Tk):
         pct = min(100, self._scan_done * 100 // self._scan_total)
         self.pbar.config(value=pct)
         return pct
+
+    def _scan_eta_text(self):
+        """按「已读 / 用时」估剩余时间；开局前几秒速率不稳，先不报。"""
+        if not self._scan_total or self._scan_done <= 0:
+            return ""
+        elapsed = time.monotonic() - getattr(self, "_scan_t0", 0)
+        if elapsed < 3:
+            return ""
+        remain = (self._scan_total - self._scan_done) * elapsed / self._scan_done
+        if remain < 5:
+            return ""
+        if remain < 60:
+            return "约 %d 秒" % int(remain)
+        return "约 %d 分 %02d 秒" % (remain // 60, remain % 60)
 
     def _progress_end(self):
         try:
