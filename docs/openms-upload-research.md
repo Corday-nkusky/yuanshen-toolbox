@@ -171,7 +171,7 @@ skipTournamentCheck=false
 | # | 检查 | 不通过的表现 |
 |---|---|---|
 | 1 | 登录 & 未被封禁 | **403**（0 字节） |
-| 2 | 录像配额 `video_num_total >= video_num_limit` | **402**（默认上限 **100 个**） |
+| 2 | 录像总配额 `video_num_total >= video_num_limit` | **402**（空响应；额度由站点按账号设置，需联系管理员增加） |
 | 3 | 是否实名 | 200 + `{"type":"error","obj":"userprofile","category":"realname_required"}` |
 | 4 | 表单：`file` 必填 | 400 |
 | 5 | 按扩展名选解析器（avf/evf/rmv/mvf） | 200 + `object:"file", category:"type"` |
@@ -216,7 +216,7 @@ VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
 | 现象 | 判据 | 建议动作 |
 |---|---|---|
 | `403` | 未登录 / 被封 | 停止整批 → 重新登录 |
-| `402` | 配额满（100） | 停止整批 → 提示删除旧录像或赞助提额 |
+| `402` | 录像额度已满（空响应） | 停止整批 → 提示联系网站管理员增加额度 |
 | `503` | 榜单正在刷新（写锁） | 读 `Retry-After`（1 秒）后重试该文件 |
 | `200` + `success` | 成功 | 记录 `id` 与 `state` |
 | `200` + `file/collision` | 已经传过同一文件 | **视为成功**（跳过） |
@@ -248,7 +248,8 @@ VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
 2. **标识**：元扫雷 `gameSetting.ini` 里 `player_identifier = PlayerName(Region)`，
    必须在站点「个人主页 → 标识管理」里**一字不差**地存在。
    → 登录后可以 `GET /api/userprofile/identifier` 拉列表，本地就能比对并预警。
-3. **配额**：默认 100 个。本机完成局 35 个，PB + Top5 去重后大约 40~60 个文件，**够用但要注意**。
+3. **额度**：账号的录像**总数**有上限，额度由站点按账号设置（源码默认 100，可调；
+   `UserMS.video_num_limit`）。程序不写死数字，只处理空 402：停批并提示联系管理员增加额度。
 
 ---
 
@@ -371,7 +372,7 @@ back_end/saolei/common/forms.py             UploadVideoForm（file + skipTournam
 back_end/saolei/common/utils.py             new_video_by_file（标识校验、去重）
 back_end/saolei/utils/parser.py             MSVideoParser（扩展名、完成局、level、is_valid）
 back_end/saolei/utils/ranking_lock.py       503 + Retry-After
-back_end/saolei/msuser/models.py            配额默认 100
+back_end/saolei/msuser/models.py            UserMS 配额字段（默认 100，可调）
 front_end/src/services/videoUploadService.ts  上传请求与错误映射
 front_end/src/components/Login/LoginForm.vue  登录字段与"记住我"
 front_end/src/http.ts                       axios 全局 form-urlencoded + withCredentials

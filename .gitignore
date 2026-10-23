@@ -2,11 +2,12 @@
 build/
 dist/
 *.spec
+version_info.txt
 __pycache__/
 *.pyc
 
 # --- 运行时数据（exe 旁边的便携数据目录）---
-ms-pb-viewer-data/
+元神工具箱-data/
 
 # --- 截图 / 临时产物（docs/ 里的预览图除外）---
 tab_*.png
@@ -23,6 +24,10 @@ art2/
 
 # --- 研究用快照：第三方源码 / 站点后端，不随仓库分发 ---
 _ms/oms_src/
+_ms/saolei_website/
 _ms/*.rs
 _ms/tree.json
 _ms/*.html
+
+# --- AI 助手的工作区记忆（本机）---
+.workbuddy/

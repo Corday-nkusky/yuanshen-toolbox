@@ -1,8 +1,8 @@
 """上传重试与错误分类的回归测试（本地假站点，不碰 openms.top）。
 
 跑法：python test_retry.py  —— 全部通过退出码 0，否则 1。
-覆盖：503/429/5xx 重试、403/402/实名/封禁的 fatal 标记、collision 当成功、
-      500 单条失败、断网抛 OmsError。
+覆盖：503/429/5xx 重试、403/402/实名/封禁的 fatal 标记、可重试错误重试耗尽后
+      标 transient、collision 当成功、500 单条失败、断网抛 OmsError。
 """
 
 import http.server
@@ -55,24 +55,26 @@ E502 = (502, b"")
 E503 = (503, b"")
 E429 = (429, b"")
 E403 = (403, b'{"type":"error","object":"userprofile","category":"not_login"}')
-E402 = (402, b'{"type":"error","object":"userprofile","category":"limit"}')
+E402 = (402, b"")                 # 站点源码：额度满直接 HttpResponse(status=402)，无响应体
 ERL = (200, b'{"type":"error","object":"userprofile","category":"realname_required"}')
 EBAN = (200, b'{"type":"error","object":"userprofile","category":"banned"}')
 ECOLL = (200, b'{"type":"error","object":"file","category":"collision"}')
 E500 = (500, b"")
 
 CASES = [
-    # 名字,                响应序列,                 期望 ok, 期望 fatal, 期望请求数
-    ("503×2 后成功",       [E503, E503, OK],          True,  None,        3),
-    ("502 后成功",         [E502, OK],                True,  None,        2),
-    ("429 后成功",         [E429, OK],                True,  None,        2),
-    ("一次成功",           [OK],                      True,  None,        1),
-    ("重复 collision",     [ECOLL],                   True,  None,        1),
-    ("403 登录失效",       [E403],                    False, "auth",      1),
-    ("402 配额满",         [E402],                    False, "quota",     1),
-    ("未实名",             [ERL],                     False, "realname",  1),
-    ("被封禁",             [EBAN],                    False, "banned",    1),
-    ("500 单条失败",       [E500],                    False, None,        1),
+    # 名字,                响应序列,                 期望 ok, 期望 fatal, 期望请求数, 期望 transient
+    ("503×2 后成功",       [E503, E503, OK],          True,  None,        3, False),
+    ("502 后成功",         [E502, OK],                True,  None,        2, False),
+    ("429 后成功",         [E429, OK],                True,  None,        2, False),
+    ("一次成功",           [OK],                      True,  None,        1, False),
+    ("重复 collision",     [ECOLL],                   True,  None,        1, False),
+    ("403 登录失效",       [E403],                    False, "auth",      1, False),
+    ("402 额度满（空响应）", [E402],                  False, "quota",     1, False),
+    ("未实名",             [ERL],                     False, "realname",  1, False),
+    ("被封禁",             [EBAN],                    False, "banned",    1, False),
+    ("500 单条失败",       [E500],                    False, None,        1, True),
+    ("429 重试耗尽",       [E429],                    False, None,        4, True),
+    ("503 重试耗尽",       [E503],                    False, None,        4, True),
 ]
 
 
@@ -83,12 +85,13 @@ def main():
     base = "http://127.0.0.1:%d" % srv.server_address[1]
 
     bad = 0
-    for label, plan, want_ok, want_fatal, want_calls in CASES:
+    for label, plan, want_ok, want_fatal, want_calls, want_transient in CASES:
         H.plan, H.calls = plan, []
         client = openms.Client(base=base, proxy=False)
         r = client.upload(evf, retries=3)
-        got = (bool(r.get("ok")), r.get("fatal"), len(H.calls))
-        want = (want_ok, want_fatal, want_calls)
+        got = (bool(r.get("ok")), r.get("fatal"), len(H.calls),
+               bool(r.get("transient")))
+        want = (want_ok, want_fatal, want_calls, want_transient)
         flag = "OK  " if got == want else "FAIL"
         if got != want:
             bad += 1

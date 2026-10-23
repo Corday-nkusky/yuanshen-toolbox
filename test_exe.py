@@ -3,10 +3,9 @@ import ctypes
 import json
 import os
 import subprocess
-import sys
 import time
 
-from PIL import Image, ImageGrab
+from PIL import Image
 
 # 本脚本也要声明 DPI 感知，否则 GetWindowRect 拿到的是 1/1.5 的虚拟坐标
 try:
@@ -57,8 +56,8 @@ def capture(hwnd, path):
     return img.size
 
 
-EXE = r"D:\metasweeper-pb\dist\元神工具箱.exe"
 HERE = os.path.dirname(os.path.abspath(__file__))
+EXE = os.path.join(HERE, "dist", "元神工具箱.exe")
 
 
 def find_window(substr="元神工具箱"):

@@ -52,7 +52,12 @@ def _db():
         _conn.execute(
             "CREATE TABLE IF NOT EXISTS file_sha("
             "path TEXT PRIMARY KEY, mtime INTEGER, size INTEGER, sha TEXT)")
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError):
+        if _conn is not None:
+            try:
+                _conn.close()
+            except sqlite3.Error:
+                pass
         _conn = None
     return _conn
 

@@ -28,7 +28,7 @@ import paths
 
 APP_TITLE = "元神工具箱"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.11.0"
+APP_VER = "0.11.1"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
 BUNDLED_FONTS = ("MiSans-Regular.ttf", "MiSans-Demibold.ttf")
@@ -1563,13 +1563,6 @@ class App(tk.Tk):
         head = self._section(page, "最近完成局", C_ACCENT2, "按文件时间倒序，双击复制路径")
         head.pack(fill="x", pady=(sc(16), sc(6)))
 
-        # 说明行先占底部，表格再吃剩余空间，避免被内容挤出窗口
-        tk.Label(page, text="✧ 口径：PB = 同级别同 BV 下 time 最小的完成局（NF / FL 各成一张榜）；"
-                            "NF/FL 由录像里的 rce（右键有效插旗数）判定，rce = 0 即 NF；"
-                            "非完成局不计入，全程只读。",
-                 bg=C_BG, fg=C_DIM, font=FONT_SMALL, anchor="w").pack(
-            side="bottom", fill="x", pady=(sc(8), sc(2)))
-
         cols = [
             ("level_cn", "级别", 64, "center", "str"),
             ("style_cn", "风格", 52, "center", "str"),
@@ -1861,6 +1854,9 @@ class App(tk.Tk):
         self.refresh_site()
 
     def do_logout(self):
+        if self._up_running:
+            self.set_status("上传进行中，先等本批结束再退出登录", "warn")
+            return
         if not messagebox.askyesno(
                 APP_TITLE,
                 "退出会清除本机保存的会话（Cookie），下次上传需要重新输验证码。\n继续吗？"):
@@ -1882,6 +1878,9 @@ class App(tk.Tk):
         threading.Thread(target=self._site_worker, daemon=True).start()
 
     def _restore_session(self):
+        # 没保存过会话就别发匿名请求：离线启动时也少一次无意义的等待
+        if not self.oms.has_session():
+            return
         threading.Thread(target=self._site_worker, daemon=True).start()
 
     def _site_worker(self):
@@ -1898,8 +1897,11 @@ class App(tk.Tk):
         vids, idents, err = [], [], ""
         try:
             vids = self.oms.videos(u["id"])
+            lack = sum(1 for v in vids if not openms.server_key(v))
+            diag.log.info("网站录像列表：%d 条，其中 %d 条缺上去重明细", len(vids), lack)
         except Exception as exc:                     # noqa: BLE001
             err = "读取录像列表失败：%s" % exc
+            diag.log.warning("读取网站录像列表失败：%s", exc)
         try:
             idents = self.oms.identifiers(u["id"])
         except Exception:                            # noqa: BLE001
@@ -1927,6 +1929,11 @@ class App(tk.Tk):
         bits = []
         if self.oms_user:
             bits.append("网站已有 %d 条" % len(self.oms_videos))
+            # 站点改版后明细是单独批量取的；个别录像（未公开/无权限）拿不到解析字段，
+            # 就比对不了去重三元组 —— 明说出来，别让人以为是「一条都没传过」。
+            unknown = self._site_keyless()
+            if unknown:
+                bits.append("其中 %d 条缺少明细，按未上传处理" % unknown)
             if self.oms_idents:
                 bits.append("标识 " + " / ".join(self.oms_idents))
             if self.oms_user.get("realname"):
@@ -1937,6 +1944,11 @@ class App(tk.Tk):
         if self.oms_err:
             bits.append(self.oms_err)
         self.lbl_quota.config(text=" · ".join(bits), fg=C_ERR if self.oms_err else C_DIM)
+
+    def _site_keyless(self):
+        """网站列表里拿不到 timems/bv/file_size 的条数（无法参与去重比对）。"""
+        return sum(1 for v in self.oms_videos
+                   if isinstance(v, dict) and not openms.server_key(v))
 
     # ---------- 上传：选范围 / 选行 ----------
     def _rebuild_up_rows(self):
@@ -2112,7 +2124,7 @@ class App(tk.Tk):
           · 账号级（auth / quota / realname / banned）—— 后面的每一条都会同样失败，
             立即停止整批；
           · 单条级（网络重试耗尽、5xx、单条被拒）—— 记下来继续下一条。
-        网络类连续 3 条失败就认为断网了，主动停批，避免白等 N 个超时。
+        网络 / 服务端连续 3 条失败就认为连不上，主动停批，避免白等 N 个超时。
         """
         import time as _time
         keys = keys or {}
@@ -2151,7 +2163,8 @@ class App(tk.Tk):
 
     def _set_up_enabled(self, flag):
         for b in (self.btn_up_sel, self.btn_up_all, self.btn_sel_all,
-                  self.btn_sel_none, self.btn_sync, self.btn_login):
+                  self.btn_sel_none, self.btn_sync, self.btn_login,
+                  self.btn_logout, self.btn_paths):
             b.set_enabled(flag)
         for b in self.scope_pills.values():
             b.set_enabled(flag)
@@ -2231,27 +2244,27 @@ class App(tk.Tk):
             messagebox.showwarning(APP_TITLE, "登录已失效，本批已停止。\n\n"
                                              "请重新点「登录…」（只需再输一次验证码）。")
         elif fatal == "quota":
-            messagebox.showwarning(APP_TITLE, "录像配额已满（每账号 100 条），本批已停止。\n\n"
-                                             "需要先到网站上删掉旧录像，或联系管理员提额。")
+            messagebox.showwarning(APP_TITLE, "录像额度已满，本批已停止。\n\n"
+                                             "请联系网站管理员增加录像额度。")
         elif fatal == "realname":
             messagebox.showwarning(APP_TITLE, "账号未实名，网站拒绝上传。\n\n"
                                              "请先到 openms.top 个人资料里完成实名。")
         elif fatal == "banned":
             messagebox.showwarning(APP_TITLE, "账号被封禁，无法上传。")
         elif fatal == "net":
-            self.set_status("网络连续失败，本批已停止；已传的不会重传", "err")
+            self.set_status("网络或服务器连续失败，本批已停止；已传的不会重传", "err")
             messagebox.showwarning(
                 APP_TITLE,
-                "连续多条网络失败，已停止本批。\n\n"
+                "连续多条网络或服务器错误，已停止本批。\n\n"
                 "已经传成功的不受影响，也不会重复上传（本地台账已记下）。\n"
-                "网络恢复后点「重试失败」只补传剩下的那几条。")
+                "恢复后点「重试失败」只补传剩下的那几条。")
 
         msg = "上传结束：成功 %d，已有 %d，失败 %d" % (
             self._up_ok, self._up_dup, self._up_fail)
         if payload.get("stopped"):
             msg += "（手动停止）"
         if fatal == "net":
-            msg = "网络连续失败已停批 · " + msg
+            msg = "连续失败已停批 · " + msg
         elif self._up_fail and not fatal:
             msg += "，可点「重试失败」补传"
         self.set_status(msg, "ok" if not self._up_fail else "warn")
@@ -2283,10 +2296,16 @@ class App(tk.Tk):
         return "%s  +%d 个目录" % (shrink_path(main, 44), n - 1)
 
     def open_paths(self):
+        if self._up_running:
+            self.set_status("上传进行中，先等本批结束再改录像目录", "warn")
+            return
         PathsDialog(self)
 
     def apply_roots(self, roots, rescan=True):
         """目录列表变了 → 存盘、刷新按钮、重扫。"""
+        if self._up_running:
+            self.set_status("上传进行中，先等本批结束再改录像目录", "warn")
+            return
         self.roots = load_roots({"roots": roots})
         save_roots(self.roots)
         self._refresh_paths_btn()
@@ -2325,6 +2344,9 @@ class App(tk.Tk):
         self.pick_dir(first=True)
 
     def pick_dir(self, first=False):
+        if self._up_running:
+            self.set_status("上传进行中，先等本批结束再换目录", "warn")
+            return
         title = "选择录像目录（这个目录里的录像都算你自己打的）"
         initial = (self.root_dir or core.autodetect_root()
                    or os.path.join(os.environ.get("APPDATA") or "", "Metasweeper"))
@@ -2346,6 +2368,9 @@ class App(tk.Tk):
 
     def start_scan(self):
         if self._scanning:
+            return
+        if self._up_running:
+            self.set_status("上传进行中，先等本批结束再重新扫描", "warn")
             return
         roots = self.active_roots()
         if not roots:
@@ -2504,24 +2529,27 @@ class App(tk.Tk):
                         "\n\n要重新选择目录吗？"):
                     self.pick_dir()
         elif not ini_ok:
-            self.lbl_check.config(text="未找到 record.ini，跳过交叉校验", foreground=C_DIM)
+            diag.log.info("未找到 record.ini，跳过对账")
+            self.lbl_check.config(text="", foreground=C_DIM)
         else:
             # record.ini 是元扫雷写的，所以对账的基数也只能是元扫雷的局
             ms_pb = core.build_pb([g for g in games if g.get("src") != "arb"])
             n_keys = len({(r["level"], r["bv"]) for r in ms_pb})  # NF/FL 拆行后按 BV 去重
-            n_same = n_keys - len(diffs)
             only_mine = sum(1 for d in diffs if d["ini"] is None)
             only_ini = sum(1 for d in diffs if d["mine"] is None)
             big = sum(1 for d in diffs if d["mine"] is not None and d["ini"] is not None)
-            parts = [f"record.ini 对账 {n_same}/{n_keys} 一致（仅元扫雷）"]
-            if only_mine:
-                parts.append(f"{only_mine} 条 ini 尚无（录像更新）")
+            n_same = n_keys - only_mine - big
+            # 对账是后台校验，不是常驻信息：只有真冲突才占状态栏，其余写日志
+            parts = []
             if only_ini:
-                parts.append(f"{only_ini} 条仅 ini 有")
+                parts.append(f"{only_ini} 条仅 record.ini 有")
             if big:
                 parts.append(f"{big} 条数值冲突")
-            color = C_OK if not (only_ini or big) else C_WARN
-            self.lbl_check.config(text="· " + "，".join(parts), foreground=color)
+            self.lbl_check.config(
+                text=("record.ini：" + "，".join(parts)) if parts else "",
+                foreground=C_WARN if parts else C_DIM)
+            diag.log.info("record.ini 对账：%d/%d 一致，%d 条仅录像有，%d 条仅 ini 有，%d 条冲突",
+                          n_same, n_keys, only_mine, only_ini, big)
 
     # ---------- 渲染 ----------
     def render_cards(self):

@@ -1,7 +1,9 @@
-"""三个页签各截一张图（含 PB 的 NF/FL 过滤），用于验收与更新 README 预览图。
+"""四页签截图工具（不是回归测试）：更新 README 预览图 / 人工看布局。
 
 用法：python test_tabs.py            # 用 dist\\元神工具箱.exe
       python test_tabs.py --src      # 用源码跑（同一套逻辑，方便改样式后快速看）
+      python test_tabs.py pb top     # 只截指定页
+退出码：全部截图成功 0，否则 1。
 """
 import ctypes
 import os
@@ -20,7 +22,7 @@ user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXE = os.path.join(HERE, "dist", "元神工具箱.exe")
-PYC = r"C:\Users\TANGWENJIAN\.workbuddy\binaries\python\envs\packtk\Scripts\python.exe"
+PYC = sys.executable
 REPLAY = os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4", "replay")
 
 
@@ -103,7 +105,7 @@ def run(tab, out, wait=6.0):
     if not hwnd:
         print("  [FAIL] 没有窗口")
         p.terminate()
-        return
+        return False
     user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
     time.sleep(1.6)
     r = RECT()
@@ -115,14 +117,20 @@ def run(tab, out, wait=6.0):
         p.wait(timeout=6)
     except subprocess.TimeoutExpired:
         p.terminate()
+    return sz[0] > 0 and sz[1] > 0
 
 
 if __name__ == "__main__":
     only = [a for a in sys.argv[1:] if not a.startswith("--")]
     tabs = [("overview", "tab_overview.png"), ("pb", "tab_pb.png"),
             ("top", "tab_top.png"), ("upload", "tab_upload.png")]
+    bad = 0
     for tab, out in tabs:
         if only and tab not in only:
             continue
-        run(tab, out)
+        if not run(tab, out):
+            bad += 1
+    if bad:
+        print("%d 张截图失败" % bad)
+        sys.exit(1)
     print("done")

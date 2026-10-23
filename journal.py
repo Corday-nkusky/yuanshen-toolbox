@@ -66,6 +66,7 @@ def load(force=False):
 def _flush(data):
     """先写临时文件再 os.replace，避免中途断电留下半个 JSON。"""
     path = _path()
+    tmp = None
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".uploads-", suffix=".tmp",
@@ -73,9 +74,16 @@ def _flush(data):
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False)
         os.replace(tmp, path)
+        tmp = None
         return True
     except OSError:
         return False
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def mark(key, state=None, when=None):
@@ -83,7 +91,6 @@ def mark(key, state=None, when=None):
     ks = _key_str(key)
     if not ks:
         return False
-    import time
     with _lock:
         data = load()
         items = data["items"]

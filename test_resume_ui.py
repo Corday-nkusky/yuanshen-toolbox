@@ -54,6 +54,9 @@ class FakeClient:
             raise openms.OmsError("网络错误：模拟断线")
         return {"ok": True, "state": "c", "vid": self.n, "reason": "", "fatal": None}
 
+    def has_session(self):
+        return True
+
     def whoami(self):
         return {"id": 1, "username": "tester", "realname": "x"}
 
@@ -138,6 +141,18 @@ def main():
     pump(win, lambda: not win._up_running)
     win.update()
     checks.append(("连续断网只试 3 条就停", win._up_fail == 3))
+
+    # 上传期间的互斥：重扫 / 退出登录应被挡下，相关按钮应禁用
+    win._up_running = True
+    win.start_scan()
+    win.do_logout()
+    guards = ("上传进行中" in win.lbl_status.cget("text") and not win._scanning)
+    win._set_up_enabled(False)
+    buttons = not win.btn_logout._enabled and not win.btn_paths._enabled
+    win._set_up_enabled(True)
+    win._up_running = False
+    checks += [("上传中禁止重扫/退出登录", guards),
+               ("上传中禁用退出登录/路径按钮", buttons)]
 
     win.destroy()
     journal.clear()

@@ -7,25 +7,19 @@
 
 ## [1.0] 分发前的硬门槛
 
-- [ ] **exe 写 VERSIONINFO**：现在版本号只有 `app.py` 的 `APP_VER` 一处，窗口标题和日志能看到，
-      但「文件属性 → 详细信息」是空的，用户拿到 exe 无法核对版本、覆盖安装也没法比对。
-      做法：PyInstaller `--version-file`（生成一个 VERSIONINFO 资源脚本），版本号从 `APP_VER` 注入，
-      让打包脚本成为唯一入口，避免手改两处。
 - [ ] **DPI / 系统实测矩阵**：目前只在 **Win11 + 150%** 真机跑过。
       至少补 `Win10 19045` 与 `100% / 125% / 200%`；重点看
       （a）表格行高 `_fit` 有没有半截行、（b）任务栏图标 24dp 像素对齐、
       （c）`Pill` 按钮的圆角在 100% 下会不会糊。
-- [ ] **老测试断言化**：`test_smoke.py` / `test_tabs.py` / `test_upload.py` 现在只是「起窗口 → 截图 → 打印」，
-      没有断言，失败也返回 0。要么改成退出码判定（参考 `test_arb.py`），要么并入 `test_arb.py` 后删掉。
-      现在真正有回归能力的只有 `test_retry.py` / `test_resume_ui.py` / `test_arb.py`。
 
 ## 做了但没在成品上验过
 
 - [ ] **崩溃对话框**：`diag._alert()` 走 `MessageBoxW`，会阻塞自动化，所以只在源码路径验过
       「写 `logs\crash-*.txt`」这一段，弹窗本身在**打包后的 exe** 里没验。
       需要一个 `--crash-test` 开关（主动抛异常）人工点一次。
-- [ ] **数据目录不可写时的回落**：`paths.data_dir()` 的逻辑是「exe 旁便携目录不可写 → 回落到
-      `%APPDATA%\元神工具箱`」，真机上没造出过不可写场景（比如 exe 放在 `C:\Program Files`）。
+- [ ] **数据目录不可写时的回落**：`paths.data_dir()` 的写探测现在覆盖
+      「目录已存在但只读」的情况，但真机上仍没造出过不可写场景
+      （比如 exe 放在 `C:\Program Files`），需要按这个场景实测一次。
 - [ ] **日志滚动**：`RotatingFileHandler` 设的是 1 MB × 3，从没跑到过第一次切分。
 - [ ] **上传台账淘汰**：`journal.MAX_ITEMS = 8000`，超出后按时间淘汰最旧的键。现在台账里条数远没到上限，
       淘汰分支没跑过。
@@ -60,8 +54,10 @@
 
 ## 每次发版前的手工验收
 
-1. `python test_arb.py`、`python test_resume_ui.py`、`python test_retry.py` 三个退出码都是 0。
+1. `python test_arb.py`、`python test_resume_ui.py`、`python test_retry.py`、
+   `python test_smoke.py`、`python test_upload.py` 退出码都是 0
+   （`test_tabs.py` 是截图工具，不参与回归判定）。
 2. `build.cmd` → 覆盖 `%APPDATA%\Metasweeper3.3.4\元神工具箱.exe` → `--probe` → 日志里
-   `启动 vX.Y.Z` 与 `APP_VER` 一致。
+   `启动 vX.Y.Z` 与 `APP_VER` 一致；文件属性 → 详细信息里的 FileVersion 也一致。
 3. 真机开一次：概览 / PB / 前端成绩 / 上传四页各看一眼（行高、对齐、滚动条）。
 4. 有账号时确认「网站已有 N」与站点实际条数一致（去重键没漂）。

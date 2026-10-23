@@ -63,7 +63,9 @@ def data_dir():
         return _cache
     env = os.environ.get(ENV_OVERRIDE)
     cand = os.path.abspath(env) if env else portable_dir()
-    if os.path.isdir(cand) or _writable(cand):
+    # 目录已存在不代表可写（典型：整个文件夹被拷进 C:\Program Files），
+    # 必须真的写一次才能决定是否回落。
+    if _writable(cand):
         path = cand
     else:
         path = roaming_dir()

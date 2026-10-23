@@ -9,8 +9,14 @@
     登录       POST /userprofile/login/                -> Set-Cookie: session_id
     登录态     GET  /api/common/loginauto              -> {"user": {...} | null}
     我的录像   GET  /api/userprofile/videolist?user_id=N
+                -> 只有 id / player / upload_time / state / ongoing_tournament
+    录像明细   GET  /api/video/staticdetailbatch?ids=...  -> timems / bv / file_size / identifier
     我的标识   GET  /api/userprofile/identifier?user_id=N
     上传       POST /common/uploadvideo/               （注意不在 /api 下）
+
+2026-10 站点改版：`videolist` 原本每条录像都带 timems / bv / file_size（去重三元组），
+改版后收窄成纯元信息，明细字段拆到 `staticdetailbatch`（单次最多 100 个 ID，5 次/秒）。
+所以「判断网站是否已有这条录像」现在要两步：先取 ID 列表，再批量取明细。
 
 登录只在「登录那一刻」需要验证码；之后靠 session_id Cookie 维持，站点支持
 最长 90 天且每次请求续期（SESSION_SAVE_EVERY_REQUEST）。所以长期免登录的正解是
@@ -33,6 +39,11 @@ import uuid
 BASE = "https://openms.top"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) yuanshen-toolbox/0.11 Safari/537.36")
+
+# /api/video/staticdetailbatch 的硬限制：实测传 101 个 ID 直接返回
+# 400 {"detail": "Expected 1 to 100 positive video IDs."}，所以必须自己切片。
+DETAIL_MAX_IDS = 100
+DETAIL_GAP = 0.25            # 站点限流 5 次/秒，串行留 0.25 s 间隔
 
 import paths
 
@@ -396,10 +407,86 @@ class Client:
 
     # --- 数据 ---
     def videos(self, user_id):
+        """我的录像，每条都补齐去重三元组（timems / bv / file_size）。
+
+        站点改版（2026-10）前，`videolist` 一次就能拿到完整明细；现在它只返回
+        id / player / upload_time / state / ongoing_tournament，去重字段必须再走
+        `staticdetailbatch` 批量取。少了这一步，「网站是否已有这条录像」永远判否。
+        """
         status, p = self.get_json("/api/userprofile/videolist?user_id=%d" % int(user_id))
         if isinstance(p, list):
-            return p
+            return self.attach_static_details(p)
         raise OmsError("读取网站录像失败（HTTP %s）" % status, status, p)
+
+    def get_json_retry(self, path, retries=3, timeout=None):
+        """429 / 5xx / 网络错误重试；400、403 这类语义错误不重试。"""
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                status, p = self.get_json(path, timeout=timeout)
+            except OmsError:
+                if attempt > retries:
+                    raise
+                time.sleep(1.0 * attempt)
+                continue
+            if status in (429, 500, 502, 503, 504) and attempt <= retries:
+                time.sleep(1.0 * attempt)      # 限流按秒计，退避 1s / 2s / 3s
+                continue
+            return status, p
+
+    def static_details(self, ids):
+        """按录像 ID 批量取解析字段，返回 {id: {...}}。
+
+        读不到的 ID 不会出现在结果里（未公开、已删除、无权限），调用方按
+        「没有解析数据」处理即可，不能当成空记录写入。
+        """
+        uniq, seen = [], set()
+        for i in ids or []:
+            try:
+                i = int(i)
+            except (TypeError, ValueError):
+                continue
+            if i > 0 and i not in seen:
+                seen.add(i)
+                uniq.append(i)
+
+        out = {}
+        for start in range(0, len(uniq), DETAIL_MAX_IDS):
+            chunk = uniq[start:start + DETAIL_MAX_IDS]
+            if start:
+                time.sleep(DETAIL_GAP)
+            status, p = self.get_json_retry(
+                "/api/video/staticdetailbatch?ids=%s"
+                % ",".join(str(i) for i in chunk))
+            if not isinstance(p, list):
+                raise OmsError("读取网站录像明细失败（HTTP %s）" % status, status, p)
+            for row in p:
+                if isinstance(row, dict) and row.get("id") is not None:
+                    out[int(row["id"])] = row
+        return out
+
+    def attach_static_details(self, rows):
+        """给 videolist 的元信息补上解析字段，返回新的列表。
+
+        `state` 一律以 videolist 为准（staticdetailbatch 不返回 state）；
+        解析字段只补不覆盖空值，可空指标保持 None，不替站点改成 0。
+        """
+        rows = [dict(r) for r in (rows or []) if isinstance(r, dict)]
+        ids = [r.get("id") for r in rows if r.get("id")]
+        if not ids:
+            return rows
+        det = self.static_details(ids)
+        fields = ("timems", "bv", "file_size", "level", "software", "mode",
+                  "identifier", "end_time")
+        for r in rows:
+            d = det.get(r.get("id"))
+            if not d:
+                continue
+            for k in fields:
+                if d.get(k) is not None:
+                    r[k] = d[k]
+        return rows
 
     def identifiers(self, user_id):
         status, p = self.get_json("/api/userprofile/identifier?user_id=%d" % int(user_id))
@@ -418,7 +505,7 @@ class Client:
             reason  str       失败原因（中文）
             fatal   str|None  auth / quota / banned / realname
                               命中这些是账号级问题，应停止整批
-            transient bool    网络类失败（重试后仍失败）；单条问题，不影响整批
+            transient bool    网络/服务端临时失败（重试后仍失败）；单条问题，不影响整批
 
         网络异常在重试耗尽后仍会抛 OmsError —— 由调用方决定是继续还是整批停。
         """
@@ -456,9 +543,13 @@ class Client:
         if status == 403:
             return {"ok": False, "reason": "登录已失效（403）", "fatal": "auth"}
         if status == 402:
-            return {"ok": False, "reason": "录像配额已满（402）", "fatal": "quota"}
+            return {"ok": False, "reason": "录像额度已满（402）", "fatal": "quota"}
         if status == 429:
-            return {"ok": False, "reason": "请求过快被限流（429）", "fatal": None}
+            return {"ok": False, "reason": "请求过快被限流（429）", "fatal": None,
+                    "transient": True}
+        if status >= 500:
+            return {"ok": False, "reason": "服务器错误（%d）" % status, "fatal": None,
+                    "transient": True}
         if status == 413:
             return {"ok": False, "reason": "文件过大（413）", "fatal": None}
 

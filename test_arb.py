@@ -22,6 +22,8 @@ import app as A          # noqa: E402
 import core              # noqa: E402
 import journal           # noqa: E402
 
+A.App._restore_session = lambda self: None      # 本测试不联网，也别恢复账号
+
 REPLAY = os.path.join(os.environ.get("APPDATA", ""), "Metasweeper3.3.4", "replay")
 AVF_SRC = r"D:\扫雷\gsc\27415gsc16"
 

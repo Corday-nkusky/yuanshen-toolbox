@@ -7,10 +7,20 @@ rem   pip install pyinstaller ms-toollib
 rem 若默认 python 不合适，先 set PYTHON=<你的python.exe完整路径> 再运行本脚本
 if not defined PYTHON set PYTHON=python
 
+echo 正在生成版本资源 …
+"%PYTHON%" "%~dp0make_version_info.py"
+if errorlevel 1 (
+  echo.
+  echo 生成版本资源失败。
+  pause
+  exit /b 1
+)
+
 echo 正在打包 元神工具箱.exe …
 "%PYTHON%" -m PyInstaller ^
   --onefile --windowed --noconfirm --clean ^
   --name 元神工具箱 ^
+  --version-file "%~dp0version_info.txt" ^
   --manifest "%~dp0app.manifest" ^
   --icon "%~dp0icon.ico" ^
   --add-data "%~dp0icon.ico;." ^

@@ -11,7 +11,6 @@
 凭据只输出「有没有、用户名是谁」，绝不含密码密文 / session 密文。
 """
 
-import io
 import logging
 import logging.handlers
 import os
@@ -165,7 +164,7 @@ def _fire(where, exc_type, exc, tb):
     msg = ("程序遇到未处理的错误，需要关闭。\n\n"
            f"{where}\n{exc_type.__name__}: {exc}\n\n"
            + (f"崩溃详情已写入：\n{path}\n\n" if path else "")
-           + f"下次启动可在「诊断…」里导出诊断包，\n把整个文件夹发给作者即可定位问题。")
+           + "下次启动可在「诊断…」里导出诊断包，\n把整个文件夹发给作者即可定位问题。")
     _alert("程序错误", msg)
 
 

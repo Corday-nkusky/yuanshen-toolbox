@@ -23,7 +23,7 @@
 `YuanshenToolbox.exe`（单文件，约 27 MB），双击即用，不需要安装、不需要 Python。
 
 > GitHub 的附件名不支持中文，所以发布时叫 `YuanshenToolbox.exe`；下载后**名字随意改**
-> （推荐改成 `元神工具箱.exe`），程序照常运行。数据目录固定叫 `元神工具箱-data\`，
+> （推荐改成 `元神工具箱.exe`），程序照常运行。数据目录默认叫 `元神工具箱-data\`，
 > 跟 exe 叫什么无关。
 
 ---
@@ -154,7 +154,7 @@
 
 | 情况 | 实际位置 |
 |---|---|
-| exe 放在不可写的地方（如 `C://Program Files`） | 自动回落到 `%APPDATA%\元神工具箱\`，「诊断…」里会写明 |
+| exe 放在不可写的地方（如 `C:\Program Files`） | 自动回落到 `%APPDATA%\元神工具箱\`，「诊断…」里会写明 |
 | 一键打包的临时解压目录 | `%TEMP%\_MEIxxxx`，程序退出即删除（PyInstaller 行为） |
 
 ### 日志与崩溃
@@ -217,9 +217,18 @@
 
 ### 不会重复上传
 
-上传前先拉 `GET /api/userprofile/videolist?user_id=N` 取回网站上已有的录像，
-按站点自己的去重口径 **timems + bv + file_size** 逐个比对（实测这三个字段与本地完全吻合），
-已经传过的直接标成「网站已有」，不会进入待传集合。
+上传前先走两步拿到网站上已有的录像，再按站点自己的去重口径
+**timems + bv + file_size** 逐个比对（实测这三个字段与本地完全吻合）：
+
+1. `GET /api/userprofile/videolist?user_id=N` —— 只返回 `id / player / upload_time / state`
+   这些元信息（站点改版前这里还带 `timems`、`bv`、`file_size`，现在没有了）；
+2. `GET /api/video/staticdetailbatch?ids=…` —— 按 ID 批量取解析字段，补齐去重三元组。
+   单次最多 100 个 ID（传 101 个直接 400），限流 5 次/秒，所以程序按 100 个一片、
+   每片间隔 0.25 s 串行取。两千条录像约 20 次请求、几秒钟。
+
+比对上的直接标成「网站已有」，不会进入待传集合。个别录像拿不到解析字段
+（未公开、无权限）时状态栏会写明「其中 N 条缺少明细，按未上传处理」——
+这种只能等真上传时由站点的 `file/collision` 兜住。
 
 另外三道兜底：
 
@@ -247,9 +256,9 @@
 - **单条失败不拖垮整批**：每条上传内部会重试——断网/超时按 1s → 2s → 4s 退避，
   `503`（写锁）与 `429`（限流）听 `Retry-After`。重试耗尽仍失败的记为「失败：原因」，
   接着传下一条。
-- 只有**账号级**错误才停整批：`403`（登录失效）、`402`（配额满，默认每账号 100 条）、
-  未实名、被封禁——这些后面每一条都会同样失败。
-- 网络**连续 3 条**失败就认为断网，主动停批（避免白等 N 个 90 秒超时）。
+- 只有**账号级**错误才停整批：`403`（登录失效）、`402`（录像额度已满，需联系网站管理员
+  增加额度）、未实名、被封禁——这些后面每一条都会同样失败。
+- 网络或服务端**连续 3 条**失败就认为连不上，主动停批（避免白等 N 个 90 秒超时）。
   已成功的不受影响，恢复后点「重试失败 (N)」只补传剩下的。
 - 断点续传：传一半关掉程序，重开后已成功的那几条不会重传。
 - 上传成功 ≠ 进榜：`a` 待审核 / `b` 冻结 / `d` 标识不符都不进榜，界面按 state 分开显示。
@@ -398,7 +407,8 @@ b_0_1.774_9_5.073_PlayerName(Region).evf
 ### 校验
 
 `record.ini` 里 `[BEGINNER]/[INTERMEDIATE]/[EXPERT]` 段本身就是「每个 BV 的最快时间」表，
-程序会拿它和扫描结果逐条对账，结果显示在状态栏右下角。样例数据：**18/18 全一致**。
+程序会在扫描后逐条对账，结果写入日志；只有发现「仅 record.ini 有」或「数值冲突」时，
+才在状态栏右侧提示，正常或没有 record.ini 时保持安静。样例数据全部一致。
 只拿元扫雷的局去对账（阿比特的成绩不在 record.ini 里）。
 
 ### 阿比特（`.avf`）
@@ -438,6 +448,12 @@ Beg_NF_1.06_3BV=5_3BVs=4.71_Anonymous.avf
 - **阿比特上传只做过单条真传**（2026-10-21：1 条 `.avf` 上传成功，站点记为 `d` 标识不匹配
   —— 那条的标识带比赛编号、账号里没登记；重复上传正确返回「网站已有同一录像」）。
   批量混传还没在真实账号上跑过。
+- **改版后的录像比对验过三层**（2026-10-23）：① 匿名拉公开录像，22 条全拿到去重三元组；
+  ② 本地 38 个 `.evf` 与之比对，21 条对上；③ 真实登录态下该账号 22 条里 21 条 `c`、1 条 `d`
+  （标识不符），**全部拿到了明细**，状态栏没有出现「缺少明细」提示 —— 说明未公开/标识不符的
+  录像对本人确实返回。`a`（待审核）、`b`（冻结）两个状态本账号没有，仍未验。
+  接口按 Ninja 自动生成的 OpenAPI（`https://openms.top/api/openapi.json`）核对字段，
+  但站点仍可能再改；再改的话症状同样是「全判成未上传」。
 
 ---
 
@@ -535,10 +551,11 @@ fonts/          内置字体 MiSans-Regular / MiSans-Demibold（打包进 exe）
 icon.ico        窗口图标（多尺寸、两套画面，由 _ms/make_icon2.py 生成）
 cacert.pem      CA 包（随 exe 打包，见下）
 app.manifest    Windows 清单：声明 DPI 感知（必须，见下）
-build.cmd       PyInstaller 打包
-test_smoke.py   界面冒烟测试（起窗口、等扫描、截图、验数据）
-test_tabs.py    四个页签各截一张图（加 --src 用源码跑）
-test_upload.py  上传页交互测试（默认只选不传，--live N 真传 N 条）
+build.cmd       PyInstaller 打包（先调 make_version_info.py 写入版本资源）
+make_version_info.py 从 APP_VER 生成 VERSIONINFO，打包脚本调用
+test_smoke.py   界面冒烟回归（扫描/PB/前端成绩页，退出码判定，顺带截图）
+test_tabs.py    四页签截图工具（更新 README 预览图，不参与回归）
+test_upload.py  上传页选范围/选行回归（默认临时目录、不联网，--live N 真传）
 test_retry.py   上传重试/错误分类回归（本地假站点，退出码判定）
 test_resume_ui.py 断点续传 / 重试失败 / 断网停批（假客户端，退出码判定）
 test_arb.py     阿比特 .avf / 多目录 / 含阿比特开关 / 扫描缓存 / 重复副本合并（退出码判定）
@@ -546,8 +563,8 @@ _ms/            研究用脚本（ms-toollib 源码快照、rce 探针、图标�
 ```
 
 版本历史见 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)，还没做/没验的事见 [`docs/TODO.md`](docs/TODO.md)。
-版本号唯一来源是 `app.py` 的 `APP_VER`，
-窗口标题显示的就是它（exe 没有写 VERSIONINFO，文件属性里看不到版本）。
+版本号唯一来源是 `app.py` 的 `APP_VER`：窗口标题、日志和 exe 的
+「文件属性 → 详细信息」都跟着它走（`build.cmd` 打包前调用 `make_version_info.py` 生成 VERSIONINFO）。
 
 > **为什么自带 `cacert.pem`**：本机 Windows 根证书库里有一张已过期的交叉签证书，
 > OpenSSL 会选中它，导致连 openms.top 直接报 `certificate has expired`（浏览器和 curl 都正常）。
@@ -568,9 +585,9 @@ _ms/            研究用脚本（ms-toollib 源码快照、rce 探针、图标�
 python app.py                 # 直接跑源码
 python app.py --tab pb        # 指定启动页（overview / pb / top / upload）
 python app.py --probe         # 自检：把 scale / 屏幕 / 可用区 / 窗口尺寸写 probe_out.txt
-python test_smoke.py          # 冒烟测试，产出 shot_*.png
-python test_tabs.py           # 四页签截图，产出 tab_*.png
-python test_upload.py         # 上传页交互测试（只选不传）
+python test_smoke.py          # 冒烟回归，退出码判定，产出 shot_*.png
+python test_tabs.py           # 四页签截图工具，产出 tab_*.png（不参与回归）
+python test_upload.py         # 上传页选范围/选行回归（临时目录，不联网）
 python test_upload.py --live 2   # 真传 2 条，验证全链路
 python test_arb.py            # 阿比特 / 多目录 / 缓存回归
 build.cmd                     # 打包成 dist\元神工具箱.exe（先 pip install pyinstaller）
@@ -578,6 +595,9 @@ build.cmd                     # 打包成 dist\元神工具箱.exe（先 pip ins
 
 打包需要安装了 tkinter 的 Python（pip 版 Python 默认不带 tkinter，
 Windows 上用 python.org 安装包或 Anaconda 的都行）。
+
+> 测试里的 PB / Top5 断言依赖录像解析，请在装好 `ms-toollib` 的解释器下运行；
+> 否则扫描仍能出时间/BV，但拿不到 NF/FL 风格，相关断言会失败。
 
 依赖只有两个包：
 
