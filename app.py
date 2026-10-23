@@ -28,7 +28,7 @@ import paths
 
 APP_TITLE = "元神工具箱"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.11.1"
+APP_VER = "0.11.2"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
 BUNDLED_FONTS = ("MiSans-Regular.ttf", "MiSans-Demibold.ttf")
@@ -1016,6 +1016,168 @@ class DiagnosticsDialog(tk.Toplevel):
             parent=self)
 
 
+class UploadConfirmDialog(tk.Toplevel):
+    """上传前的二次确认：把「这一批到底要传什么」摊开给人看。
+
+    为什么不直接用 messagebox：
+      · 选中项散落在上万行的表里，用户在表里根本看不到自己选了什么，点了
+        「上传选中」心里没底；原生弹窗只能塞一段纯文本，列不出清单；
+      · 原生弹窗是系统白底灰按钮，跟这套粉紫界面完全不搭。
+    所以这里用同一套配色 + 药丸按钮 + 同款表格，把级别/风格/成绩/文件列清楚。
+
+    返回：`UploadConfirmDialog.ask(...)` 为 True 表示用户点了「开始上传」。
+    """
+
+    LIMIT = 400          # 超过这个数只列前 400 行：建几万个 Treeview 行会卡顿
+
+    COLS = [
+        ("level_cn", "级别", 56, "center", "str"),
+        ("style_cn", "风格", 50, "center", "str"),
+        ("src_cn", "来源", 52, "center", "str"),
+        ("time", "time", 70, "e", "f3"),
+        ("bv", "BV", 44, "e", "int"),
+        ("size_cn", "大小", 62, "e", "str"),
+        ("file", "录像文件", 300, "w", "str"),
+    ]
+
+    def __init__(self, master, rows, title="确认上传", action="上传", hint=""):
+        super().__init__(master)
+        self.result = False
+        self.configure(bg=C_BG)
+        self.title(title)
+        self.transient(master)
+        self.resizable(True, True)
+
+        rows = list(rows or [])
+        rows.sort(key=lambda r: (core.LEVELS.index(r["level"])
+                                 if r.get("level") in core.LEVELS else 9,
+                                 r.get("bv") or 0, r.get("time") or 0))
+
+        wrap = tk.Frame(self, bg=C_BG)
+        wrap.pack(fill="both", expand=True, padx=sc(20), pady=sc(16))
+
+        # --- 抬头：一句话说清这批是什么 ---
+        tk.Label(wrap, text="%s %d 个录像" % (action, len(rows)), bg=C_BG,
+                 fg=C_TEXT, font=FONT_SECTION).pack(anchor="w")
+        sub = hint or "下面是这一批的全部录像，确认无误再开始。"
+        tk.Label(wrap, text=sub, bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(
+            anchor="w", pady=(sc(2), sc(10)))
+
+        # --- 摘要卡：级别构成 / 来源 / 合计大小 ---
+        card = tk.Frame(wrap, bg=C_PANEL, highlightthickness=1,
+                        highlightbackground=C_LINE)
+        card.pack(fill="x", pady=(0, sc(10)))
+        for text, color in self._summary_bits(rows):
+            tk.Label(card, text=text, bg=C_PANEL, fg=color,
+                     font=FONT_SMALL).pack(side="left", padx=(sc(12), 0),
+                                           pady=sc(9))
+
+        over = len(rows) - self.LIMIT
+        if over > 0:
+            tk.Label(wrap, text="共 %d 个，下面只列前 %d 个（其余 %d 个同样会上传）"
+                                % (len(rows), self.LIMIT, over),
+                     bg=C_BG, fg=C_WARN, font=FONT_SMALL).pack(
+                anchor="w", pady=(0, sc(4)))
+
+        # 文件名列按实际内容量宽：截断到「…Corday(Tongcheng).e」这种程度
+        # 就失去了「看到自己传了什么」的意义，不如把窗口撑开。
+        cols = self._fit_file_col(rows[:self.LIMIT])
+
+        holder = tk.Frame(wrap, bg=C_LINE)
+        holder.pack(fill="both", expand=True)
+        self.tbl = Table(holder, cols, height=10, selectmode="browse",
+                         iid_key="path")
+        self.tbl.pack(fill="both", expand=True, padx=1, pady=1)
+        self.tbl.set_rows(rows[:self.LIMIT])
+
+        # --- 底部按钮 ---
+        foot = tk.Frame(wrap, bg=C_BG)
+        foot.pack(fill="x", pady=(sc(12), 0))
+        Pill(foot, "取消", command=self._cancel, accent=C_DIM, padx=18,
+             height=32).pack(side="right", padx=(sc(8), 0))
+        self.btn_ok = Pill(foot, "开始上传 (%d)" % len(rows), command=self._ok,
+                           accent=C_ACCENT, padx=22, height=32)
+        self.btn_ok.pack(side="right")
+        tk.Label(foot, text="上传后按网站审核状态回填：待审核 / 已通过 / 冻结",
+                 bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(side="left")
+
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.bind("<Return>", lambda _e: self._ok())
+
+        self.update_idletasks()
+        w = max(sc(660), self._table_width(cols))
+        w = min(w, self.winfo_screenwidth() - sc(60))
+        h = max(sc(420), min(sc(560), self.winfo_reqheight()))
+        self.geometry("%dx%d" % (w, h))
+        try:
+            px, py = master.winfo_rootx(), master.winfo_rooty()
+            pw, ph = master.winfo_width(), master.winfo_height()
+            self.geometry("+%d+%d" % (px + max(0, (pw - w) // 2),
+                                      py + max(0, (ph - h) // 3)))
+        except tk.TclError:
+            pass
+        self.grab_set()
+        self.btn_ok.focus_set()
+
+    # --- 摘要文字 ---
+    def _fit_file_col(self, rows):
+        """按最长文件名给「录像文件」列量宽（上限 560，别把窗口顶出屏幕）。
+
+        注意 Table 内部会对列宽再做一次 sc()，所以这里换算回逻辑单位。
+        """
+        probe = tkfont.Font(family=FAM_UI, size=FONT_UI[1])
+        need = 0
+        for r in rows:
+            need = max(need, probe.measure(str(r.get("file") or "")))
+        logical = need / (SCALE or 1.0) + 18
+        file_w = max(220, min(logical, 560))
+        return [c if c[0] != "file" else ("file", "录像文件", int(file_w), "w", "str")
+                for c in self.COLS]
+
+    @staticmethod
+    def _table_width(cols):
+        """列宽合计 + 滚动条/内边距 + 外层 wrap 的左右留白（逻辑单位，外面统一 sc()）。
+
+        少算 wrap 那 40，最后的「录像文件」列会被挤窄、文件名又被截掉。
+        """
+        return sc(sum(c[2] for c in cols) + 48 + 40)
+
+    def _summary_bits(self, rows):
+        bits = []
+        for lv in core.LEVELS:
+            n = sum(1 for r in rows if r.get("level") == lv)
+            if n:
+                bits.append(("%s %d" % (core.LEVEL_CN[lv], n),
+                             LEVEL_ACCENT[lv][0]))
+        srcs = {}
+        for r in rows:
+            srcs[r.get("src_cn") or "—"] = srcs.get(r.get("src_cn") or "—", 0) + 1
+        if len(srcs) > 1 or "阿比特" in srcs:
+            bits.append((" · ".join("%s %d" % (k, v) for k, v in srcs.items()),
+                         C_ACCENT2))
+        total = sum(int(r.get("size") or 0) for r in rows)
+        if total >= 1048576:
+            size_txt = "合计 %.1f MB" % (total / 1048576.0)
+        else:
+            size_txt = "合计 %.0f KB" % (total / 1024.0)
+        bits.append((size_txt, C_TEXT))
+        return bits
+
+    def _ok(self):
+        self.result = True
+        self.destroy()
+
+    def _cancel(self):
+        self.result = False
+        self.destroy()
+
+    @classmethod
+    def ask(cls, master, rows, title="确认上传", action="上传", hint=""):
+        dlg = cls(master, rows, title=title, action=action, hint=hint)
+        dlg.wait_window()
+        return bool(dlg.result)
+
+
 class PathsDialog(tk.Toplevel):
     """录像目录管理。
 
@@ -1250,8 +1412,11 @@ class App(tk.Tk):
         self._last_failed = set()   # 上一批失败的路径（表格会被网站数据重建，得单独记）
         self._arb_rows = 0          # 本地发现多少个阿比特录像（不受「含阿比特」影响）
         self.up_rows = []
+        self.up_view = []           # 表格里实际显示的子集（受范围 Pill 过滤）
         self.up_sel = set()
         self._up_scopes = set()
+        self._scope_want = None     # 范围 -> 路径集合的缓存
+        self._view_note = ""        # 范围过滤后为空时的说明
         self._up_running = False
         self._up_stop = False
         self._up_total = 0
@@ -1972,11 +2137,13 @@ class App(tk.Tk):
             item = {
                 "path": g["path"],
                 "file": g["file"],
+                "level": g["level"],
                 "level_cn": core.LEVEL_CN[g["level"]],
                 "style_cn": core.STYLE_CN.get(g.get("style"), "?"),
                 "src_cn": core.SRC_CN.get(src, "元扫雷"),
                 "time": g["time"],
                 "bv": g["bv"],
+                "size": g.get("size") or 0,      # 字节，确认框算合计大小用
                 "size_cn": "%.1f KB" % ((g.get("size") or 0) / 1024.0),
                 "valid": g.get("valid"),
             }
@@ -2006,9 +2173,53 @@ class App(tk.Tk):
         pending = {r["path"] for r in rows if not r["uploaded"]}
         self.up_sel &= pending
         self.up_rows = rows
+        self._scope_want = None          # 录像重扫过，范围对应的路径要重算
+        self._refresh_up_view()
+
+    def _refresh_up_view(self):
+        """表格里只放「当前范围」的行。
+
+        几万局全铺在表里没有意义：用户眼睛只看得见前几行，真正关心的是自己
+        刚选的那批。所以选了范围 Pill，表里就只剩那几个范围的录像（含已上传的，
+        好让人看出这批里哪些已经在网站上）。没有选范围时才显示全部。
+
+        `up_rows` 始终是全集，逻辑判断（待传集合、重试）都用它；
+        `up_view` 只是显示子集，别拿它当数据源。
+        """
+        if self._up_scopes:
+            want = self._scope_path_set()
+            rows = [r for r in self.up_rows if r["path"] in want]
+            self._view_note = self._empty_view_note(want) if not rows else ""
+        else:
+            rows = list(self.up_rows)
+            self._view_note = ""
+        self.up_view = rows
         self.tbl_up.set_rows(rows)
         self.tbl_up.select_paths(self.up_sel)
         self._update_up_stat()
+
+    def _empty_view_note(self, want):
+        """范围过滤后一行都不剩时，说清是「被阿比特开关挡掉」还是「真没有」。
+
+        光留一张空表太像故障：这个账号的 PB 全落在阿比特录像上，而「含阿比特」
+        没勾时，PB·NF 这个范围确实一条都显示不出来。
+        """
+        if not self.upload_arb and self._arb_rows:
+            for g in self.games:
+                if ((g.get("src") or "ms") == "arb"
+                        and g["path"] in want):
+                    return "这个范围的录像都在阿比特里，勾上「含阿比特录像」才看得到"
+        return "这个范围没有可显示的录像"
+
+    def _scope_path_set(self):
+        """当前选中范围对应的路径集合（缓存在 _scope_want，top5 算起来不便宜）。"""
+        want = getattr(self, "_scope_want", None)
+        if want is None:
+            want = set()
+            for s in self._up_scopes:
+                want |= openms.scope_paths(self.games, s)
+            self._scope_want = want
+        return want
 
     def toggle_upload_arb(self):
         self.upload_arb = bool(self.var_arb.get())
@@ -2019,20 +2230,29 @@ class App(tk.Tk):
     def _up_stat_text(self):
         total = len(self.up_rows)
         up = sum(1 for r in self.up_rows if r.get("uploaded"))
+        txt = "本地 %d 个完成局 · 网站已有 %d · 未上传 %d" % (total, up, total - up)
+        if self._up_scopes:
+            v_pending = sum(1 for r in self.up_view if not r.get("uploaded"))
+            txt += " · 当前范围 %d 行（待传 %d）" % (len(self.up_view), v_pending)
+            if getattr(self, "_view_note", ""):
+                txt += " · " + self._view_note
+        txt += " · 已选 %d" % len(self.up_sel)
         arb = getattr(self, "_arb_rows", 0)
-        txt = "本地 %d 个完成局 · 网站已有 %d · 未上传 %d · 已选 %d" % (
-            total, up, total - up, len(self.up_sel))
         if arb:
             txt += "（阿比特 %d 个，%s）" % (
                 arb, "在本列表里" if self.upload_arb else "已排除，不传")
         return txt
+
+    def _view_pending(self):
+        """当前表格视图里的待传路径。范围过滤后，「上传全部未传」只算眼前这些。"""
+        return {r["path"] for r in self.up_view if not r.get("uploaded")}
 
     def _update_up_stat(self):
         pending = {r["path"] for r in self.up_rows if not r.get("uploaded")}
         self.up_sel &= pending
         self.lbl_up_stat.config(text=self._up_stat_text())
         self.btn_up_sel.set_text("上传选中 (%d)" % len(self.up_sel))
-        self.btn_up_all.set_text("上传全部未传 (%d)" % len(pending))
+        self.btn_up_all.set_text("上传全部未传 (%d)" % len(self._view_pending()))
 
     def _on_up_select(self):
         self.up_sel = set(self.tbl_up.selected_paths())
@@ -2044,6 +2264,7 @@ class App(tk.Tk):
             self._up_scopes.discard(key)
         else:
             self._up_scopes.add(key)
+        self._scope_want = None          # 范围变了，缓存作废
         for k, p in self.scope_pills.items():
             p.set_selected(k in self._up_scopes)
         self.select_by_scope()
@@ -2051,27 +2272,25 @@ class App(tk.Tk):
     def select_by_scope(self):
         if not self._up_scopes:
             self.up_sel = set()
-            self.tbl_up.select_paths(self.up_sel)
-            self._update_up_stat()
+            self._refresh_up_view()      # 取消范围：表里恢复全部
             return
-        want = set()
-        for s in self._up_scopes:
-            want |= openms.scope_paths(self.games, s)
+        want = self._scope_path_set()
         pending = {r["path"] for r in self.up_rows if not r.get("uploaded")}
         self.up_sel = want & pending
-        self.tbl_up.select_paths(self.up_sel)
-        self._update_up_stat()
+        self._refresh_up_view()          # 表里只剩这个范围的行，并选中待传的那几条
 
     def select_all_pending(self):
-        self.up_sel = {r["path"] for r in self.up_rows if not r.get("uploaded")}
+        self.up_sel = self._view_pending()
         self.tbl_up.select_paths(self.up_sel)
         self._update_up_stat()
 
     def clear_selection(self):
         self._up_scopes.clear()
+        self._scope_want = None
         for p in self.scope_pills.values():
             p.set_selected(False)
         self.up_sel = set()
+        self._refresh_up_view()          # 清空范围，表格恢复全部
         self.tbl_up.tv.selection_remove(*self.tbl_up.tv.selection())
         self._update_up_stat()
 
@@ -2080,18 +2299,39 @@ class App(tk.Tk):
         return [r["path"] for r in self.up_rows
                 if not r.get("uploaded") and r["path"] in self.up_sel]
 
+    def _confirm_batch(self, rows, action="上传", hint=""):
+        """二次确认。测试里会把它替换掉，别在里面做副作用。"""
+        if not rows:
+            return False
+        return UploadConfirmDialog.ask(self, rows, action=action, hint=hint)
+
+    def _rows_for(self, paths):
+        want = set(paths)
+        return [r for r in self.up_rows if r["path"] in want]
+
     def upload_selected(self):
         paths = self._pending_paths()
         if not paths:
             messagebox.showinfo(APP_TITLE, "没有选中的待上传录像。\n\n"
                                           "先用上面的「范围」或「全选未传」选一批。")
             return
+        rows = self._rows_for(paths)
+        if not self._confirm_batch(
+                rows, "上传", "下面是你在表里选中的录像，确认无误再开始。"):
+            return
         self._start_upload(paths)
 
     def upload_all_pending(self):
-        paths = [r["path"] for r in self.up_rows if not r.get("uploaded")]
+        pending = self._view_pending()      # 有范围时只算当前范围
+        paths = [r["path"] for r in self.up_view if r["path"] in pending]
         if not paths:
             messagebox.showinfo(APP_TITLE, "本地完成局都已经在网站上了。")
+            return
+        rows = self._rows_for(paths)
+        hint = ("下面是当前范围里全部未上传的录像，确认无误再开始。"
+                if self._up_scopes else
+                "下面是把本地所有未上传的录像，确认无误再开始。")
+        if not self._confirm_batch(rows, "上传", hint):
             return
         self._start_upload(paths)
 
@@ -2193,6 +2433,9 @@ class App(tk.Tk):
             self._last_failed.clear()
             self._set_up_enabled(True)
             messagebox.showinfo(APP_TITLE, "没有失败项可重试。")
+            return
+        if not self._confirm_batch(self._rows_for(paths), "重传",
+                                   "下面是上一次失败的录像，只重传这几条。"):
             return
         self._start_upload(paths)
 

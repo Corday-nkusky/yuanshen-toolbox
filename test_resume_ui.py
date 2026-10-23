@@ -83,6 +83,8 @@ def main():
 
     A.messagebox.showwarning = lambda *x, **k: None      # 别让弹窗卡住测试
     A.messagebox.showinfo = lambda *x, **k: None
+    # 二次确认窗口是模态的，脚本里没法点；这里直接放行
+    A.App._confirm_batch = lambda self, rows, action="上传", hint="": bool(rows)
     journal.clear()
 
     win = A.App(REPLAY)
