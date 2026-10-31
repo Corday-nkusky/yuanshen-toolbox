@@ -1,5 +1,6 @@
 """打包后 exe 的真实启动测试：找窗口、截图、验数据、退出。"""
 import ctypes
+import glob
 import json
 import os
 import subprocess
@@ -57,10 +58,20 @@ def capture(hwnd, path):
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXE = os.path.join(HERE, "dist", "元神工具箱.exe")
 
 
-def find_window(substr="元神工具箱"):
+def built_exe():
+    hits = glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox-v*.exe")) \
+        or glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox.exe"))
+    if not hits:
+        raise SystemExit("dist 下没有 YuanshenToolbox exe，先运行 build.cmd")
+    return max(hits, key=os.path.getmtime)
+
+
+EXE = built_exe()
+
+
+def find_window(substr="YuanshenToolbox"):
     found = []
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -91,12 +102,16 @@ def shot(hwnd, name):
 
 def run_case(label, exe, workdir, cfg_root=None, wait=14, clean=True):
     print("\n===", label)
-    cfg_dir = os.path.join(os.path.dirname(exe), "元神工具箱-data")
+    cfg_dir = os.path.join(os.path.dirname(exe), "YuanshenToolbox-data")
     cfg_path = os.path.join(cfg_dir, "config.json")
     if clean:
         if cfg_root is None:
-            if os.path.exists(cfg_path):
-                os.remove(cfg_path)
+            # 旧中文目录会在启动时自动改名过来，config 也要一起清
+            for d in (cfg_dir, os.path.join(os.path.dirname(exe),
+                                            "元神工具箱-data")):
+                path = os.path.join(d, "config.json")
+                if os.path.exists(path):
+                    os.remove(path)
         else:
             os.makedirs(cfg_dir, exist_ok=True)
             with open(cfg_path, "w", encoding="utf-8") as fh:
@@ -135,9 +150,12 @@ if __name__ == "__main__":
     real = os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4", "replay")
     run_case("auto", EXE, os.path.dirname(EXE), cfg_root=real)
     # 无配置 + 放在元扫雷目录：应自动认出 replay，不弹选择框（clean=False：别动真机配置）
-    run_case("inplace", os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4",
-                                     "元神工具箱.exe"),
-             os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4"), cfg_root=None,
-             clean=False)
+    ms_dir = os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4")
+    installed = glob.glob(os.path.join(ms_dir, "YuanshenToolbox*.exe"))
+    if installed:
+        run_case("inplace", max(installed, key=os.path.getmtime), ms_dir,
+                 cfg_root=None, clean=False)
+    else:
+        print("\n[SKIP] %s 下没有 YuanshenToolbox exe，跳过 inplace 用例" % ms_dir)
     run_case("firstrun", EXE, os.path.dirname(EXE), cfg_root=None, wait=8)
     print("\nDONE")

@@ -12,6 +12,7 @@
                 -> 只有 id / player / upload_time / state / ongoing_tournament
     录像明细   GET  /api/video/staticdetailbatch?ids=...  -> timems / bv / file_size / identifier
     我的标识   GET  /api/userprofile/identifier?user_id=N
+    我的 PB    GET  /api/speedranking/pb/player/N      -> 全PB / NF PB 一次取回
     上传       POST /common/uploadvideo/               （注意不在 /api 下）
 
 2026-10 站点改版：`videolist` 原本每条录像都带 timems / bv / file_size（去重三元组），
@@ -125,7 +126,7 @@ def dpapi_decrypt(b64):
 
 # ---------------------------------------------------------------- 本地存储
 class Store:
-    """<数据目录>\\openms.json（默认在 exe 旁边的 元神工具箱-data\\）
+    """<数据目录>\\openms.json（默认在 exe 旁边的 YuanshenToolbox-data\\）
 
     只落三样东西：用户名、DPAPI 密文密码、DPAPI 密文 session_id。
     没有明文凭据；密文拷到别的电脑也解不开。
@@ -494,6 +495,19 @@ class Client:
             return p
         raise OmsError("读取标识失败（HTTP %s）" % status, status, p)
 
+    def pb_records(self, user_id):
+        """读该账号在站点的 PB：一次返回全PB 与 NF PB 的全部小榜纪录。
+
+        返回 ``[{level, bv, nf, timems, video_id, rank}]``。接口公开、限流
+        5 次/秒，所以整张表只需要一个请求；``rank`` 在榜单缓存重建期间可能
+        是 null。
+        """
+        status, p = self.get_json_retry(
+            "/api/speedranking/pb/player/%d" % int(user_id))
+        if isinstance(p, list):
+            return p
+        raise OmsError("读取网站 PB 失败（HTTP %s）" % status, status, p)
+
     # --- 上传 ---
     def upload(self, path, retries=3):
         """上传单个录像，返回归一化结果字典。
@@ -577,26 +591,27 @@ class Client:
 
 # ---------------------------------------------------------------- 选范围
 SCOPES = [
-    ("pb", "PB·全部风格"),
-    ("pb_nf", "PB·NF"),
-    ("pb_fl", "PB·FL"),
-    ("top", "前端 Top5·全部"),
-    ("top_nf", "前端·NF"),
-    ("top_fl", "前端·FL"),
+    ("pb", "PB·全PB"),
+    ("pb_nf", "PB·NF PB"),
+    ("top", "前端 Top5·全PB"),
+    ("top_nf", "前端·NF PB"),
     ("all", "全部完成局"),
 ]
 
 
 def scope_paths(games, scope, bvmin=None):
-    """某范围对应的录像路径集合。bvmin=None 时用官方门槛。"""
+    """某范围对应的录像路径集合。bvmin=None 时用官方门槛。
+
+    只有两张 PB 榜：全PB 和 NF PB。FL 不是独立榜，所以没有 pb_fl / top_fl。
+    """
     import core
 
     if scope.startswith("pb"):
-        style = {"pb": None, "pb_nf": "nf", "pb_fl": "fl"}[scope]
+        style = {"pb": None, "pb_nf": "nf"}[scope]
         return {r["path"] for r in core.build_pb(games, style=style)}
 
     if scope.startswith("top"):
-        style = {"top": None, "top_nf": "nf", "top_fl": "fl"}[scope]
+        style = {"top": None, "top_nf": "nf"}[scope]
         out = set()
         for lv in core.LEVELS:
             floor = core.BV_MIN_DEFAULT[lv] if bvmin is None else bvmin

@@ -82,7 +82,7 @@ def main():
         win.toggle_scope("pb_nf")
         scope_set = set(openms.scope_paths(win.games, "pb_nf"))
         want = scope_set & pending
-        check("选范围 PB·NF 选中 %d 条" % len(want), win.up_sel == want)
+        check("选范围 PB·NF PB 选中 %d 条" % len(want), win.up_sel == want)
         check("统计行显示已选数", ("已选 %d" % len(want)) in win.lbl_up_stat.cget("text"))
         check("表里只剩这个范围的录像（%d 行）" % len(scope_set),
               {r["path"] for r in win.up_view} == scope_set)

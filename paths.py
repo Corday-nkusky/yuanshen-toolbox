@@ -3,7 +3,7 @@
 设计目标：**用户能一键清干净**。所以默认全部落在 exe 同目录的一个文件夹里，
 而不是散在 %APPDATA%。删掉那个文件夹 = 回到全新状态（含登录态、目录记忆、日志）。
 
-    <exe 所在目录>\\元神工具箱-data\\
+    <exe 所在目录>\\YuanshenToolbox-data\\
         config.json      录像目录等界面设置
         openms.json      openms.top 用户名 + DPAPI 密文（密码 / session_id）
         uploads.json     上传台账（断点续传用）
@@ -13,18 +13,58 @@
 
 三种情况按顺序判定：
   1. 环境变量 MS_PB_DATA_DIR 指定了目录 → 用它（测试和排障用）；
-  2. exe 同目录可写 → 用 <exe 目录>\\元神工具箱-data；
-  3. 不可写（典型：被放进 C:\\Program Files）→ 回落到 %APPDATA%\\元神工具箱。
+  2. exe 同目录可写 → 用 <exe 目录>\\YuanshenToolbox-data；
+  3. 不可写（典型：被放进 C:\\Program Files）→ 回落到 %APPDATA%\\YuanshenToolbox。
+
+旧版中文目录（元神工具箱-data / %APPDATA%\\元神工具箱）在首次启动时自动改名到
+上面的英文目录；改名失败则继续用旧目录，登录状态和配置不会丢。
 """
 
 import os
 import sys
 
-DATA_DIR_NAME = "元神工具箱-data"
-ROAMING_DIR_NAME = "元神工具箱"
+DATA_DIR_NAME = "YuanshenToolbox-data"
+ROAMING_DIR_NAME = "YuanshenToolbox"
+LEGACY_DATA_DIR_NAMES = ("元神工具箱-data",)
+LEGACY_ROAMING_DIR_NAMES = ("元神工具箱",)
 ENV_OVERRIDE = "MS_PB_DATA_DIR"
 
 _cache = None
+_note = None
+
+
+def legacy_note():
+    """最近一次旧目录迁移的说明；没有迁移过则为 None。"""
+    return _note
+
+
+def _migrate_legacy(parent, name, legacy_names):
+    """把旧中文目录一次性改名成英文目录，返回最终应使用的目录。
+
+    新旧目录同时存在时以新目录为准，旧目录原样保留；改名失败（被占用、
+    权限不足）时退回旧目录继续用，避免登录状态和配置丢失。
+    """
+    global _note
+    target = os.path.join(parent, name)
+    if os.path.exists(target):
+        for old_name in legacy_names:
+            old = os.path.join(parent, old_name)
+            if os.path.isdir(old):
+                _note = "新旧数据目录同时存在，使用 %s（旧目录 %s 未动）" % (target, old)
+                break
+        return target
+    for old_name in legacy_names:
+        old = os.path.join(parent, old_name)
+        if not os.path.isdir(old):
+            continue
+        try:
+            os.rename(old, target)
+        except OSError as exc:
+            _note = "旧数据目录改名失败，继续使用 %s：%s" % (old, exc)
+            return old
+        _note = "已将旧数据目录 %s 改名为 %s" % (old, target)
+        return target
+    return target
 
 
 def base_dir():
@@ -35,12 +75,12 @@ def base_dir():
 
 
 def portable_dir():
-    return os.path.join(base_dir(), DATA_DIR_NAME)
+    return _migrate_legacy(base_dir(), DATA_DIR_NAME, LEGACY_DATA_DIR_NAMES)
 
 
 def roaming_dir():
     root = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(root, ROAMING_DIR_NAME)
+    return _migrate_legacy(root, ROAMING_DIR_NAME, LEGACY_ROAMING_DIR_NAMES)
 
 
 def _writable(path):

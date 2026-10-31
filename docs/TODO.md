@@ -23,6 +23,11 @@
 - [ ] **日志滚动**：`RotatingFileHandler` 设的是 1 MB × 3，从没跑到过第一次切分。
 - [ ] **上传台账淘汰**：`journal.MAX_ITEMS = 8000`，超出后按时间淘汰最旧的键。现在台账里条数远没到上限，
       淘汰分支没跑过。
+- [ ] **网站 PB 合并**：已用真实账号实测（37 局本地 + 156 条网站 PB）同屏、来源列、
+      全PB 风格和退出登录清理；还没在两个不同账号之间切过 —— 本地没有第二个号，
+      换号清理只有 `_on_login_done` 清空 + 代次丢弃的自动化覆盖。
+- [ ] **网站 PB 的风格推断**：站点只给时间，全PB 行的 NF/FL 靠同 BV 的 std/nf 两条记录推断；
+      「同速但录像不同」在实测数据里没出现过，目前显示为「同速」。
 
 ## 已知边界（不算 bug，但要知道）
 
@@ -55,9 +60,10 @@
 ## 每次发版前的手工验收
 
 1. `python test_arb.py`、`python test_resume_ui.py`、`python test_retry.py`、
-   `python test_smoke.py`、`python test_upload.py` 退出码都是 0
-   （`test_tabs.py` 是截图工具，不参与回归判定）。
-2. `build.cmd` → 覆盖 `%APPDATA%\Metasweeper3.3.4\元神工具箱.exe` → `--probe` → 日志里
-   `启动 vX.Y.Z` 与 `APP_VER` 一致；文件属性 → 详细信息里的 FileVersion 也一致。
+   `python test_smoke.py`、`python test_upload.py`、`python test_site_pb.py`
+   退出码都是 0（`test_tabs.py` 是截图工具，不参与回归判定）。
+2. `build.cmd` → 把 `dist\YuanshenToolbox-v<版本号>.exe` 复制到
+   `%APPDATA%\Metasweeper3.3.4\` 运行 `--probe` → 日志里
+   `启动 YuanshenToolbox vX.Y.Z` 与 `APP_VER` 一致；文件属性 → 详细信息里的 FileVersion 也一致。
 3. 真机开一次：概览 / PB / 前端成绩 / 上传四页各看一眼（行高、对齐、滚动条）。
 4. 有账号时确认「网站已有 N」与站点实际条数一致（去重键没漂）。

@@ -66,6 +66,9 @@ class FakeClient:
     def identifiers(self, uid):
         return ["tester"]
 
+    def pb_records(self, uid):
+        return []
+
 
 class DeadClient(FakeClient):
     def upload(self, path, retries=3):

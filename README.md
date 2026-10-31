@@ -1,14 +1,15 @@
-# 元神工具箱（Yuanshen Toolbox）
+# YuanshenToolbox
 
-> 面向[开源扫雷网](https://openms.top)，兼容**元扫雷**和**阿比特**的扫雷录像分析工具。
+> 中文名：元神工具箱。面向[开源扫雷网](https://openms.top)，兼容**元扫雷**和**阿比特**的扫雷录像分析工具。
 >
 > 作者：扫雷网 #27415 · 开源扫雷网 #3
 
 扫描元扫雷（Metasweeper）的 `.evf` 和 阿比特（Arbiter）的 `.avf` 录像，统计四件事：
 
-1. **PB 表** —— 每个（级别 × BV × 风格）下 `time` 最小的完成局
+1. **PB 表** —— 每个（级别 × BV）的最快完成局，分 **全PB** 与 **NF PB** 两张榜；
+   登录后还会拉取 openms 账号的网站 PB，与本地取并集（来源列标「本地 / 网站 / 同速」）
 2. **前端成绩** —— 初级 / 中级 / 高级各自 `time`、`bvs`、`stnb` 的前五局
-3. **NF / FL 判定** —— 用录像里的点击流重演，按 `rce` 区分无旗 / 有旗
+3. **NF / FL 判定** —— 用录像里的点击流重演，按 `rce` 区分无旗 / 有旗；全PB 行会标出获胜局是 NF 还是 FL
 4. **上传** —— 把本地完成局传到 [openms.top](https://openms.top)，自动跳过网站上已有的
    （阿比特的要不要一起传，上传页有开关）
 
@@ -20,17 +21,17 @@
 ## 下载
 
 到 [Releases](https://github.com/Corday-nkusky/yuanshen-toolbox/releases/latest) 下最新的
-`YuanshenToolbox.exe`（单文件，约 27 MB），双击即用，不需要安装、不需要 Python。
+`YuanshenToolbox-v<版本号>.exe`（单文件，带版本号，例如当前的
+`YuanshenToolbox-v0.12.1.exe`，约 27 MB），双击即用，不需要安装、不需要 Python。
 
-> GitHub 的附件名不支持中文，所以发布时叫 `YuanshenToolbox.exe`；下载后**名字随意改**
-> （推荐改成 `元神工具箱.exe`），程序照常运行。数据目录默认叫 `元神工具箱-data\`，
-> 跟 exe 叫什么无关。
+> exe 文件名统一是「英文名 + 版本号」，同目录放多个版本不会互相覆盖。
+> 数据目录固定叫 `YuanshenToolbox-data\`，跟 exe 叫哪个版本无关。
 
 ---
 
 ## 用法
 
-1. 下载 `YuanshenToolbox.exe`（GitHub 不支持中文附件名；下载后可改名，不影响任何功能），
+1. 下载 `YuanshenToolbox-v<版本号>.exe`，
    **推荐放到元扫雷 `replay` 目录的同一级**
    （也就是 `Metasweeper<版本号>` 目录里）。不知道 `replay` 在哪的话，
    打开元扫雷菜单「查看 → 录像目录」（快捷键 `W`）就能打开它，返回上一级就是推荐安装位置：
@@ -59,7 +60,7 @@
 > 录像，自动收进来就会把别人的成绩算成你的。要加就在「路径…」里手动添加，
 > 添加前程序会问一句「这里面的每一条录像都算你自己打的，确定吗」。
 
-> 目录和登录状态都记在 exe 旁边的 `元神工具箱-data\` 里（见「数据存在哪」），
+> 目录和登录状态都记在 exe 旁边的 `YuanshenToolbox-data\` 里（见「数据存在哪」），
 > 删掉这个文件夹就回到全新状态。
 
 > 扫描会递归子目录（方便按年份/级别分文件夹的存档），但**最多 20000 个子目录**
@@ -139,7 +140,7 @@
 所有运行期产生的东西都在 **exe 同目录的一个文件夹**里，不散落在 `%APPDATA%`：
 
 ```
-<exe 所在目录>\元神工具箱-data\
+<exe 所在目录>\YuanshenToolbox-data\
     config.json        录像目录等界面设置
     openms.json        用户名 + 密码/会话的 DPAPI 密文
     uploads.json       上传台账（断点续传用，只记去重键与时间）
@@ -148,13 +149,16 @@
     logs\crash-*.txt   崩溃时的完整 traceback
 ```
 
+> 旧版的 `元神工具箱-data\` / `%APPDATA%\元神工具箱\` 会在首次启动时自动改名到英文目录，
+> 登录状态和配置都保留；万一改名失败（目录被占用、权限不足），程序会继续用旧目录并在日志里写明。
+
 **删掉这个文件夹 = 回到全新状态**（目录要重选、账号要重登）。
 
 只有两种情况不在这里：
 
 | 情况 | 实际位置 |
 |---|---|
-| exe 放在不可写的地方（如 `C:\Program Files`） | 自动回落到 `%APPDATA%\元神工具箱\`，「诊断…」里会写明 |
+| exe 放在不可写的地方（如 `C:\Program Files`） | 自动回落到 `%APPDATA%\YuanshenToolbox\`，「诊断…」里会写明 |
 | 一键打包的临时解压目录 | `%TEMP%\_MEIxxxx`，程序退出即删除（PyInstaller 行为） |
 
 ### 日志与崩溃
@@ -193,7 +197,7 @@
 
 密码也会一并存下来（只用于下次自动填好输入框）。
 
-凭据存在数据目录的 `openms.json`（默认 `<exe 所在目录>\元神工具箱-data\`），
+凭据存在数据目录的 `openms.json`（默认 `<exe 所在目录>\YuanshenToolbox-data\`），
 密码与 Cookie 都是 **Windows DPAPI 密文**（绑当前 Windows 用户 + 本机，换机器解不开），
 文件里查不到明文。
 
@@ -203,11 +207,15 @@
 
 | 范围 | 含义 |
 |---|---|
-| PB·全部风格 | 每个（级别 × BV）的最快局，NF/FL 里取更快的那个 |
-| PB·NF / PB·FL | 同上，只取该风格 |
-| 前端 Top5·全部 | 三级别 × time / 3BV/s / stnb 各自前 5（按官方 BV 门槛过滤） |
-| 前端·NF / 前端·FL | 同上，按风格过滤 |
+| PB·全PB | 每个（级别 × BV）的最快局，不分 NF/FL |
+| PB·NF PB | 同上，但只在 NF（`rce = 0`）的局里取最快 |
+| 前端 Top5·全PB | 三级别 × time / 3BV/s / stnb 各自前 5（按官方 BV 门槛过滤） |
+| 前端·NF PB | 同上，只在 NF 局里取 |
 | 全部完成局 | 本地所有完成局 |
+
+> FL 不是独立榜：它只是「全PB 的获胜局恰好用了旗」这个事实。NF 是禁用右键的
+> 受限玩法，所以单独开一张 NF PB 来平衡；NF 玩家不会关心自己更慢的 FL 成绩，
+> FL 玩家却会关心自己的 NF 成绩，即使它更慢。
 
 也可以在表格里 Ctrl / Shift 手动多选，或点「全选未传」，再点「上传选中」。
 
@@ -338,19 +346,23 @@ self.nf = b.rce == 0;                    // rce == 0 → NF
 程序的做法是：读出 `.evf` 里的棋盘与完整点击流，按 ms-toollib 的状态机重演一遍，
 取整局累计的 `rce`。`rce == 0` → **NF**，否则 → **FL**。
 
-### 为什么必须分开排名
+### 全PB 与 NF PB
 
-NF 与 FL 是两张独立的榜。混在一起时，同 BV 下更快的 NF 局会把 FL 的最好成绩盖掉。
-本机数据里就有现成例子：BV=14 有两局 ——
+站点和本程序都只分两张榜：
 
-```
-3.169s  NF   ← 混合排名时这条胜出，FL 的成绩完全看不到
-4.206s  FL   (rce = 2)
-```
+- **全PB** —— 每个（级别 × BV）的最快完成局，不管用不用旗。「风格」列说明这条获胜
+  录像实际是 NF 还是 FL；网站只给时间、推不出风格时写「同速」或「—」。
+- **NF PB** —— 只在 `rce = 0` 的局里取最快。即使比全PB 慢也单独保留，因为 NF 是
+  禁用右键的受限玩法。
 
-所以 PB 表按 `(级别, BV, 风格)` 分行，界面用「NF / FL / 全部风格」切换。
+**FL 不是独立榜**。FL 的上限本来就比 NF 高，再开一张 FL 榜没有意义；NF 玩家不会
+关心自己更慢的 FL 成绩，FL 玩家却会关心自己的 NF 成绩，哪怕它更慢。
 
-![PB 表（NF 榜）](docs/preview_pb.png)
+登录后，PB 表会把网站已有 PB 一并纳入：每个（级别 × BV × 榜）取本地与网站中更快的
+那个，来源列标「本地 / 网站 / 同速」。网站行没有本地文件，文件列写成 `网站 #录像id`。
+未登录时只显示本地 PB，并在右上角注明。
+
+![PB 表](docs/preview_pb.png)
 
 前端成绩页每级别三张 Top5（最快时间 / 最高 3BV/s / 最高 stnb）：
 
@@ -448,7 +460,9 @@ Beg_NF_1.06_3BV=5_3BVs=4.71_Anonymous.avf
   现在 NF/FL 由 `rce` 直接判定，不再依赖这个字段，所以不影响统计。
 - **失败局的 stnb**：本版本直接跳过非完成局，未实现。
 - **rce 解析失败时的降级**：若某局录像损坏或格式不认，该局风格显示 `?`，
-  并计入状态栏的「rce 失败」数；此时风格筛选会自动退回「全部风格」，不会把数据藏起来。
+  并计入状态栏的「rce 失败」数。本地分不出 NF/FL 时，前端成绩的 NF PB 会自动退回
+  全PB；PB 表不强制切换 —— 网站 PB 不依赖本地重演，NF PB 仍可能有网站记录，
+  只是本地 NF 行会缺失。
 - **日期取文件修改时间**（mtime），不是录像内嵌时间。若文件被复制/移动过，日期会不准。
 - **文件名与录像内容的一致性是「检查」而非「拦截」**：程序会比较文件名里的 `bv`/`time`
   与录像内的真实值，不符时在状态栏标出「文件名与录像不符」，但统计仍按文件名走
@@ -571,12 +585,15 @@ test_upload.py  上传页选范围/选行回归（默认临时目录、不联网
 test_retry.py   上传重试/错误分类回归（本地假站点，退出码判定）
 test_resume_ui.py 断点续传 / 重试失败 / 断网停批（假客户端，退出码判定）
 test_arb.py     阿比特 .avf / 多目录 / 含阿比特开关 / 扫描缓存 / 重复副本合并（退出码判定）
+test_site_pb.py 全PB / NF PB 两榜口径、网站 PB 合并、上传范围（退出码判定）
 _ms/            研究用脚本（ms-toollib 源码快照、rce 探针、图标生成）
 ```
 
 版本历史见 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)，还没做/没验的事见 [`docs/TODO.md`](docs/TODO.md)。
 版本号唯一来源是 `app.py` 的 `APP_VER`：窗口标题、日志和 exe 的
 「文件属性 → 详细信息」都跟着它走（`build.cmd` 打包前调用 `make_version_info.py` 生成 VERSIONINFO）。
+递增规则见 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部：1.0 前固定 `0.MINOR.PATCH`，
+修复走 PATCH，新能力 / 行为变化走 MINOR，发版才递增，已用过的版本号不复用。
 
 > **为什么自带 `cacert.pem`**：本机 Windows 根证书库里有一张已过期的交叉签证书，
 > OpenSSL 会选中它，导致连 openms.top 直接报 `certificate has expired`（浏览器和 curl 都正常）。
@@ -602,7 +619,8 @@ python test_tabs.py           # 四页签截图工具，产出 tab_*.png（不�
 python test_upload.py         # 上传页选范围/选行回归（临时目录，不联网）
 python test_upload.py --live 2   # 真传 2 条，验证全链路
 python test_arb.py            # 阿比特 / 多目录 / 缓存回归
-build.cmd                     # 打包成 dist\元神工具箱.exe（先 pip install pyinstaller）
+python test_site_pb.py        # 全PB / NF PB 两榜与网站 PB 合并回归
+build.cmd                     # 打包成 dist\YuanshenToolbox-v<版本号>.exe（先 pip install pyinstaller）
 ```
 
 打包需要安装了 tkinter 的 Python（pip 版 Python 默认不带 tkinter，

@@ -120,7 +120,7 @@ def test_scan(ms_dir, arb_dir, n_evf, n_avf):
     check("录像改动后只重解析 1 个（miss=%d）" % info4["cache"]["misses"],
           info4["cache"]["misses"] == 1)
 
-    pb = core.build_pb(games, split_style=True)
+    pb = core.build_pb_rows(games)
     check("PB 表把阿比特算进来", any(r["path"].lower().endswith(".avf") for r in pb))
 
 

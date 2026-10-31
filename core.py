@@ -55,6 +55,11 @@ SRC_CN = {"ms": "元扫雷", "arb": "阿比特"}
 STYLE_CN = {"nf": "NF", "fl": "FL"}
 STYLE_NAME = {"nf": "无旗（No Flag）", "fl": "有旗（Flag）"}
 
+# PB 只有两张榜：全PB（不分风格）与 NF PB（rce = 0）。
+# FL 不是独立榜，只是「全PB 的获胜局恰好用了旗」这个事实。
+PB_CATEGORY_CN = {"all": "全PB", "nf": "NF PB"}
+PB_SOURCE_CN = {"local": "本地", "site": "网站", "both": "同速"}
+
 
 def _load_lib():
     """延迟加载 ms-toollib；不可用时返回 None（统计降级为仅按文件名）。"""
@@ -493,17 +498,16 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
     return games, info
 
 
-def build_pb(games, style=None, split_style=False):
+def build_pb(games, style=None):
     """每个 (level, bv) 的最快完成局。
 
-    style:        None=不分风格；'nf'/'fl' = 只看该风格
-    split_style:  True 时把 NF 与 FL 拆成两行（官方评级就是两张独立榜，
-                  否则 FL 的最好成绩会被同 BV 更快的 NF 局盖掉）
+    style: None=全PB（不分风格）；'nf'=NF PB（只看 rce=0 的局）。
+    FL 不是独立榜，只是全PB 获胜局的风格标签。
     """
     pool = games if style is None else [g for g in games if g.get("style") == style]
     best = {}
     for g in pool:
-        key = (g["level"], g["bv"], g.get("style")) if split_style else (g["level"], g["bv"])
+        key = (g["level"], g["bv"])
         cur = best.get(key)
         if cur is None or g["time"] < cur["time"]:
             best[key] = g
@@ -514,6 +518,8 @@ def build_pb(games, style=None, split_style=False):
             "level": lv,
             "bv": bv,
             "time": g["time"],
+            "timems": (g.get("timems") if g.get("timems") is not None
+                       else int(round(float(g["time"]) * 1000))),
             "bvs": g["bvs"],
             "stnb": g["stnb"],
             "date": g["date"],
@@ -527,6 +533,180 @@ def build_pb(games, style=None, split_style=False):
     rows.sort(key=lambda r: (LEVELS.index(r["level"]), r["bv"],
                              0 if r["style"] == "nf" else 1))
     return rows
+
+
+def build_pb_rows(games):
+    """返回两张正式 PB 榜：category='all'（全PB）和 'nf'（NF PB）。
+
+    两榜各自在子集内取最快，互不比较：全PB 可能比 NF PB 快，也可能相等；
+    NF PB 即使更慢也保留，因为它是受限玩法（禁用插旗）的独立成绩。
+    全PB 行的 ``style`` 只表示获胜局实际是 NF 还是 FL，不是第三个榜。
+    """
+    rows = []
+    for row in build_pb(games):
+        row = dict(row)
+        row["category"] = "all"
+        rows.append(row)
+    for row in build_pb(games, style="nf"):
+        row = dict(row)
+        row["category"] = "nf"
+        rows.append(row)
+    rows.sort(key=lambda r: (LEVELS.index(r["level"]), r["bv"],
+                             0 if r["category"] == "all" else 1))
+    return rows
+
+
+def _pb_ms(row):
+    """PB 行的整数毫秒。站点按 ms 存，本地也统一成 ms 比较。"""
+    ms = row.get("timems")
+    if ms is None:
+        ms = int(round(float(row.get("time") or 0) * 1000))
+    return int(ms)
+
+
+def _site_pb_row(rec):
+    """站点 PB 记录 -> 本地 PB 行（时间/3BV/s/stnb 由 timems 算）。"""
+    lv = str(rec.get("level") or "").lower()
+    bv = int(rec.get("bv") or 0)
+    ms = int(rec.get("timems") or 0)
+    sec = ms / 1000.0
+    return {
+        "level": lv,
+        "bv": bv,
+        "time": sec,
+        "timems": ms,
+        "bvs": bv / sec if sec > 0 else 0.0,
+        "stnb": stnb_of(bv, sec, lv),
+        "date": "",
+        "file": "网站 #%s" % (rec.get("video_id") or "?"),
+        "path": "",
+        "style": None,
+        "style_cn": "—",
+        "nf": None,
+        "rce": None,
+        "site_video_id": rec.get("video_id"),
+        "site_rank": rec.get("rank"),
+    }
+
+
+def merge_site_pb(local_rows, site_records):
+    """把 openms 的 PB 记录并进本地 PB 行，返回合并后的行。
+
+    口径与站点一致：
+      * ``nf=False`` -> 全PB（category='all'）
+      * ``nf=True``  -> NF PB（category='nf'）
+
+    两榜独立取各自最快，不拿全PB 去盖 NF PB。全PB 行额外标出获胜局的
+    实际风格：``std < nf`` 必定是 FL，``std == nf`` 且同一条录像则是 NF，
+    时间相同但录像不同则只能写「同速」。只有 std 说明该 BV 没有 NF 记录，
+    按 FL 处理。这个标签只用于说明，不产生第三个榜。
+
+    比较用整数毫秒；同速优先本地行，因为本地有文件路径、日期和 rce。
+    站点行没有本地文件，``file`` 写成 ``网站 #录像 id``，``path`` 为空。
+    """
+    local = {}
+    for row in local_rows or []:
+        if not isinstance(row, dict):
+            continue
+        lv = row.get("level")
+        try:
+            bv = int(row.get("bv") or 0)
+        except (TypeError, ValueError):
+            continue
+        if lv not in LEVELS or bv <= 0:
+            continue
+        cat = row.get("category") or "all"
+        key = (lv, bv, cat)
+        row = dict(row, category=cat)
+        row.setdefault("timems", _pb_ms(row))
+        cur = local.get(key)
+        if cur is None or _pb_ms(row) < _pb_ms(cur):
+            local[key] = row
+
+    site_all, site_nf = {}, {}
+    for rec in site_records or []:
+        if not isinstance(rec, dict):
+            continue
+        lv = str(rec.get("level") or "").lower()
+        try:
+            bv = int(rec.get("bv") or 0)
+            ms = int(rec.get("timems") or 0)
+        except (TypeError, ValueError):
+            continue
+        if lv not in LEVELS or bv <= 0 or ms <= 0:
+            continue
+        item = _site_pb_row(rec)
+        bucket = site_nf if rec.get("nf") else site_all
+        key = (lv, bv)
+        cur = bucket.get(key)
+        if cur is None or ms < cur["timems"]:
+            bucket[key] = item
+
+    site = {}
+    for (lv, bv), item in site_all.items():
+        item = dict(item)
+        nf_item = site_nf.get((lv, bv))
+        if nf_item is not None and item["timems"] < nf_item["timems"]:
+            item.update(style="fl", style_cn="FL", nf=False, rce=None)
+        elif nf_item is not None and item["timems"] == nf_item["timems"]:
+            if item.get("site_video_id") == nf_item.get("site_video_id"):
+                item.update(style="nf", style_cn="NF", nf=True, rce=0)
+            else:
+                # 时间相同但录像不同：无法从 PB 接口判断 std 那条是 NF 还是 FL
+                item.update(style=None, style_cn="同速", nf=None, rce=None)
+        elif nf_item is None:
+            # 该 BV 没有 NF 记录，全PB 只能来自 FL
+            item.update(style="fl", style_cn="FL", nf=False, rce=None)
+        else:
+            # 站点数据不一致（全PB 慢于 NF），不猜风格
+            item.update(style=None, style_cn="—", nf=None, rce=None)
+        item["category"] = "all"
+        site[(lv, bv, "all")] = item
+
+    for (lv, bv), item in site_nf.items():
+        item = dict(item)
+        item.update(category="nf", style="nf", style_cn="NF", nf=True, rce=0)
+        site[(lv, bv, "nf")] = item
+
+    out = []
+    for key in set(local) | set(site):
+        lrow = local.get(key)
+        srow = site.get(key)
+        if lrow and srow:
+            lm, sm = _pb_ms(lrow), srow["timems"]
+            if lm <= sm:
+                row = dict(lrow)
+                row["source"] = "both" if lm == sm else "local"
+                row["site_timems"] = sm
+                row["site_video_id"] = srow.get("site_video_id")
+                row["site_rank"] = srow.get("site_rank")
+                row["local_timems"] = lm
+            else:
+                row = dict(srow)
+                row["source"] = "site"
+                row["local_timems"] = lm
+        elif lrow:
+            row = dict(lrow)
+            row["source"] = "local"
+            row["site_timems"] = None
+            row["site_video_id"] = None
+            row["site_rank"] = None
+            row["local_timems"] = _pb_ms(lrow)
+        else:
+            row = dict(srow)
+            row["source"] = "site"
+            row["local_timems"] = None
+        row["category"] = key[2]
+        row.setdefault("timems", _pb_ms(row))
+        row.setdefault("rce", None)
+        row.setdefault("nf", None)
+        row.setdefault("style", None)
+        row.setdefault("style_cn", STYLE_CN.get(row.get("style"), "—"))
+        out.append(row)
+
+    out.sort(key=lambda r: (LEVELS.index(r["level"]), r["bv"],
+                             0 if r["category"] == "all" else 1))
+    return out
 
 
 def count_by_bv(games, style=None):

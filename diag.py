@@ -63,7 +63,7 @@ def system_info():
 
     # 不 import app（会形成循环依赖），从已加载的模块里取标题和版本
     app_mod = sys.modules.get("app")
-    title = getattr(app_mod, "APP_TITLE", "元神工具箱")
+    title = getattr(app_mod, "APP_TITLE", "YuanshenToolbox")
     ver = getattr(app_mod, "APP_VER", "")
     lines = [
         (f"{title} v{ver}" if ver else title),
@@ -168,7 +168,7 @@ def _fire(where, exc_type, exc, tb):
     _alert("程序错误", msg)
 
 
-def install_hooks(get_title=lambda: "元神工具箱"):
+def install_hooks(get_title=lambda: "YuanshenToolbox"):
     """接管主线程 / 子线程 / Tk 回调三处异常。
 
     返回给 Tk 用的 report_callback_exception 实现（由 App 绑定到实例上）。

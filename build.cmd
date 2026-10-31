@@ -16,10 +16,18 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo 正在打包 元神工具箱.exe …
+set /p APP_EXE=<"%~dp0build\app_name.txt"
+if not defined APP_EXE (
+  echo.
+  echo 读取版本号失败。
+  pause
+  exit /b 1
+)
+
+echo 正在打包 %APP_EXE%.exe …
 "%PYTHON%" -m PyInstaller ^
   --onefile --windowed --noconfirm --clean ^
-  --name 元神工具箱 ^
+  --name "%APP_EXE%" ^
   --version-file "%~dp0version_info.txt" ^
   --manifest "%~dp0app.manifest" ^
   --icon "%~dp0icon.ico" ^
@@ -38,5 +46,5 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo 完成：dist\元神工具箱.exe
+echo 完成：dist\%APP_EXE%.exe
 pause

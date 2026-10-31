@@ -1,11 +1,12 @@
 """四页签截图工具（不是回归测试）：更新 README 预览图 / 人工看布局。
 
-用法：python test_tabs.py            # 用 dist\\元神工具箱.exe
+用法：python test_tabs.py            # 用 dist\\YuanshenToolbox-v<版本号>.exe
       python test_tabs.py --src      # 用源码跑（同一套逻辑，方便改样式后快速看）
       python test_tabs.py pb top     # 只截指定页
 退出码：全部截图成功 0，否则 1。
 """
 import ctypes
+import glob
 import os
 import subprocess
 import sys
@@ -21,7 +22,17 @@ except Exception:
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXE = os.path.join(HERE, "dist", "元神工具箱.exe")
+
+
+def built_exe():
+    hits = glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox-v*.exe")) \
+        or glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox.exe"))
+    if not hits:
+        raise SystemExit("dist 下没有 YuanshenToolbox exe，先运行 build.cmd")
+    return max(hits, key=os.path.getmtime)
+
+
+EXE = built_exe()
 PYC = sys.executable
 REPLAY = os.path.join(os.environ["APPDATA"], "Metasweeper3.3.4", "replay")
 
@@ -44,7 +55,7 @@ class BITMAPINFO(ctypes.Structure):
     _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", ctypes.c_uint32 * 3)]
 
 
-def find_window(sub="元神工具箱"):
+def find_window(sub="YuanshenToolbox"):
     out = []
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)

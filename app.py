@@ -1,4 +1,4 @@
-"""元神工具箱 —— 原生窗口（tkinter），二次元清爽风。
+"""YuanshenToolbox —— 原生窗口（tkinter），二次元清爽风。
 
 兼容元扫雷（Metasweeper，.evf）与阿比特（Arbiter，.avf）的扫雷录像，直接显示：
   · 概览：三级别局数 / BV 覆盖 / 三项最高
@@ -26,9 +26,10 @@ import journal
 import openms
 import paths
 
-APP_TITLE = "元神工具箱"
+APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.11.2"
+APP_VER = "0.12.1"
+APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
 BUNDLED_FONTS = ("MiSans-Regular.ttf", "MiSans-Demibold.ttf")
@@ -931,7 +932,7 @@ class DiagnosticsDialog(tk.Toplevel):
                  font=FONT_MONO, anchor="w", justify="left").pack(
             fill="x", padx=sc(12), pady=(sc(9), sc(2)))
         where = ("便携模式：数据就在 exe 旁边" if paths.is_portable()
-                 else "exe 所在目录不可写，数据落在 %APPDATA%\\元神工具箱")
+                 else "exe 所在目录不可写，数据落在 %APPDATA%\\YuanshenToolbox")
         tk.Label(box, text=where + "。删掉这个文件夹 = 清空本地全部数据（含登录状态）。",
                  bg=C_PANEL, fg=C_DIM, font=FONT_SMALL, anchor="w",
                  justify="left", wraplength=sc(660)).pack(
@@ -994,7 +995,7 @@ class DiagnosticsDialog(tk.Toplevel):
         self.lbl_msg.config(text="扫描缓存已清空（0.0 MB）", fg=C_OK)
 
     def export(self):
-        name = "元神工具箱-诊断包-%s.zip" % datetime.now().strftime("%Y%m%d-%H%M%S")
+        name = "YuanshenToolbox-diagnostics-%s.zip" % datetime.now().strftime("%Y%m%d-%H%M%S")
         target = filedialog.asksaveasfilename(
             parent=self, title="保存诊断包", defaultextension=".zip",
             initialfile=name, initialdir=paths.data_dir(),
@@ -1345,7 +1346,7 @@ class App(tk.Tk):
         global SCALE
         SCALE = detect_scale(self)
         self._init_fonts()
-        self.title(f"{APP_TITLE}  v{APP_VER}")
+        self.title(APP_DISPLAY)
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         wl, wt, ww, wh = work_area() or (0, 0, sw, sh)
         w = min(sc(1200), ww - sc(16))
@@ -1381,13 +1382,21 @@ class App(tk.Tk):
                 save_config(roots=self.roots)
         self._need_pick = not self.roots
         self.upload_arb = bool(load_config().get("upload_arb", True))
-        diag.log.info("启动 v%s | 数据目录 %s | 便携 %s | 录像目录 %s",
-                      APP_VER, paths.data_dir(), paths.is_portable(),
+        note = paths.legacy_note()
+        if note:
+            diag.log.info(note)
+        diag.log.info("启动 %s | 数据目录 %s | 便携 %s | 录像目录 %s",
+                      APP_DISPLAY, paths.data_dir(), paths.is_portable(),
                       " ; ".join("%s%s" % ("" if r["on"] else "(停用)", r["path"])
                                  for r in self.roots) or "（未确定）")
         self.games = []
         self.info = {}
+        self.pb_local_rows = []
         self.pb_rows = []
+        self.site_pb = []
+        self.site_pb_uid = None
+        self.site_pb_err = ""
+        self._site_seq = 0             # 网站请求代次：退出/换号后旧结果直接丢弃
         self.summary = {}
         self.counts = {}
         self.diffs = []
@@ -1395,8 +1404,8 @@ class App(tk.Tk):
         self._scanning = False
         self._level = "b"
         self._pb_level = ""
-        self._pb_style = "nf"          # PB 表风格：nf / fl / all
-        self._top_style = "nf"         # 前端成绩风格
+        self._pb_style = "all"         # PB 榜：all=全PB / nf=NF PB
+        self._top_style = "all"        # 前端成绩：all=全PB / nf=NF PB
         self._bvmin_level = None
         self._bv_guard = False
         self._empty_prompted = False
@@ -1664,7 +1673,7 @@ class App(tk.Tk):
         cv.create_text(tx, cy, text=APP_TITLE, anchor="w",
                        fill="#ffffff", font=title_font)
         cv.create_text(tx + sc(3), cy + sc(24),
-                       text=f"{APP_SUB}   v{APP_VER}", anchor="w",
+                       text=f"v{APP_VER}   {APP_SUB}", anchor="w",
                        fill="#fff2f8", font=(FAM_UI, 9))
 
         # 星屑
@@ -1760,7 +1769,7 @@ class App(tk.Tk):
         tk.Frame(top, bg=C_LINE, width=1).pack(side="left", fill="y",
                                                padx=(sc(8), sc(10)), pady=sc(2))
         self.pb_style_seg = {}
-        for key, label in (("nf", "NF"), ("fl", "FL"), ("all", "全部风格")):
+        for key, label in (("all", "全PB"), ("nf", "NF PB")):
             p = Pill(top, label, command=lambda k=key: self.set_pb_style(k),
                      accent=C_ACCENT3, padx=14)
             p.pack(side="left", padx=(0, sc(6)))
@@ -1777,12 +1786,13 @@ class App(tk.Tk):
         cols = [
             ("level_cn", "级别", 64, "center", "str"),
             ("bv", "BV", 60, "e", "int"),
-            ("style_cn", "风格", 56, "center", "str"),
+            ("style_cn", "风格", 60, "center", "str"),
             ("time", "最快时间", 100, "e", "f3"),
             ("bvs", "3BV/s", 90, "e", "f3"),
             ("stnb", "stnb", 90, "e", "f2"),
-            ("games", "该 BV 局数", 96, "e", "int"),
-            ("file", "录像文件", 520, "w", "str"),
+            ("games", "本地局数", 88, "e", "int"),
+            ("source_cn", "来源", 64, "center", "str"),
+            ("file", "录像文件", 440, "w", "str"),
         ]
         _, self.tbl_pb = self._table(page, cols, height=6)   # 初始行数要小，靠 _fit 自适应撑满
         self.set_pb_style(self._pb_style)
@@ -1808,7 +1818,7 @@ class App(tk.Tk):
         tk.Frame(top, bg=C_LINE, width=1).pack(side="left", fill="y",
                                                padx=(sc(8), sc(10)), pady=sc(2))
         self.top_style_seg = {}
-        for key, label in (("nf", "NF"), ("fl", "FL"), ("all", "全部风格")):
+        for key, label in (("all", "全PB"), ("nf", "NF PB")):
             p = Pill(top, label, command=lambda k=key: self.set_top_style(k),
                      accent=C_ACCENT3, padx=14)
             p.pack(side="left", padx=(0, sc(6)))
@@ -1869,24 +1879,44 @@ class App(tk.Tk):
         content.columnconfigure(1, weight=2, uniform="info")
 
         left = tk.Frame(content, bg=C_PANEL)
-        left.grid(row=0, column=0, sticky="nw", padx=(sc(18), sc(10)), pady=sc(10))
+        left.grid(row=0, column=0, sticky="nsew", padx=(sc(18), sc(10)), pady=sc(10))
+        left.columnconfigure(1, weight=1)
         tk.Label(left, text="✧ 指标说明", bg=C_PANEL, fg=C_TEXT,
-                 font=FONT_SECTION).pack(anchor="w", pady=(0, sc(10)))
+                 font=FONT_SECTION).grid(row=0, column=0, columnspan=2,
+                                         sticky="w", pady=(0, sc(10)))
         lines = [
-            ("time", "rtime，从 0 秒起计时，越小越好。"),
-            ("bvs", "bv / time，每秒解决的 BV 数，越大越好，最经典的速度指标。"),
-            ("stnb", "C × bv / time^1.7，三大参数之一；C 取 36 / 162 / 435，"
-                     "使三级别量级可比。"),
-            ("rce", "右键有效插旗数：只算「第一次给雷格插旗」，同格反复插拔不重复，"
-                    "插在非雷格上也不算。rce = 0 即 NF，否则 FL。"),
+            ("time", "完成用时（rtime），以 0 秒为计时起点，单位秒，保留三位小数；"
+                     "数值越低，成绩越好。"),
+            ("3BV/s", "每秒完成的 3BV 数量，3BV/s = BV ÷ time；"
+                      "数值越高，完成效率越高。"),
+            ("stnb", "综合指标，stnb = C × BV ÷ time^1.7；C 为级别常数"
+                     "（初级 36、中级 162、高级 435），用于三个级别之间的横向比较；"
+                     "数值越高，成绩越好。"),
         ]
-        for key, desc in lines:
-            row = tk.Frame(left, bg=C_PANEL)
-            row.pack(fill="x", pady=sc(4))
-            tk.Label(row, text=key, bg=C_PANEL, fg=C_ACCENT, width=6, anchor="w",
-                     font=FONT_MONO_B).pack(side="left")
-            tk.Label(row, text=desc, bg=C_PANEL, fg=C_DIM, anchor="w",
-                     justify="left", font=FONT_UI).pack(side="left")
+        key_font = tkfont.Font(family=FONT_MONO_B[0], size=FONT_MONO_B[1],
+                               weight=FONT_MONO_B[2])
+        key_w = max(key_font.measure(k) for k, _ in lines) + sc(14)
+        desc_labels = []
+        for i, (key, desc) in enumerate(lines, start=1):
+            tk.Label(left, text=key, bg=C_PANEL, fg=C_ACCENT, anchor="nw",
+                     font=FONT_MONO_B).grid(row=i, column=0, sticky="nw",
+                                            padx=(0, sc(14)), pady=sc(5))
+            lbl = tk.Label(left, text=desc, bg=C_PANEL, fg=C_DIM, anchor="w",
+                           justify="left", font=FONT_UI)
+            lbl.grid(row=i, column=1, sticky="ew", pady=sc(5))
+            desc_labels.append(lbl)
+
+        def _fit_desc(event=None):
+            # 按页面宽度推左栏宽度（3:2 分栏），不能用 left 自身宽度：
+            # 未换行时 left 会撑到整段文字，wraplength 跟着它走就永远收不回来。
+            total = page.winfo_width() - sc(2)          # 卡片 1px 描边
+            width = int(total * 0.6) - sc(18) - sc(10) - key_w - sc(2)
+            if width < sc(180):
+                return
+            for lbl in desc_labels:
+                if int(lbl.cget("wraplength")) != width:
+                    lbl.configure(wraplength=width)
+        page.bind("<Configure>", _fit_desc, add="+")
 
         right = tk.Frame(content, bg=C_PANEL)
         right.grid(row=0, column=1, sticky="nw", padx=(sc(10), sc(18)), pady=sc(10))
@@ -2015,6 +2045,12 @@ class App(tk.Tk):
         self.oms_user = user
         diag.log.info("登录成功：%s（实名=%s）", user.get("username"),
                       bool(user.get("realname")))
+        # 换账号了：上一账号的网站 PB 不能留着
+        self._site_seq += 1
+        self.site_pb = []
+        self.site_pb_uid = None
+        self.site_pb_err = ""
+        self._recompute_pb()
         self.set_status("已登录 openms.top：%s" % (user.get("username") or ""), "ok")
         self.refresh_site()
 
@@ -2028,11 +2064,16 @@ class App(tk.Tk):
             return
         self.oms.logout()
         diag.log.info("退出登录，已清除本机会话")
+        self._site_seq += 1                 # 让还在路上的网站请求作废
         self.oms_user = None
         self.oms_videos = []
         self.oms_idents = []
+        self.site_pb = []
+        self.site_pb_uid = None
+        self.site_pb_err = ""
         self._refresh_acct_label()
         self._rebuild_up_rows()
+        self._recompute_pb()
         self.set_status("已退出登录", "dim")
 
     def refresh_site(self):
@@ -2040,25 +2081,44 @@ class App(tk.Tk):
             self.open_login()
             return
         self.lbl_quota.config(text="正在读取网站记录…", fg=C_DIM)
-        threading.Thread(target=self._site_worker, daemon=True).start()
+        self._site_seq += 1
+        threading.Thread(target=self._site_worker, args=(self._site_seq,),
+                         daemon=True).start()
 
     def _restore_session(self):
         # 没保存过会话就别发匿名请求：离线启动时也少一次无意义的等待
         if not self.oms.has_session():
             return
-        threading.Thread(target=self._site_worker, daemon=True).start()
+        self._site_seq += 1
+        threading.Thread(target=self._site_worker, args=(self._site_seq,),
+                         daemon=True).start()
 
-    def _site_worker(self):
-        """读登录态 + 我的录像 + 我的标识。三者都拿不到才算失败。"""
+    def _site_worker(self, seq=0):
+        """读登录态 + 网站 PB + 我的录像 + 我的标识。
+
+        网站 PB 单独成一个事件：它只有一次轻量请求，先到先显示；录像列表
+        要再分批补明细，慢得多，不该把 PB 表一起拖住。
+        """
         try:
             u = self.oms.whoami()
         except openms.OmsError as exc:
-            self._q.put(("acct", (self.oms_user, self.oms_videos,
+            self._q.put(("acct", (seq, self.oms_user, self.oms_videos,
                                   self.oms_idents, "连不上 openms.top：%s" % exc)))
             return
         if not u:
-            self._q.put(("acct", (None, [], [], "")))
+            self._q.put(("site_pb", (seq, None, [], "")))
+            self._q.put(("acct", (seq, None, [], [], "")))
             return
+
+        try:
+            pb = self.oms.pb_records(u["id"])
+            diag.log.info("网站 PB：%d 条", len(pb))
+            self._q.put(("site_pb", (seq, u["id"], pb, "")))
+        except Exception as exc:                     # noqa: BLE001
+            diag.log.warning("读取网站 PB 失败：%s", exc)
+            # 右上角只放短句；完整异常进日志，免得把搜索框挤没
+            self._q.put(("site_pb", (seq, u["id"], [], "网站 PB 读取失败")))
+
         vids, idents, err = [], [], ""
         try:
             vids = self.oms.videos(u["id"])
@@ -2071,15 +2131,47 @@ class App(tk.Tk):
             idents = self.oms.identifiers(u["id"])
         except Exception:                            # noqa: BLE001
             pass
-        self._q.put(("acct", (u, vids, idents, err)))
+        self._q.put(("acct", (seq, u, vids, idents, err)))
 
-    def _on_account(self, user, videos, idents, err):
+    def _on_site_pb(self, seq, uid, rows, err):
+        if seq != self._site_seq:
+            return                        # 退出/换号前发出的请求，结果作废
+        if uid is None:
+            self.site_pb = []
+            self.site_pb_uid = None
+            self.site_pb_err = ""
+        else:
+            cur = self.oms_user or {}
+            if not cur and not self.oms.has_session():
+                return                    # 已退出登录，迟到的结果不能复活网站 PB
+            if cur.get("id") not in (None, uid):
+                return                    # 账号已经换了，旧结果不能落盘
+            self.site_pb = rows or []
+            self.site_pb_uid = uid
+            self.site_pb_err = err
+        self._recompute_pb()
+
+    def _on_account(self, seq, user, videos, idents, err):
+        if seq != self._site_seq:
+            return                        # 退出/换号前发出的请求，结果作废
         self.oms_user = user
         self.oms_videos = videos or []
         self.oms_idents = idents or []
         self.oms_err = err
         # 只有真的拉到了列表，才敢拿它否认「本地台账」里的记录
         self.oms_synced = bool(user) and not err
+        # 账号明确为空，或网站 PB 属于另一个账号 → 清掉，避免把别人的 PB 显示成本地
+        if not user:
+            if self.site_pb or self.site_pb_err:
+                self.site_pb = []
+                self.site_pb_uid = None
+                self.site_pb_err = ""
+                self._recompute_pb()
+        elif self.site_pb_uid is not None and self.site_pb_uid != user.get("id"):
+            self.site_pb = []
+            self.site_pb_uid = None
+            self.site_pb_err = ""
+            self._recompute_pb()
         self._refresh_acct_label()
         self._rebuild_up_rows()
 
@@ -2202,7 +2294,7 @@ class App(tk.Tk):
         """范围过滤后一行都不剩时，说清是「被阿比特开关挡掉」还是「真没有」。
 
         光留一张空表太像故障：这个账号的 PB 全落在阿比特录像上，而「含阿比特」
-        没勾时，PB·NF 这个范围确实一条都显示不出来。
+        没勾时，PB·NF PB 这个范围确实一条都显示不出来。
         """
         if not self.upload_arb and self._arb_rows:
             for g in self.games:
@@ -2635,11 +2727,10 @@ class App(tk.Tk):
             self._q.put(("scan_total", core.count_videos(roots)))
             games, info = core.scan(roots,
                                     progress=lambda n: self._q.put(("scan", n)))
-            pb = core.build_pb(games, split_style=True)   # NF / FL 两张榜各自成行
+            pb = core.build_pb_rows(games)   # 全PB / NF PB 两张榜
             cnt = core.count_by_bv(games)
             cnts = {"all": cnt,
-                    "nf": core.count_by_bv(games, "nf"),
-                    "fl": core.count_by_bv(games, "fl")}
+                    "nf": core.count_by_bv(games, "nf")}
             smy = core.summary(games)
             ini_path = core.find_record_ini(self.root_dir)
             ini = core.read_record_ini(ini_path) if ini_path else {}
@@ -2663,6 +2754,8 @@ class App(tk.Tk):
                     self._on_scan_failed(payload)
                 elif kind == "acct":
                     self._on_account(*payload)
+                elif kind == "site_pb":
+                    self._on_site_pb(*payload)
                 elif kind == "up":
                     self._on_upload_result(*payload)
                 elif kind == "scan_total":
@@ -2704,18 +2797,19 @@ class App(tk.Tk):
     def _on_scanned(self, games, info, pb, cnt, smy, diffs, ini_ok):
         self._scanning = False
         self._progress_end()
-        self.games, self.info, self.pb_rows = games, info, pb
+        self.games, self.info = games, info
+        self.pb_local_rows = pb or []
         self.counts = cnt if isinstance(cnt, dict) and "all" in cnt else {"all": cnt or {}}
         self.summary, self.diffs, self.ini_ok = smy, diffs, ini_ok
 
         self.render_cards()
         self.render_recent()
-        # 没有 rce 数据（ms-toollib 缺失）时，风格筛选没有意义，退回「全部风格」
-        if not info.get("with_rce"):
-            if self._pb_style != "all":
-                self.set_pb_style("all")
-            if self._top_style != "all":
-                self.set_top_style("all")
+        # 没有 rce 数据（ms-toollib 缺失）时，本地分不出 NF/FL，前端成绩的
+        # NF 榜一定是空的，退回全PB；PB 榜不强制 —— 网站 PB 不依赖本地重演，
+        # NF PB 仍可能有内容（来源列会标「网站」）。
+        if not info.get("with_rce") and self._top_style != "all":
+            self.set_top_style("all")
+        self._recompute_pb()
         self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
         self._rebuild_up_rows()          # 上传页跟着新数据刷新
@@ -2777,7 +2871,7 @@ class App(tk.Tk):
         else:
             # record.ini 是元扫雷写的，所以对账的基数也只能是元扫雷的局
             ms_pb = core.build_pb([g for g in games if g.get("src") != "arb"])
-            n_keys = len({(r["level"], r["bv"]) for r in ms_pb})  # NF/FL 拆行后按 BV 去重
+            n_keys = len({(r["level"], r["bv"]) for r in ms_pb})  # 全PB：每个 (级别, BV) 一条
             only_mine = sum(1 for d in diffs if d["ini"] is None)
             only_ini = sum(1 for d in diffs if d["mine"] is None)
             big = sum(1 for d in diffs if d["mine"] is not None and d["ini"] is not None)
@@ -2837,6 +2931,11 @@ class App(tk.Tk):
             p.set_selected(k == key)
         self.render_pb()
 
+    def _recompute_pb(self):
+        """本地 PB 与网站 PB 取并集。两边谁先到都行，后到的负责重算。"""
+        self.pb_rows = core.merge_site_pb(self.pb_local_rows, self.site_pb)
+        self.render_pb()
+
     def render_pb(self):
         q = self.var_q.get().strip().lower()
         cnt = self.counts.get(self._pb_style, {}) if isinstance(self.counts, dict) else {}
@@ -2844,7 +2943,9 @@ class App(tk.Tk):
         for r in self.pb_rows:
             if self._pb_level and r["level"] != self._pb_level:
                 continue
-            if self._pb_style != "all" and r.get("style") != self._pb_style:
+            # 两张榜各自独立：全PB 里会出现 NF 获胜局（风格列标 NF），
+            # NF PB 里的每一行必然也是 NF，但它们是不同榜，不能混在一起。
+            if (r.get("category") or "all") != self._pb_style:
                 continue
             if q:
                 hay = f"{r['bv']} {r['file']}".lower()
@@ -2853,9 +2954,25 @@ class App(tk.Tk):
             item = dict(r)
             item["level_cn"] = core.LEVEL_CN[r["level"]]
             item["games"] = cnt.get((r["level"], r["bv"]), 0)
+            item["source_cn"] = core.PB_SOURCE_CN.get(r.get("source"), "")
             rows.append(item)
         self.tbl_pb.set_rows(rows)
-        self.lbl_pb_count.config(text=f"{len(rows)} 行")
+
+        bits = ["%d 行" % len(rows)]
+        if self.site_pb:
+            n_site = sum(1 for r in self.pb_rows
+                         if (r.get("category") or "all") == self._pb_style
+                         and r.get("source") == "site")
+            bits.append("网站 PB %d 条%s" % (
+                len(self.site_pb),
+                "（本榜 %d 条领先本地）" % n_site if n_site else ""))
+        elif self.site_pb_err:
+            bits.append(self.site_pb_err)
+        elif not self.oms_user:
+            bits.append("未登录，仅显示本地")
+        self.lbl_pb_count.config(
+            text=" · ".join(bits),
+            fg=C_ERR if self.site_pb_err else C_DIM)
 
     def _on_bvmin_change(self):
         if self._bv_guard:
@@ -2886,7 +3003,7 @@ class App(tk.Tk):
             bvmin = max(0, int(self.var_bvmin.get() or 0))
         except ValueError:
             bvmin = 0
-        style = None if self._top_style == "all" else self._top_style
+        style = None if self._top_style == "all" else "nf"
         for metric, table in self.top_tables.items():
             raw = core.top5(self.games, self._level, metric, bvmin, style=style)
             rows = []
@@ -2991,16 +3108,24 @@ class App(tk.Tk):
         if not path:
             return
         import csv
-        cnt = self.counts.get("all", {}) if isinstance(self.counts, dict) else {}
+        cnts = self.counts if isinstance(self.counts, dict) else {}
         with open(path, "w", encoding="utf-8-sig", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["level", "level_cn", "bv", "style", "rce", "best_time",
-                        "bvs", "stnb", "games_in_bv", "date", "file", "path"])
+            w.writerow(["category", "category_cn", "level", "level_cn", "bv",
+                        "style", "rce", "best_time", "timems", "bvs", "stnb",
+                        "games_in_bv", "source", "site_video_id", "site_rank",
+                        "date", "file", "path"])
             for r in self.pb_rows:
-                w.writerow([r["level"], core.LEVEL_CN[r["level"]], r["bv"],
-                            r.get("style", ""), r.get("rce", ""),
-                            f"{r['time']:.3f}", f"{r['bvs']:.3f}", f"{r['stnb']:.2f}",
+                cat = r.get("category") or "all"
+                cnt = cnts.get(cat, {}) if isinstance(cnts.get(cat), dict) else {}
+                w.writerow([cat, core.PB_CATEGORY_CN.get(cat, cat),
+                            r["level"], core.LEVEL_CN[r["level"]], r["bv"],
+                            r.get("style") or "", r.get("rce", ""),
+                            f"{r['time']:.3f}", r.get("timems", ""),
+                            f"{r['bvs']:.3f}", f"{r['stnb']:.2f}",
                             cnt.get((r["level"], r["bv"]), 0),
+                            core.PB_SOURCE_CN.get(r.get("source"), ""),
+                            r.get("site_video_id", ""), r.get("site_rank", ""),
                             r["date"], r["file"], r["path"]])
         self.set_status("已导出：" + path, "ok")
 

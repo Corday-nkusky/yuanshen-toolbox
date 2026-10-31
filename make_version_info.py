@@ -1,14 +1,19 @@
 """从 app.py 的 APP_VER 生成 PyInstaller 用的 VERSIONINFO 资源。
 
-build.cmd 在打包前调用；版本号只改 app.py 一处，exe 的文件属性跟着走。
+build.cmd 在打包前调用；版本号只改 app.py 一处，exe 的文件属性和文件名跟着走。
+同时把文件名写到 build\app_name.txt 供批处理读取；`--print-name` 只打印名字，便于命令行检查。
 """
 import ast
 import os
 import re
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "app.py")
 OUT = os.path.join(HERE, "version_info.txt")
+NAME_FILE = os.path.join(HERE, "build", "app_name.txt")
+
+PRODUCT = "YuanshenToolbox"
 
 TEMPLATE = """# UTF-8
 VSVersionInfo(
@@ -27,18 +32,22 @@ VSVersionInfo(
       StringTable(
         '080404b0',
         [StringStruct('CompanyName', 'Corday'),
-         StringStruct('FileDescription', '元扫雷 / 阿比特录像工具箱'),
+         StringStruct('FileDescription', 'Metasweeper / Arbiter replay toolbox'),
          StringStruct('FileVersion', '{ver}'),
-         StringStruct('InternalName', 'YuanshenToolbox'),
+         StringStruct('InternalName', '{product}'),
          StringStruct('LegalCopyright', 'Copyright (c) 2026 Corday'),
-         StringStruct('OriginalFilename', '元神工具箱.exe'),
-         StringStruct('ProductName', '元神工具箱'),
+         StringStruct('OriginalFilename', '{exe}'),
+         StringStruct('ProductName', '{product}'),
          StringStruct('ProductVersion', '{ver}')])
     ]),
     VarFileInfo([VarStruct('Translation', [0x0804, 1200])])
   ]
 )
 """
+
+
+def exe_name(ver):
+    return "%s-v%s" % (PRODUCT, ver)
 
 
 def read_version():
@@ -64,10 +73,17 @@ def version_tuple(ver):
 
 def main():
     ver = read_version()
+    if "--print-name" in sys.argv[1:]:
+        print(exe_name(ver))
+        return
     nums = version_tuple(ver)
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(TEMPLATE.format(nums=nums, ver=ver))
-    print("version_info.txt: %s %s" % (ver, nums))
+        fh.write(TEMPLATE.format(nums=nums, ver=ver, product=PRODUCT,
+                                 exe=exe_name(ver) + ".exe"))
+    os.makedirs(os.path.dirname(NAME_FILE), exist_ok=True)
+    with open(NAME_FILE, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(exe_name(ver) + "\n")
+    print("version_info.txt: %s %s (%s.exe)" % (ver, nums, exe_name(ver)))
 
 
 if __name__ == "__main__":
