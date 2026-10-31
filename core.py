@@ -20,6 +20,7 @@ NF / FL 判定用 ms-toollib（eee555/ms-toollib）重演录像得到 rce：
 """
 
 import hashlib
+import math
 import os
 from datetime import datetime
 
@@ -59,6 +60,8 @@ STYLE_NAME = {"nf": "无旗（No Flag）", "fl": "有旗（Flag）"}
 # FL 不是独立榜，只是「全PB 的获胜局恰好用了旗」这个事实。
 PB_CATEGORY_CN = {"all": "全PB", "nf": "NF PB"}
 PB_SOURCE_CN = {"local": "本地", "site": "网站", "both": "同速"}
+# Top5 来源：both 表示同一条录像在本地与网站都进了前五，不是「同速」。
+TOP_SOURCE_CN = {"local": "本地", "site": "网站", "both": "两边"}
 
 
 def _load_lib():
@@ -589,6 +592,30 @@ def _site_pb_row(rec):
     }
 
 
+def site_pb_best(site_records):
+    """网站 PB 记录 -> {(级别, BV, 榜): 整数毫秒}。
+
+    每个（级别 × BV × 榜）只保留最快的一条，口径与 merge_site_pb 一致：
+    ``nf=True`` 进 NF PB，其余进全PB；非法记录直接忽略。
+    """
+    best = {}
+    for rec in site_records or []:
+        if not isinstance(rec, dict):
+            continue
+        lv = str(rec.get("level") or "").lower()
+        try:
+            bv = int(rec.get("bv") or 0)
+            ms = int(rec.get("timems") or 0)
+        except (TypeError, ValueError):
+            continue
+        if lv not in LEVELS or bv <= 0 or ms <= 0:
+            continue
+        key = (lv, bv, "nf" if rec.get("nf") else "all")
+        if key not in best or ms < best[key]:
+            best[key] = ms
+    return best
+
+
 def merge_site_pb(local_rows, site_records):
     """把 openms 的 PB 记录并进本地 PB 行，返回合并后的行。
 
@@ -732,6 +759,255 @@ def top5(games, level, metric, bv_min=0, style=None):
     else:
         pool.sort(key=lambda g: (-g[metric], g["time"]))
     return pool[:5]
+
+
+# 站点 Top5 字段：std:bt / nf:es 等，t=time(ms)、b=3BV/s、s=iqg。
+TOP_FIELD_METRICS = {"t": "time", "b": "bvs", "s": "stnb"}
+
+
+def _parse_top_field(field):
+    """``std:bt`` -> ('all', 'b', 'time')；``nf:es`` -> ('nf', 'e', 'stnb')。"""
+    if not isinstance(field, str):
+        return None
+    mode, sep, code = field.partition(":")
+    if not sep or mode not in ("std", "nf") or len(code) != 2:
+        return None
+    level, stat = code[0], code[1]
+    metric = TOP_FIELD_METRICS.get(stat)
+    if level not in LEVELS or metric is None:
+        return None
+    return ("nf" if mode == "nf" else "all"), level, metric
+
+
+def _number(value):
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
+
+
+def _integer(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _top_sort_key(row, metric):
+    """站点/合并 Top5 的排序：time 升序，bvs/stnb 降序，缺值放最后。"""
+    value = row.get(metric)
+    if metric == "time":
+        return (value is None, value if value is not None else float("inf"),
+                -(row.get("bv") or 0))
+    return (value is None, -(value if value is not None else 0),
+            row.get("time") if row.get("time") is not None else float("inf"))
+
+
+def site_top_video_ids(records):
+    """站点 Top5 里出现的录像 id（去重），用于一次批量取解析明细。"""
+    ids, seen = [], set()
+    if not isinstance(records, dict):
+        return ids
+    for field, record in records.items():
+        if _parse_top_field(field) is None or not isinstance(record, dict):
+            continue
+        for item in record.get("videos") or []:
+            if not isinstance(item, dict):
+                continue
+            vid = _integer(item.get("video_id"))
+            if vid and vid > 0 and vid not in seen:
+                seen.add(vid)
+                ids.append(vid)
+    return ids
+
+
+def site_top_rows(records, details=None):
+    """站点 Top5 记录 -> {(榜, 级别, 指标): [Top5 行, ...]}。
+
+    ``榜`` 为 'all' / 'nf'；指标为 'time' / 'bvs' / 'stnb'。站点 ``s`` 榜
+    存的是 iqg，显示与比较时乘级别常数换成 stnb。字段值本身决定该榜名次，
+    ``details``（staticdetailbatch 的 {录像 id: 明细}）只用来补 BV、时间、
+    风格和日期；缺明细时该行仍保留，只是其他列为空。
+    """
+    out = {}
+    if not isinstance(records, dict):
+        return out
+    details = details if isinstance(details, dict) else {}
+
+    for field, record in records.items():
+        parsed = _parse_top_field(field)
+        if parsed is None or not isinstance(record, dict):
+            continue
+        category, level, metric = parsed
+        videos = record.get("videos")
+        if not isinstance(videos, list):
+            continue
+
+        rows, seen = [], set()
+        for rank, item in enumerate(videos, 1):
+            if not isinstance(item, dict):
+                continue
+            vid = _integer(item.get("video_id"))
+            value = _number(item.get("value"))
+            if not vid or vid <= 0 or value is None or vid in seen:
+                continue
+            if metric == "time" and value <= 0:   # 0 ms 不是有效完成局
+                continue
+            seen.add(vid)
+
+            det = details.get(vid) or details.get(str(vid)) or {}
+            if not isinstance(det, dict):
+                det = {}
+            d_ms = _integer(det.get("timems"))
+            d_bv = _integer(det.get("bv"))
+            if d_ms is not None and d_ms <= 0:
+                d_ms = None
+            if d_bv is not None and d_bv <= 0:
+                d_bv = None
+            size = _integer(det.get("file_size")) or 0
+
+            timems = d_ms
+            if metric == "time":
+                timems = int(round(value))
+            sec = timems / 1000.0 if timems else None
+            bvs = d_bv / sec if d_bv and sec else None
+            stnb = stnb_of(d_bv, sec, level) if d_bv and sec else None
+            if metric == "bvs":
+                bvs = value
+            elif metric == "stnb":
+                stnb = value * STNB_CONST[level]
+
+            style = None
+            if category == "nf":
+                style = "nf"
+            else:
+                right_ce = _integer(det.get("right_ce"))
+                if right_ce is not None:
+                    style = "nf" if right_ce == 0 else "fl"
+
+            end_time = det.get("end_time")
+            date = end_time[:10] if isinstance(end_time, str) and len(end_time) >= 10 else ""
+            rows.append({
+                "level": level,
+                "metric": metric,
+                "time": sec,
+                "timems": timems,
+                "bv": d_bv,
+                "bvs": bvs,
+                "stnb": stnb,
+                "date": date,
+                "file": "网站 #%d" % vid,
+                "path": "",
+                "style": style,
+                "style_cn": STYLE_CN.get(style, "—"),
+                "nf": True if style == "nf" else (False if style == "fl" else None),
+                "rce": 0 if style == "nf" else None,
+                "size": size,
+                "source": "site",
+                "source_cn": TOP_SOURCE_CN["site"],
+                "site_video_id": vid,
+                "site_rank": rank,
+            })
+
+        rows.sort(key=lambda r: _top_sort_key(r, metric))
+        out[(category, level, metric)] = rows[:5]
+    return out
+
+
+def site_top_cutoffs(records):
+    """站点各 Top5 小榜的第五名成绩 -> {(榜, 级别, 指标): 阈值}。
+
+    只有满 5 条才有阈值：不满五条时本地任何成绩都能补位，不该被排除。
+    time 阈值是整数毫秒；bvs/stnb 是显示值（stnb 已乘级别常数）。
+    """
+    cutoffs = {}
+    for (category, level, metric), rows in site_top_rows(records).items():
+        if len(rows) < 5:
+            continue
+        row = rows[4]
+        if metric == "time":
+            cutoffs[(category, level, metric)] = row.get("timems")
+        else:
+            cutoffs[(category, level, metric)] = row.get(metric)
+    return {k: v for k, v in cutoffs.items() if v is not None}
+
+
+def top_beats(game, metric, cutoff):
+    """本地局能否挤进网站已满五条的 Top5。同值不算（站点同分不替换末项）。"""
+    if cutoff is None:
+        return True
+    if metric == "time":
+        try:
+            ms = game.get("timems")
+            if ms is None:
+                ms = int(round(float(game.get("time") or 0) * 1000))
+            return int(ms) < int(cutoff)
+        except (TypeError, ValueError):
+            return True
+    value = _number(game.get(metric))
+    if value is None:
+        return True
+    return value > float(cutoff) * (1 + 1e-9)
+
+
+def top_match_key(game):
+    """本地/站点录像的同一性：timems + BV + 文件大小（站点去重三元组）。"""
+    try:
+        ms = game.get("timems")
+        if ms is None:
+            ms = int(round(float(game.get("time") or 0) * 1000))
+        bv = int(game.get("bv") or 0)
+        size = int(game.get("size") or 0)
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0 or bv <= 0 or size <= 0:
+        return None
+    return (ms, bv, size)
+
+
+def merge_top_rows(local_rows, site_rows, metric, limit=5):
+    """把本地 Top5 与站点 Top5 合成一张榜。
+
+    同一条录像（三元组相同）只留本地行，来源标「两边」；没在本地出现
+    的站点成绩也要显示，来源标「网站」。按指标排序后取前五。
+    """
+    site_by_key = {}
+    site_unkeyed = []
+    for row in site_rows or []:
+        key = top_match_key(row)
+        if key:
+            site_by_key[key] = row
+        else:
+            site_unkeyed.append(row)   # 缺明细时无从去重，但成绩本身仍要显示
+
+    merged = []
+    for game in local_rows or []:
+        item = dict(game)
+        item["source"] = "local"
+        key = top_match_key(item)
+        site = site_by_key.pop(key, None) if key else None
+        if site is not None:
+            item["source"] = "both"
+            item["site_video_id"] = site.get("site_video_id")
+            item["site_rank"] = site.get("site_rank")
+            # 同一录像以站点榜单值为准；时间榜同时同步毫秒字段
+            item[metric] = site.get(metric, item.get(metric))
+            if metric == "time":
+                item["timems"] = site.get("timems", item.get("timems"))
+                item["time"] = site.get("time", item.get("time"))
+        item["source_cn"] = TOP_SOURCE_CN[item["source"]]
+        merged.append(item)
+
+    for site in site_unkeyed + list(site_by_key.values()):
+        item = dict(site)
+        item["source"] = "site"
+        item["source_cn"] = TOP_SOURCE_CN["site"]
+        merged.append(item)
+
+    merged.sort(key=lambda r: _top_sort_key(r, metric))
+    return merged[:max(1, int(limit))]
+
 
 
 def summary(games, style=None):

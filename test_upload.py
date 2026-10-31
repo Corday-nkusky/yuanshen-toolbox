@@ -99,6 +99,81 @@ def main():
               len(win.up_view) == len(win.up_rows)
               and len(win.tbl_up.tv.get_children()) == len(win.up_rows))
 
+        # 网站 PB 更快：对应本地 PB 不进入上传范围（不联网，直接注入一条记录）
+        local_pb = win.pb_local_rows[0]
+        scope = "pb_nf" if local_pb["category"] == "nf" else "pb"
+        win.site_pb = [{
+            "level": local_pb["level"], "bv": local_pb["bv"],
+            "nf": local_pb["category"] == "nf",
+            "timems": local_pb["timems"] - 1,
+            "video_id": 9001, "rank": 1,
+        }]
+        win.site_pb_uid = 1
+        win.oms_user = {"id": 1, "username": "test"}
+        win._site_pb_changed()
+        win.toggle_scope(scope)
+        check("网站 PB 更快时，本地 PB 不进入上传范围",
+              local_pb["path"] not in win._scope_path_set())
+        check("统计行注明排除条数",
+              "已排除 1 条本地 PB" in win.lbl_up_stat.cget("text"))
+        win.clear_selection()
+        win.site_pb = []
+        win.site_pb_uid = None
+        win.oms_user = None
+        win._site_pb_changed()
+
+        # 网站 Top5 已满五条且更快：对应级别的本地 Top5 不进入上传范围
+        local_top = A.core.top5(win.games, "b", "time",
+                                A.core.BV_MIN_DEFAULT["b"])
+        top_records = {}
+        for field, vals in (
+                ("std:bt", [1, 2, 3, 4, 5]),
+                ("std:bb", [1000, 999, 998, 997, 996]),
+                ("std:bs", [1000, 999, 998, 997, 996])):
+            top_records[field] = {"videos": [
+                {"video_id": 9000 + i, "value": v}
+                for i, v in enumerate(vals)]}
+        win.site_top = top_records
+        win.site_top_details = {}
+        win.site_top_uid = 1
+        win.site_top_err = ""
+        win.site_top_detail_err = ""
+        win.oms_user = {"id": 1, "username": "test"}
+        win._site_top_changed()
+        win.toggle_scope("top")
+        check("网站 Top5 更快时，本地 Top5 不进入上传范围",
+              bool(local_top) and local_top[0]["path"] not in win._scope_path_set())
+        check("统计行注明被网站 Top5 排除",
+              "已排除" in win.lbl_up_stat.cget("text")
+              and "Top5" in win.lbl_up_stat.cget("text"))
+
+        # Top5 通常比账号信息先到：账号晚到后顶部提示要跟着改
+        win.oms_user = None
+        win._site_top_changed()
+        check("Top5 先到、账号未到时提示未登录",
+              "未登录" in win.lbl_top_site.cget("text"))
+        check("账号未落定时不并入网站 Top5",
+              all(r.get("source") != "site"
+                  for table in win.top_tables.values()
+                  for r in table.rows))
+        win._on_account(win._site_seq, {"id": 1, "username": "test"},
+                        [], [], "")
+        win.set_top_level("b")
+        win.set_top_style("all")
+        check("账号到达后顶部提示改为已载入",
+              "已载入" in win.lbl_top_site.cget("text"))
+        check("账号到达后网站成绩并入前端 Top5",
+              any(r.get("source") in ("site", "both")
+                  for table in win.top_tables.values()
+                  for r in table.rows))
+        win.toggle_scope("top")
+        win.clear_selection()
+        win.site_top = {}
+        win.site_top_details = {}
+        win.site_top_uid = None
+        win.oms_user = None
+        win._site_top_changed()
+
         win.select_all_pending()
         check("全选未传选中 %d 条" % len(pending), win.up_sel == pending)
         check("表格选中状态同步", set(win.tbl_up.selected_paths()) == pending)

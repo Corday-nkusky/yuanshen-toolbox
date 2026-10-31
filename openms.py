@@ -13,6 +13,7 @@
     录像明细   GET  /api/video/staticdetailbatch?ids=...  -> timems / bv / file_size / identifier
     我的标识   GET  /api/userprofile/identifier?user_id=N
     我的 PB    GET  /api/speedranking/pb/player/N      -> 全PB / NF PB 一次取回
+    我的 Top5  GET  /api/speedranking/top/player/N     -> 18 个前端 Top5 小榜
     上传       POST /common/uploadvideo/               （注意不在 /api 下）
 
 2026-10 站点改版：`videolist` 原本每条录像都带 timems / bv / file_size（去重三元组），
@@ -508,6 +509,20 @@ class Client:
             return p
         raise OmsError("读取网站 PB 失败（HTTP %s）" % status, status, p)
 
+    def top_records(self, user_id):
+        """读该账号在站点的前端 Top5：18 个小榜的录像明细。
+
+        返回 ``{"std:bt": {"videos": [{"video_id", "value"}, ...]}, ...}``。
+        字段为 ``(std|nf):(b|i|e)(t|b|s)``；t 的值是毫秒，b 是 3BV/s，
+        s 是 iqg（显示 stnb 时乘级别常数）。每个小榜最多五条，字段不存在
+        表示该榜没有成绩。接口公开、限流 5 次/秒。
+        """
+        status, p = self.get_json_retry(
+            "/api/speedranking/top/player/%d" % int(user_id))
+        if isinstance(p, dict):
+            return p
+        raise OmsError("读取网站 Top5 失败（HTTP %s）" % status, status, p)
+
     # --- 上传 ---
     def upload(self, path, retries=3):
         """上传单个录像，返回归一化结果字典。
@@ -599,24 +614,55 @@ SCOPES = [
 ]
 
 
-def scope_paths(games, scope, bvmin=None):
+def scope_paths(games, scope, bvmin=None, site_pb=None, site_top=None,
+                skipped=None):
     """某范围对应的录像路径集合。bvmin=None 时用官方门槛。
 
     只有两张 PB 榜：全PB 和 NF PB。FL 不是独立榜，所以没有 pb_fl / top_fl。
+
+    给出 ``site_pb`` 时，两个 PB 范围只保留不比网站 PB 慢的本地局：
+    同一（级别 × BV × 榜）里网站更快的那条会从范围中排除，``skipped``
+    （集合）记下被排除的路径。同速仍保留。
+
+    给出 ``site_top`` 时，两个前端 Top5 范围按网站各小榜的第五名过滤：
+    网站已有五条更好的录像时，本地局挤不进前五，就被排除；不足五条
+    或本地更好仍保留。同值不算更好（站点同分不替换末项）。
+    「全部完成局」不参与任何对照。
     """
     import core
 
     if scope.startswith("pb"):
         style = {"pb": None, "pb_nf": "nf"}[scope]
-        return {r["path"] for r in core.build_pb(games, style=style)}
+        cat = "nf" if scope == "pb_nf" else "all"
+        best = core.site_pb_best(site_pb) if site_pb else {}
+        out = set()
+        for r in core.build_pb(games, style=style):
+            site_ms = best.get((r["level"], r["bv"], cat))
+            if site_ms is not None:
+                ms = r.get("timems")
+                if ms is None:
+                    ms = int(round(float(r.get("time") or 0) * 1000))
+                if ms > site_ms:
+                    if skipped is not None:
+                        skipped.add(r["path"])
+                    continue
+            out.add(r["path"])
+        return out
 
     if scope.startswith("top"):
         style = {"top": None, "top_nf": "nf"}[scope]
+        cat = "nf" if scope == "top_nf" else "all"
+        cutoffs = core.site_top_cutoffs(site_top) if site_top else {}
         out = set()
         for lv in core.LEVELS:
             floor = core.BV_MIN_DEFAULT[lv] if bvmin is None else bvmin
             for metric in ("time", "bvs", "stnb"):
+                cutoff = cutoffs.get((cat, lv, metric))
                 for g in core.top5(games, lv, metric, floor, style=style):
+                    if not core.top_beats(g, metric, cutoff):
+                        if skipped is not None:
+                            skipped.add(g["path"])
+                        continue
                     out.add(g["path"])
         return out
 

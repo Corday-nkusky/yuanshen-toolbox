@@ -28,7 +28,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.12.1"
+APP_VER = "0.13.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1396,6 +1396,11 @@ class App(tk.Tk):
         self.site_pb = []
         self.site_pb_uid = None
         self.site_pb_err = ""
+        self.site_top = {}             # 站点 18 个前端 Top5 小榜的原始记录
+        self.site_top_details = {}     # 上述录像的 staticdetailbatch 明细
+        self.site_top_uid = None
+        self.site_top_err = ""
+        self.site_top_detail_err = ""
         self._site_seq = 0             # 网站请求代次：退出/换号后旧结果直接丢弃
         self.summary = {}
         self.counts = {}
@@ -1425,7 +1430,9 @@ class App(tk.Tk):
         self.up_sel = set()
         self._up_scopes = set()
         self._scope_want = None     # 范围 -> 路径集合的缓存
-        self._view_note = ""        # 范围过滤后为空时的说明
+        self._scope_skipped_pb = set()   # 因网站 PB 更快而排除的本地 PB
+        self._scope_skipped_top = set()  # 因网站 Top5 已更快而排除的本地局
+        self._view_note = ""        # 范围过滤后的说明（排除条数 / 为空原因）
         self._up_running = False
         self._up_stop = False
         self._up_total = 0
@@ -1832,6 +1839,10 @@ class App(tk.Tk):
         tk.Label(top, text="（默认官方门槛，0 = 不限）",
                  bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(side="left", padx=(sc(8), 0))
 
+        self.lbl_top_site = tk.Label(page, text="", bg=C_BG, fg=C_DIM,
+                                     font=FONT_SMALL, anchor="w")
+        self.lbl_top_site.pack(fill="x", pady=(0, sc(6)))
+
         grid = tk.Frame(page, bg=C_BG)
         # 只吃横向空间：纵向让它按内容高度走，多余高度全留给下方说明面板，
         # 否则「表格区」和「说明面板」各分一半空白，中间会裂出一条空带。
@@ -1852,12 +1863,13 @@ class App(tk.Tk):
                           (C_ACCENT2 if i == 1 else C_ACCENT3), sub).grid(
                 row=0, column=0, sticky="w", pady=(0, sc(6)))
             cols = [
-                ("rank", "#", 34, "e", "int"),
-                ("style_cn", "风格", 52, "center", "str"),
-                ("time", "time", 66, "e", "f3"),
-                ("bv", "BV", 46, "e", "int"),
-                ("bvs", "3BV/s", 62, "e", "f3"),
-                ("stnb", "stnb", 60, "e", "f2"),
+                ("rank", "#", 32, "e", "int"),
+                ("style_cn", "风格", 48, "center", "str"),
+                ("time", "time", 64, "e", "f3"),
+                ("bv", "BV", 44, "e", "int"),
+                ("bvs", "3BV/s", 60, "e", "f3"),
+                ("stnb", "stnb", 58, "e", "f2"),
+                ("source_cn", "来源", 50, "center", "str"),
             ]
             holder = tk.Frame(cell, bg=C_LINE)
             holder.grid(row=1, column=0, sticky="ew")
@@ -2050,7 +2062,9 @@ class App(tk.Tk):
         self.site_pb = []
         self.site_pb_uid = None
         self.site_pb_err = ""
-        self._recompute_pb()
+        self._clear_site_top()
+        self._site_pb_changed()
+        self._site_top_changed()
         self.set_status("已登录 openms.top：%s" % (user.get("username") or ""), "ok")
         self.refresh_site()
 
@@ -2071,9 +2085,11 @@ class App(tk.Tk):
         self.site_pb = []
         self.site_pb_uid = None
         self.site_pb_err = ""
+        self._clear_site_top()
         self._refresh_acct_label()
         self._rebuild_up_rows()
-        self._recompute_pb()
+        self._site_pb_changed()
+        self._site_top_changed()
         self.set_status("已退出登录", "dim")
 
     def refresh_site(self):
@@ -2107,6 +2123,7 @@ class App(tk.Tk):
             return
         if not u:
             self._q.put(("site_pb", (seq, None, [], "")))
+            self._q.put(("site_top", (seq, None, {}, {}, "", "")))
             self._q.put(("acct", (seq, None, [], [], "")))
             return
 
@@ -2118,6 +2135,23 @@ class App(tk.Tk):
             diag.log.warning("读取网站 PB 失败：%s", exc)
             # 右上角只放短句；完整异常进日志，免得把搜索框挤没
             self._q.put(("site_pb", (seq, u["id"], [], "网站 PB 读取失败")))
+
+        try:
+            top = self.oms.top_records(u["id"])
+            ids = core.site_top_video_ids(top)
+            diag.log.info("网站 Top5：%d 个小榜，%d 条录像", len(top), len(ids))
+        except Exception as exc:                     # noqa: BLE001
+            diag.log.warning("读取网站 Top5 失败：%s", exc)
+            self._q.put(("site_top", (seq, u["id"], {}, {}, "网站 Top5 读取失败", "")))
+        else:
+            details, detail_err = {}, ""
+            if ids:
+                try:
+                    details = self.oms.static_details(ids)
+                except Exception as exc:             # noqa: BLE001
+                    detail_err = "网站 Top5 明细读取失败"
+                    diag.log.warning("读取网站 Top5 明细失败：%s", exc)
+            self._q.put(("site_top", (seq, u["id"], top, details, "", detail_err)))
 
         vids, idents, err = [], [], ""
         try:
@@ -2149,7 +2183,52 @@ class App(tk.Tk):
             self.site_pb = rows or []
             self.site_pb_uid = uid
             self.site_pb_err = err
+        self._site_pb_changed()
+
+    def _site_pb_changed(self):
+        """网站 PB 更新/清空后：PB 表与上传范围都要重算。"""
         self._recompute_pb()
+        self._scope_want = None
+        self._scope_skipped_pb = set()
+        self._scope_skipped_top = set()
+        if self._up_scopes:
+            self.up_sel &= self._scope_path_set()
+            self._refresh_up_view()
+
+    def _clear_site_top(self):
+        self.site_top = {}
+        self.site_top_details = {}
+        self.site_top_uid = None
+        self.site_top_err = ""
+        self.site_top_detail_err = ""
+
+    def _on_site_top(self, seq, uid, records, details, err, detail_err=""):
+        if seq != self._site_seq:
+            return                        # 退出/换号前发出的请求，结果作废
+        if uid is None:
+            self._clear_site_top()
+        else:
+            cur = self.oms_user or {}
+            if not cur and not self.oms.has_session():
+                return                    # 已退出登录，迟到的结果不能复活网站 Top5
+            if cur.get("id") not in (None, uid):
+                return                    # 账号已经换了，旧结果不能落盘
+            self.site_top = records or {}
+            self.site_top_details = details or {}
+            self.site_top_uid = uid
+            self.site_top_err = err
+            self.site_top_detail_err = detail_err
+        self._site_top_changed()
+
+    def _site_top_changed(self):
+        """网站 Top5 更新/清空后：前端成绩页与上传范围都要重算。"""
+        self.render_top()
+        self._scope_want = None
+        self._scope_skipped_pb = set()
+        self._scope_skipped_top = set()
+        if self._up_scopes:
+            self.up_sel &= self._scope_path_set()
+            self._refresh_up_view()
 
     def _on_account(self, seq, user, videos, idents, err):
         if seq != self._site_seq:
@@ -2160,20 +2239,30 @@ class App(tk.Tk):
         self.oms_err = err
         # 只有真的拉到了列表，才敢拿它否认「本地台账」里的记录
         self.oms_synced = bool(user) and not err
-        # 账号明确为空，或网站 PB 属于另一个账号 → 清掉，避免把别人的 PB 显示成本地
+        # 账号明确为空，或网站 PB/ Top5 属于另一个账号 → 清掉，避免把别人的成绩显示成本地
         if not user:
             if self.site_pb or self.site_pb_err:
                 self.site_pb = []
                 self.site_pb_uid = None
                 self.site_pb_err = ""
-                self._recompute_pb()
-        elif self.site_pb_uid is not None and self.site_pb_uid != user.get("id"):
-            self.site_pb = []
-            self.site_pb_uid = None
-            self.site_pb_err = ""
-            self._recompute_pb()
+                self._site_pb_changed()
+            if self.site_top or self.site_top_err:
+                self._clear_site_top()
+                self._site_top_changed()
+        else:
+            if self.site_pb_uid is not None and self.site_pb_uid != user.get("id"):
+                self.site_pb = []
+                self.site_pb_uid = None
+                self.site_pb_err = ""
+                self._site_pb_changed()
+            if self.site_top_uid is not None and self.site_top_uid != user.get("id"):
+                self._clear_site_top()
+                self._site_top_changed()
         self._refresh_acct_label()
         self._rebuild_up_rows()
+        # Top5 通常比账号信息先到，顶部提示要等登录态落定后重画一次，
+        # 否则会一直停在「未登录，仅显示本地成绩」
+        self.render_top()
 
     def _refresh_acct_label(self):
         if self.oms_user:
@@ -2266,6 +2355,8 @@ class App(tk.Tk):
         self.up_sel &= pending
         self.up_rows = rows
         self._scope_want = None          # 录像重扫过，范围对应的路径要重算
+        self._scope_skipped_pb = set()
+        self._scope_skipped_top = set()
         self._refresh_up_view()
 
     def _refresh_up_view(self):
@@ -2281,7 +2372,16 @@ class App(tk.Tk):
         if self._up_scopes:
             want = self._scope_path_set()
             rows = [r for r in self.up_rows if r["path"] in want]
-            self._view_note = self._empty_view_note(want) if not rows else ""
+            notes = []
+            if not rows:
+                notes.append(self._empty_view_note(want))
+            else:
+                notes.extend(self._skipped_notes())
+            for site_note in (self._site_pb_scope_note(),
+                              self._site_top_scope_note()):
+                if site_note:
+                    notes.append(site_note)
+            self._view_note = " · ".join(notes)
         else:
             rows = list(self.up_rows)
             self._view_note = ""
@@ -2290,26 +2390,89 @@ class App(tk.Tk):
         self.tbl_up.select_paths(self.up_sel)
         self._update_up_stat()
 
-    def _empty_view_note(self, want):
-        """范围过滤后一行都不剩时，说清是「被阿比特开关挡掉」还是「真没有」。
+    def _skipped_notes(self):
+        """范围里被网站更快成绩压掉、没有进入勾选的本地局。"""
+        notes = []
+        if self._scope_skipped_pb:
+            notes.append("已排除 %d 条本地 PB（网站 PB 更快）"
+                         % len(self._scope_skipped_pb))
+        if self._scope_skipped_top:
+            notes.append("已排除 %d 条本地成绩（网站 Top5 更快）"
+                         % len(self._scope_skipped_top))
+        return notes
 
-        光留一张空表太像故障：这个账号的 PB 全落在阿比特录像上，而「含阿比特」
-        没勾时，PB·NF PB 这个范围确实一条都显示不出来。
-        """
+    def _empty_view_note(self, want):
+        """范围过滤后一行都不剩时，说清是「被网站成绩排除」「被阿比特挡掉」还是真的没有。"""
+        bits = self._skipped_notes()
         if not self.upload_arb and self._arb_rows:
             for g in self.games:
                 if ((g.get("src") or "ms") == "arb"
                         and g["path"] in want):
-                    return "这个范围的录像都在阿比特里，勾上「含阿比特录像」才看得到"
-        return "这个范围没有可显示的录像"
+                    bits.append("阿比特录像已排除，勾上「含阿比特录像」才看得到")
+                    break
+        return "；".join(bits) if bits else "这个范围没有可显示的录像"
+
+    def _site_pb_ready(self):
+        """网站 PB 是否可用于当前账号的上传范围对照。"""
+        if self.site_pb_err or self.site_pb_uid is None:
+            return False
+        uid = (self.oms_user or {}).get("id")
+        return uid is None or uid == self.site_pb_uid
+
+    def _site_pb_scope_note(self):
+        """PB 范围没能和网站对比时，明说原因，别让人以为已经排除过了。"""
+        if not (self._up_scopes & {"pb", "pb_nf"}):
+            return ""
+        if self.site_pb_err:
+            return "网站 PB 读取失败，未与网站 PB 对比"
+        if self._site_pb_ready():
+            return ""
+        if not self.oms_user:
+            return "未登录，未与网站 PB 对比"
+        return "网站 PB 尚未读取，未与网站 PB 对比"
+
+    def _site_top_ready(self):
+        """网站 Top5 是否可用于当前账号的上传范围对照。"""
+        if self.site_top_err or self.site_top_uid is None or not self.oms_user:
+            return False        # Top5 可能先到，账号未落定前不并入页面
+        return self.oms_user.get("id") == self.site_top_uid
+
+    def _site_top_scope_note(self):
+        """Top5 范围没能和网站对比时，明说原因。"""
+        if not (self._up_scopes & {"top", "top_nf"}):
+            return ""
+        if self.site_top_err:
+            return "网站 Top5 读取失败，未与网站 Top5 对比"
+        if self._site_top_ready():
+            return ""
+        if not self.oms_user:
+            return "未登录，未与网站 Top5 对比"
+        return "网站 Top5 尚未读取，未与网站 Top5 对比"
 
     def _scope_path_set(self):
-        """当前选中范围对应的路径集合（缓存在 _scope_want，top5 算起来不便宜）。"""
+        """当前选中范围对应的路径集合（缓存在 _scope_want，top5 算起来不便宜）。
+
+        登录后两个 PB 范围对照网站 PB：同一（级别 × BV × 榜）里本地 PB
+        比网站慢的直接排除；同速保留。两个 Top5 范围对照网站 Top5：网站
+        已有五条更好成绩时，本地局挤不进前五，也直接排除。排除的路径
+        分别记在 ``_scope_skipped_pb`` / ``_scope_skipped_top``，只统计
+        仍未上传的那部分。
+        """
         want = getattr(self, "_scope_want", None)
         if want is None:
             want = set()
+            skipped_pb, skipped_top = set(), set()
+            site_pb = self.site_pb if self._site_pb_ready() else []
+            site_top = self.site_top if self._site_top_ready() else {}
             for s in self._up_scopes:
-                want |= openms.scope_paths(self.games, s)
+                skipped = skipped_top if s.startswith("top") else skipped_pb
+                want |= openms.scope_paths(self.games, s,
+                                           site_pb=site_pb,
+                                           site_top=site_top,
+                                           skipped=skipped)
+            pending = {r["path"] for r in self.up_rows if not r.get("uploaded")}
+            self._scope_skipped_pb = (skipped_pb - want) & pending
+            self._scope_skipped_top = (skipped_top - want) & pending
             self._scope_want = want
         return want
 
@@ -2756,6 +2919,8 @@ class App(tk.Tk):
                     self._on_account(*payload)
                 elif kind == "site_pb":
                     self._on_site_pb(*payload)
+                elif kind == "site_top":
+                    self._on_site_top(*payload)
                 elif kind == "up":
                     self._on_upload_result(*payload)
                 elif kind == "scan_total":
@@ -2998,21 +3163,47 @@ class App(tk.Tk):
             self._bvmin_level = lv
         self.render_top()
 
+    def _top_site_note(self):
+        """前端成绩页顶部：网站 Top5 的载入状态。"""
+        if self.site_top_err:
+            return self.site_top_err, C_ERR
+        if not self.oms_user:
+            return "未登录，仅显示本地成绩", C_DIM
+        if self.site_top_uid is None:
+            return "网站 Top5 尚未读取", C_DIM
+        n_boards = len(self.site_top)
+        n_videos = len(core.site_top_video_ids(self.site_top))
+        if not n_boards:
+            return "网站暂无 Top5 成绩", C_DIM
+        text = "网站 Top5 已载入：%d 个小榜 / %d 条录像" % (n_boards, n_videos)
+        if self.site_top_detail_err:
+            text += " · " + self.site_top_detail_err
+        return text, (C_WARN if self.site_top_detail_err else C_DIM)
+
     def render_top(self):
         try:
             bvmin = max(0, int(self.var_bvmin.get() or 0))
         except ValueError:
             bvmin = 0
         style = None if self._top_style == "all" else "nf"
+        cat = "nf" if style == "nf" else "all"
+        site_map = (core.site_top_rows(self.site_top, self.site_top_details)
+                    if self._site_top_ready() else {})
         for metric, table in self.top_tables.items():
-            raw = core.top5(self.games, self._level, metric, bvmin, style=style)
+            local = core.top5(self.games, self._level, metric, bvmin, style=style)
+            site_rows = [r for r in site_map.get((cat, self._level, metric), [])
+                         if r.get("bv") is None or r["bv"] >= bvmin]
             rows = []
-            for i, g in enumerate(raw, 1):
+            for i, g in enumerate(core.merge_top_rows(local, site_rows, metric), 1):
                 item = dict(g)
                 item["rank"] = i
                 item["style_cn"] = core.STYLE_CN.get(g.get("style"), "?")
+                item["source_cn"] = core.TOP_SOURCE_CN.get(g.get("source"), "")
                 rows.append(item)
             table.set_rows(rows)
+        if hasattr(self, "lbl_top_site"):
+            text, color = self._top_site_note()
+            self.lbl_top_site.config(text=text, foreground=color)
 
     def set_status(self, text, kind="dim"):
         color = {"dim": C_DIM, "ok": C_OK, "warn": C_WARN, "err": C_ERR}.get(kind, C_DIM)
