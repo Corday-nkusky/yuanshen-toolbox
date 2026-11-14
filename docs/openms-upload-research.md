@@ -29,7 +29,7 @@
 | 层 | 技术 | 说明 |
 |---|---|---|
 | 前端 | Vue 3 + TS + Element Plus + Vite + WASM | 单页应用，`/assets/index-*.js` 只是引导脚本 |
-| 后端 | Django 4.2 + django-ninja | `/api/*` 是 ninja 的 JSON 接口，`/userprofile/*`、`/common/*` 是原生 Django 视图 |
+| 后端 | Django 4.2 + django-ninja | `/api/*` 是 ninja 的 JSON 接口（上传也已并入），`/userprofile/*` 是原生 Django 视图 |
 | 解析 | **ms-toollib**（Rust，WASM 版给前端、CPython 版给后端） | 与本地 `core.py` 用的是同一套解析口径 |
 | 部署 | Nginx + uwsgi + MySQL + Redis | Redis 做榜单缓存 |
 
@@ -47,14 +47,22 @@
 | 登录 | POST | `/userprofile/login/` | 无 | [源码]+[实测路径] |
 | 退出 | GET/POST | `/userprofile/logout/` | Cookie | [源码] |
 | 查当前登录态 | GET | `/api/common/loginauto` | Cookie（可匿名） | [实测] |
-| **上传录像** | POST | `/common/uploadvideo/` | Cookie | [实测] |
+| **上传录像** | POST | `/api/common/uploadvideo` | Cookie | [源码]+[实测] |
 | 读我的标识列表 | GET | `/api/userprofile/identifier` | Cookie | [源码] |
 | 接口文档 | GET | `/api/docs`（Redoc）、`/api/openapi.json` | 无 | [实测 200] |
 
 两个容易踩的坑，实测排除过了：
 
-- 上传**不在** `/api` 下：`POST /api/common/uploadvideo/` → **404**；正确的 `POST /common/uploadvideo/` → 未登录 **403（0 字节）**。
-- 登录也**不在** `/api` 下：走 `/userprofile/login/`（前端 axios 的 `baseURL` 是根路径）。
+- 上传在 `/api` 下，且**没有尾斜杠**：`POST /api/common/uploadvideo`。加了尾斜杠变 **404**
+  （django-ninja 路由不做 `APPEND_SLASH`）。未登录时是 **500 + HTML**，不是 403 ——
+  根因已定位：`ninja.decorators.decorate_view` 是**按书写顺序从内到外**叠装饰器
+  （`for deco in decorators: operation.run = deco(operation.run)`，先写的最后才生效），
+  所以 `decorate_view(login_required_error, banned_blocked, ratelimit(...))` 的真实执行
+  顺序是 ratelimit → banned_blocked → login_required_error。匿名请求在 `banned_blocked`
+  里取 `AnonymousUser.is_banned` 就抛 AttributeError，5xx 抢先返回，登录检查根本没轮到。
+  **客户端不能把 5xx 一律当临时故障**，必须回头问 `loginauto` 才能分清「Cookie 过期」
+  和「服务端真出错」。
+- 登录**不在** `/api` 下：走 `/userprofile/login/`（前端 axios 的 `baseURL` 是根路径）。
 
 ---
 
@@ -148,12 +156,11 @@ POST /userprofile/login/
 ### 4.1 请求本身很简单
 
 ```http
-POST /common/uploadvideo/
+POST /api/common/uploadvideo
 Content-Type: multipart/form-data; boundary=...
 Cookie: session_id=...
 
 file=@b_0_1.774_9_5.073_PlayerName(Region).evf
-skipTournamentCheck=false
 ```
 
 ```json
@@ -162,25 +169,29 @@ skipTournamentCheck=false
 ```
 
 - **一次只能传一个文件**，没有批量接口。前端自己也是 `for` 循环串行 + 200ms 间隔。
-- `skipTournamentCheck` 可选，默认 false（比赛校验），一般不用管。
+- 表单只有 `file` 一项（ninja 的 `file: UploadedFile = File(...)`）。旧接口那个
+  `skipTournamentCheck` 还留在 `UploadVideoForm` 里，但视图是用 `data={}` 建表单的，
+  **传了也不读**，发不发都一样。
 
 ### 4.2 服务端拿到文件后干了 7 件事
 
-这才是真正"复杂"的部分（`common/views.py` → `common/utils.py::new_video_by_file` → `utils/parser.py`）[源码]：
+这才是真正"复杂"的部分（`common/api.py::upload_video` → `common/utils.py::new_video_by_file` → `utils/parser.py`）[源码]：
 
 | # | 检查 | 不通过的表现 |
 |---|---|---|
-| 1 | 登录 & 未被封禁 | **403**（0 字节） |
-| 2 | 录像总配额 `video_num_total >= video_num_limit` | **402**（空响应；额度由站点按账号设置，需联系管理员增加） |
-| 3 | 是否实名 | 200 + `{"type":"error","obj":"userprofile","category":"realname_required"}` |
-| 4 | 表单：`file` 必填 | 400 |
-| 5 | 按扩展名选解析器（avf/evf/rmv/mvf） | 200 + `object:"file", category:"type"` |
-| 6 | `is_completed == False` | 200 + `object:"file", category:"incomplete"`（**失败局直接拒**） |
-| 7 | 级别 3/4/5 → b/i/e；6 → 自定义；其他 | 200 + `object:"file", category:"level"` |
+| 1 | 登录（`login_required_error`） | 未登录 **500 + HTML**（站点自身缺陷，见 §2 的坑） |
+| 2 | 未被封禁（`banned_blocked`） | **403**（0 字节） |
+| 3 | 录像总配额 `video_num_total >= video_num_limit` | **402**（空响应；额度由站点按账号设置，需联系管理员增加） |
+| 4 | 准入 `has_identity_access`：**实名或玩家认证**满足其一 | 200 + `{"type":"error","object":"userprofile","category":"identity_access_required"}` |
+| 5 | 表单：`file` 必填 | 400 |
+| 6 | 按扩展名选解析器（avf/evf/rmv/mvf） | 200 + `object:"file", category:"type"` |
+| 7 | `is_completed == False` | 200 + `object:"file", category:"incomplete"`（**失败局直接拒**） |
+| 8 | 级别 3/4/5 → b/i/e；6 → 自定义；其他 | 200 + `object:"file", category:"level"` |
 
-> 解析器崩了不会 500：服务端捕获 `PanicException` 后返回 `object:"rust", category:"panic"`
-> （本地也见过这个现象：损坏录像会让 ms-toollib 写 `crash.log` 并 panic）。
-> 所以**上传前在本地跑一遍预检**能把这类文件提前筛掉，省一次往返。
+> 解析崩了**现在会给 500**：解析被挪进子进程（`utils/parser.py`），超时、退出码非零、
+> 结果文件坏掉都 `raise ExceptionToResponse('rust','panic',500)`，body 仍是 JSON。
+> 所以 5xx 不能一律当站点故障重试，要先看 body。
+> 本地跑一遍预检能把这类文件提前筛掉，省一次往返。
 
 然后还有三道与"能不能进榜"直接相关的关卡：
 
@@ -205,28 +216,49 @@ skipTournamentCheck=false
 **C. 去重**
 
 ```python
-VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
-# 且逐字节比对完全一致
+# 进解析之前先算完整原始文件的摘要（sha256 前 12 字节 = 24 hex），
+# VideoModel.original_hash 上有 unique=True
+find_identical_video(original_hash)   # VideoModel.objects.filter(original_hash=...)
 ```
 命中 → 200 + `{"type":"error","object":"file","category":"collision"}`
 （**不是** 409，是 200 里的 error JSON，容易漏判）
+
+> 对客户端的影响：站点只认「字节完全相同」。我们本地用 `timems + bv + file_size`
+> 三元组做同判，**比站点宽**——三元组相同但内容差一个字节的录像，站点会收，
+> 我们会跳。这是刻意的保守选择（宁可不传，也不制造重复）。
+
+### 4.2.1 部署层的硬限制（客户端要知道的两条）
+
+| 限制 | 值 | 来源 |
+|---|---|---|
+| 请求体上限（`/api/common/uploadvideo`） | **1 MB**，超了 nginx 直接 413 HTML | 仓库 `default.conf` 没有全局 `client_max_body_size`（默认 1m），[实测] 400 KB→进 Django，1024 KB→413 |
+| 上游读超时 | **2 s**（`location /` 的 `uwsgi_read_timeout 2`），超了 504 | 仓库 `default.conf` [源码] |
+| uWSGI harakiri | **10 s**（只有 MSGames 同步、WOM sync、媒体提交例外） | 仓库 `uwsgi.ini` 的 `route = ^(?!...) harakiri:10` [源码] |
+
+注意这三条和站点自己声明的 5 MB（`MaxSizes.VIDEOFILE`、前端预检也是 5 MB）**矛盾**：
+线上真正先卡住的是 nginx 的 1 MB。也就是说普通录像（几 KB ~ 几百 KB）没事，
+但大录像会在网关层被拒，根本到不了 Django。
 
 ### 4.3 响应字典（建议直接做成映射表）
 
 | 现象 | 判据 | 建议动作 |
 |---|---|---|
-| `403` | 未登录 / 被封 | 停止整批 → 重新登录 |
+| `500` + HTML | 登录态失效（站点缺陷：匿名也走 500） | 先问 `loginauto`：`user == null` → 停止整批、重新登录 |
+| `500` + JSON `rust/panic` | 解析子进程超时 / 退出码非零 / 结果文件坏了 | **单条失败**，不要重试、不要当站点故障 |
+| `403` | 被封禁（`banned_blocked`） | 停止整批 → 提示封禁 |
 | `402` | 录像额度已满（空响应） | 停止整批 → 提示联系网站管理员增加额度 |
+| `413` + HTML | nginx 的 1 MB 请求体上限 | 单条失败；本地就能按文件大小提前筛掉 |
 | `503` | 榜单正在刷新（写锁） | 读 `Retry-After`（1 秒）后重试该文件 |
 | `200` + `success` | 成功 | 记录 `id` 与 `state` |
 | `200` + `file/collision` | 已经传过同一文件 | **视为成功**（跳过） |
 | `200` + `file/incomplete` | 未完成局 | 跳过（我们本来就不传 `_fail`） |
 | `200` + `file/type` / `level` / `review` | 格式/级别/审核码异常 | 记入失败清单 |
 | `200` + `identifier/verify` | 标识含违规词 | 记失败，提示改标识 |
-| `200` + `rust/panic` | 录像损坏导致 ms-toollib 解析崩溃（服务端捕获了 Rust panic） | 记失败，本地可先跑一遍预检筛掉 |
-| `200` + `obj:userprofile, category:realname_required` | 未实名 | 提示去个人资料实名 |
+| `200` + `rust/panic` | 进程内 ms-toollib panic 被捕获 | 记失败，本地可先跑一遍预检筛掉 |
+| `200` + `userprofile/identity_access_required` | 实名与玩家认证都没办 | 停止整批 → 提示去个人资料办其中一项 |
 
-> 注意 `realname_required` 用的键是 **`obj`**（不是 `object`），站点自己的前端也要兼容两种写法，我们解析时两个都读。
+> 错误响应的对象键不统一：老接口用 **`obj`**，新接口的 `identity_access_required` 用 **`object`**。
+> 我们解析时两个都读（`p.get("object") or p.get("obj")`）。
 
 ### 4.4 state 码对照
 
@@ -244,7 +276,8 @@ VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
 
 这三条不解决，传上去也是白传：
 
-1. **实名**：站点是实名制，未实名直接拒绝上传（`realname_required`）。
+1. **准入**：站点要求「实名」或「玩家认证」满足其一（`has_identity_access`），
+   都不满足则拒绝上传（`identity_access_required`）。
 2. **标识**：元扫雷 `gameSetting.ini` 里 `player_identifier = PlayerName(Region)`，
    必须在站点「个人主页 → 标识管理」里**一字不差**地存在。
    → 登录后可以 `GET /api/userprofile/identifier` 拉列表，本地就能比对并预警。
@@ -344,18 +377,29 @@ VideoModel.objects.filter(timems=..., bv=...).filter(file_size=...)
 
 ---
 
-## 附录 A：实测记录（2026-10-21 00:16 ~ 00:25）
+## 附录 A：实测记录
+
+**2026-11-14（针对接口迁移的复测，仓库 main = `c5a7839`，2026-11-13）**
+
+| 请求 | 结果 |
+|---|---|
+| `POST /api/common/uploadvideo`（未登录/伪造 session_id，dummy 文件） | `500` + HTML 145 B（不是 403） |
+| `POST /api/common/uploadvideo/` | `404`（ninja 不做 APPEND_SLASH） |
+| `POST /common/uploadvideo/`（旧路径） | `404`（视图已下线） |
+| `GET /api/common/uploadvideo` | `405 Method not allowed`（路由确实挂在那） |
+| `POST` 400 KB body（未登录） | `500`（进到了 Django，说明网关已放行） |
+| `POST` 1024 KB / 1200 KB / 4000 KB body | `413 Request Entity Too Large`（nginx 直接拒，没到 Django） |
+
+**2026-10-21 首次摸底**
 
 | 请求 | 结果 |
 |---|---|
 | `GET /userprofile/refresh_captcha/` | `200` `{"hashkey":"60fbad37...","status":100}` |
 | `GET /userprofile/captcha/image/<hashkey>/` | `200` `image/png` 3937 B，100×30，内容 `WZTK` |
-| `GET /api/common/loginauto` | `200` `{"user": null, "top_anchors": {...}}`（匿名） |
-| `POST /common/uploadvideo/`（未登录，带 dummy 文件） | `403`，0 字节 |
-| `POST /api/common/uploadvideo/` | `404`（证明上传不在 /api 下） |
+| `GET /api/common/loginauto` | `200` `{"user": null, "top_anchors": {...}}`（匿名，今天复测仍一致） |
 | `GET /api/docs`、`/api/openapi.json` | `200` |
 
-## 附录 B：读过的源码（已下载到 `_oms/`）
+## 附录 B：读过的源码（已下载到 `_ms/oms_src/`；2026-11-14 重新克隆核对到 `back_end/`）
 
 ```
 back_end/saolei/saolei/urls.py              根路由（/api、/userprofile、/common、/video）
@@ -365,16 +409,22 @@ back_end/saolei/userprofile/urls.py         登录/登出/验证码路径
 back_end/saolei/userprofile/views.py        user_login / refresh_captcha
 back_end/saolei/userprofile/forms.py        UserLoginForm 字段约束（set_expiry 0~90）
 back_end/saolei/userprofile/utils.py        judge_captcha（一次性、15 分钟）
-back_end/saolei/userprofile/decorators.py   login_required_error → 403
-back_end/saolei/common/urls.py              uploadvideo 路径
-back_end/saolei/common/views.py             上传视图（配额 402、实名、限流 5/s）
-back_end/saolei/common/forms.py             UploadVideoForm（file + skipTournamentCheck）
-back_end/saolei/common/utils.py             new_video_by_file（标识校验、去重）
-back_end/saolei/utils/parser.py             MSVideoParser（扩展名、完成局、level、is_valid）
+back_end/saolei/userprofile/decorators.py   login_required_error / banned_blocked → 403
+back_end/saolei/common/api.py               上传视图 upload_video（ninja，/api/common/uploadvideo）
+back_end/saolei/common/forms.py             UploadVideoForm（file + skipTournamentCheck，后者已不被读）
+back_end/saolei/common/services.py           new_video_by_file（哈希去重、标识校验、建记录）
+back_end/saolei/utils/exceptions.py          ExceptionToResponse（错误 body 用 "object" 键）
+back_end/saolei/videomanager/utils.py        calculate_original_hash（sha256 前 12 字节）
+back_end/saolei/videomanager/services.py     find_identical_video（original_hash 唯一）
+back_end/saolei/videomanager/schema.py       VIDEO_INFO_BATCH_LIMIT=100、PARSED_VIDEO_FIELDS
+back_end/saolei/default.conf                 nginx：无全局 client_max_body_size（=1m）、location / 读超时 2s
+back_end/saolei/uwsgi.ini                    harakiri 90s，但 route 把普通请求压到 10s
+back_end/saolei/utils/parser.py              MSVideoParser（子进程解析，失败 → 500 rust/panic）
 back_end/saolei/utils/ranking_lock.py       503 + Retry-After
 back_end/saolei/msuser/models.py            UserMS 配额字段（默认 100，可调）
+ninja/decorators.py（上游库）                decorate_view 的叠放顺序（先写的最内层）
 front_end/src/services/videoUploadService.ts  上传请求与错误映射
 front_end/src/components/Login/LoginForm.vue  登录字段与"记住我"
 front_end/src/http.ts                       axios 全局 form-urlencoded + withCredentials
-front_end/src/components/VideoUpload/utils.ts 客户端预检（≤5MB、扩展名、is_valid）
+front_end/src/components/VideoUpload/utils.ts 客户端预检（声明 ≤5MB，实际网关 1MB 先卡）
 ```

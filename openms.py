@@ -14,7 +14,20 @@
     我的标识   GET  /api/userprofile/identifier?user_id=N
     我的 PB    GET  /api/speedranking/pb/player/N      -> 全PB / NF PB 一次取回
     我的 Top5  GET  /api/speedranking/top/player/N     -> 18 个前端 Top5 小榜
-    上传       POST /common/uploadvideo/               （注意不在 /api 下）
+    上传       POST /api/common/uploadvideo            （**没有尾斜杠**）
+
+2026-11 站点把上传从 Django 视图（`POST /common/uploadvideo/`）迁到 django-ninja
+（`POST /api/common/uploadvideo`），旧路径已 404。连带三个变化：
+
+- 表单只剩 `file`；`skipTournamentCheck` 服务端用 `data={}` 组表单，等于不读了。
+- 未登录不再返回 403，而是 **500 + HTML**（`login_required_error` 本身返 403，
+  说明 500 来自更外层的 `banned_blocked` 访问 AnonymousUser.is_banned）。所以
+  5xx 不能一律当「临时故障」重试，必须先用 `loginauto` 确认登录态还在不在。
+- 新增准入闸门：实名 **或** 玩家认证满足其一才解析文件，否则
+  `{"object":"userprofile","category":"identity_access_required"}`。
+- 解析失败不再一律走 200：解析子进程超时、退出码非零、结果文件坏了，现在都是
+  **500**（body 仍是 JSON `{"object":"rust","category":"panic"}`）。所以看到 5xx
+  得先看 body 再决定是「这条录像坏了」还是「站点挂了」。
 
 2026-10 站点改版：`videolist` 原本每条录像都带 timems / bv / file_size（去重三元组），
 改版后收窄成纯元信息，明细字段拆到 `staticdetailbatch`（单次最多 100 个 ID，5 次/秒）。
@@ -73,7 +86,11 @@ REASON_CN = {
     ("file", "size"): "文件过大",
     ("identifier", "verify"): "标识含违规词",
     ("rust", "panic"): "录像解析崩溃",
+    ("baidu", "unknown"): "标识审查服务异常",
+    ("baidu", "fileNotFound"): "标识审查服务异常",
+    ("baidu", "jsonDecode"): "标识审查服务异常",
     ("userprofile", "realname_required"): "账号未实名",
+    ("userprofile", "identity_access_required"): "未满足上传准入（需实名或玩家认证）",
     ("userprofile", "banned"): "账号被封禁",
 }
 
@@ -524,6 +541,21 @@ class Client:
         raise OmsError("读取网站 Top5 失败（HTTP %s）" % status, status, p)
 
     # --- 上传 ---
+    def _login_state(self):
+        """问一次 ``loginauto``：True=已登录，False=匿名，None=问不出来。
+
+        专给上传失败后的判别用。站点在登录态失效时给的是 500/HTML（不是 403），
+        光看状态码分不清「Cookie 过期」和「服务端真出错」，只能回头问这一句。
+        问不出来（断网、限流 429）返回 None，调用方按保守策略处理。
+        """
+        try:
+            status, p = self.get_json("/api/common/loginauto", timeout=20)
+        except OmsError:
+            return None
+        if status != 200 or not isinstance(p, dict):
+            return None
+        return p.get("user") is not None
+
     def upload(self, path, retries=3):
         """上传单个录像，返回归一化结果字典。
 
@@ -544,15 +576,14 @@ class Client:
         except OSError as e:
             return {"ok": False, "reason": "读取失败：%s" % e, "fatal": None}
 
-        body, ctype = _multipart({"skipTournamentCheck": "false"},
-                                 {"file": (os.path.basename(path), content)})
+        body, ctype = _multipart(None, {"file": (os.path.basename(path), content)})
         # 单条上传内部重试：断网/超时按 1s、2s、4s 退避；503/429 听 Retry-After。
         # 重试只针对「可能自己好起来」的错误，403/402 这类直接交给上层判定。
         attempt = 0
         while True:
             attempt += 1
             try:
-                status, hdrs, raw = self.request("/common/uploadvideo/", data=body,
+                status, hdrs, raw = self.request("/api/common/uploadvideo", data=body,
                                                  method="POST", ctype=ctype, timeout=90)
             except OmsError:
                 if attempt > retries:
@@ -569,7 +600,26 @@ class Client:
                 continue
             break
 
+        p = _json(raw)
+
+        # 5xx 里也可能藏着正经的 JSON 错误：录像解析崩了（`rust/panic`）以及解析
+        # 子进程超时/退出码非零，服务端现在都返回 **500**。先认这个，否则「这条
+        # 录像坏了」会被当成「站点挂了」——重试三次白等，连续三条还会停掉整批。
+        if status >= 500 and isinstance(p, dict) and p.get("type") == "error":
+            obj = p.get("object") or p.get("obj") or ""
+            cat = p.get("category") or ""
+            reason = (REASON_CN.get((obj, cat))
+                      or ("%s/%s" % (obj, cat) if obj or cat else "服务器错误（%d）" % status))
+            return {"ok": False, "reason": reason, "fatal": None, "payload": p}
+
         if status == 403:
+            # 403 现在是 banned_blocked 的专属信号（登录态失效走 500，见文件头）。
+            # 还是先问一句登录态：问不出结果就按老口径当 auth，别冒报「被封」。
+            alive = self._login_state()
+            if alive is False:
+                return {"ok": False, "reason": "登录已失效（403）", "fatal": "auth"}
+            if alive is True:
+                return {"ok": False, "reason": "账号被封禁（403）", "fatal": "banned"}
             return {"ok": False, "reason": "登录已失效（403）", "fatal": "auth"}
         if status == 402:
             return {"ok": False, "reason": "录像额度已满（402）", "fatal": "quota"}
@@ -577,12 +627,18 @@ class Client:
             return {"ok": False, "reason": "请求过快被限流（429）", "fatal": None,
                     "transient": True}
         if status >= 500:
+            # 站点在登录态失效时返回 500 + HTML，不先确认就重试只会白等三次，
+            # 还会把「该重新登录」盖成「服务器错误」。
+            if self._login_state() is False:
+                return {"ok": False, "reason": "登录已失效（%d）" % status,
+                        "fatal": "auth"}
             return {"ok": False, "reason": "服务器错误（%d）" % status, "fatal": None,
                     "transient": True}
         if status == 413:
-            return {"ok": False, "reason": "文件过大（413）", "fatal": None}
+            # 实测：nginx 对这条路径的请求体上限是 1 MB（仓库配置里没有全局
+            # client_max_body_size，走的是默认 1m），比站点自己声明的 5 MB 早生效。
+            return {"ok": False, "reason": "文件过大（413，站点上限 1 MB）", "fatal": None}
 
-        p = _json(raw)
         if not p:
             return {"ok": False, "reason": "HTTP %s，响应无法解析" % status,
                     "fatal": "auth" if status in (401,) else None, "status": status}
@@ -598,9 +654,10 @@ class Client:
         if (obj, cat) == ("file", "collision"):
             return {"ok": True, "state": None, "vid": None, "reason": reason,
                     "fatal": None, "payload": p, "collision": True}
-        fatal = None
-        if cat in ("realname_required", "banned"):
-            fatal = "banned" if cat == "banned" else "realname"
+        # 账号级拒绝：这几条后面每一条都会同样失败，上层据此停整批
+        fatal = {"realname_required": "realname",
+                 "identity_access_required": "identity",
+                 "banned": "banned"}.get(cat)
         return {"ok": False, "reason": reason, "fatal": fatal, "payload": p}
 
 

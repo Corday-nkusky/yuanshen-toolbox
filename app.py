@@ -28,7 +28,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.14.0"
+APP_VER = "0.14.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -2310,6 +2310,9 @@ class App(tk.Tk):
                 bits.append("标识 " + " / ".join(self.oms_idents))
             if self.oms_user.get("realname"):
                 bits.append("已实名")
+            elif not self.oms_user.get("verified"):
+                # 上传闸门：实名或玩家认证满足其一，否则站点直接拒（identity_access_required）
+                bits.append("未实名且无玩家认证，上传会被拒")
         n = journal.count()
         if n:
             bits.append("本地台账 %d" % n)
@@ -2666,7 +2669,7 @@ class App(tk.Tk):
         """串行上传。
 
         失败分两类，处理方式不同：
-          · 账号级（auth / quota / realname / banned）—— 后面的每一条都会同样失败，
+          · 账号级（auth / quota / realname / identity / banned）—— 后面的每一条都会同样失败，
             立即停止整批；
           · 单条级（网络重试耗尽、5xx、单条被拒）—— 记下来继续下一条。
         网络 / 服务端连续 3 条失败就认为连不上，主动停批，避免白等 N 个超时。
@@ -2695,7 +2698,7 @@ class App(tk.Tk):
             else:
                 net_streak = 0
             self._q.put(("up", (p, res, i, len(paths))))
-            if res.get("fatal") in ("auth", "quota", "banned", "realname"):
+            if res.get("fatal") in ("auth", "quota", "banned", "realname", "identity"):
                 self._q.put(("up_end", {"fatal": res.get("fatal"),
                                         "reason": res.get("reason")}))
                 return
@@ -2797,6 +2800,10 @@ class App(tk.Tk):
         elif fatal == "realname":
             messagebox.showwarning(APP_TITLE, "账号未实名，网站拒绝上传。\n\n"
                                              "请先到 openms.top 个人资料里完成实名。")
+        elif fatal == "identity":
+            messagebox.showwarning(APP_TITLE, "账号还没通过上传准入，本批已停止。\n\n"
+                                             "网站要求「实名」或「玩家认证」满足其一，"
+                                             "请先到 openms.top 个人资料里办一项。")
         elif fatal == "banned":
             messagebox.showwarning(APP_TITLE, "账号被封禁，无法上传。")
         elif fatal == "net":
