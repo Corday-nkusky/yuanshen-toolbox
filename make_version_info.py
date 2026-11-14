@@ -1,7 +1,9 @@
 """从 app.py 的 APP_VER 生成 PyInstaller 用的 VERSIONINFO 资源。
 
-build.cmd 在打包前调用；版本号只改 app.py 一处，exe 的文件属性和文件名跟着走。
-同时把文件名写到 build\app_name.txt 供批处理读取；`--print-name` 只打印名字，便于命令行检查。
+build.cmd 在打包前调用；版本号只改 app.py 一处，exe 的文件属性跟着走。
+**exe 文件名固定不带版本号**，这样桌面快捷方式指向的路径永远不变，升级时只换文件内容。
+版本号另写到 build\app_ver.txt，供 build.cmd 给归档副本命名。
+`--print-name` 只打印名字，便于命令行检查。
 """
 import ast
 import os
@@ -12,6 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "app.py")
 OUT = os.path.join(HERE, "version_info.txt")
 NAME_FILE = os.path.join(HERE, "build", "app_name.txt")
+VER_FILE = os.path.join(HERE, "build", "app_ver.txt")
 
 PRODUCT = "YuanshenToolbox"
 
@@ -46,8 +49,13 @@ VSVersionInfo(
 """
 
 
-def exe_name(ver):
-    return "%s-v%s" % (PRODUCT, ver)
+def exe_name(_ver=None):
+    """exe 文件名固定，不带版本号 —— 快捷方式的路径才不会过期。
+
+    版本号仍然完整写进 VERSIONINFO，右键属性 → 详细信息能看到；
+    归档副本由 build.cmd 用 app_ver.txt 拼出带版本号的名字。
+    """
+    return PRODUCT
 
 
 def read_version():
@@ -83,6 +91,8 @@ def main():
     os.makedirs(os.path.dirname(NAME_FILE), exist_ok=True)
     with open(NAME_FILE, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(exe_name(ver) + "\n")
+    with open(VER_FILE, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(ver + "\n")
     print("version_info.txt: %s %s (%s.exe)" % (ver, nums, exe_name(ver)))
 
 

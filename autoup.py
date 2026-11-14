@@ -30,8 +30,8 @@ AUTO_SCOPES = ("top", "top_nf", "pb", "pb_nf")
 # 界面上的三个开关 -> 范围集合。涨分局 = 前端 std + 前端 NF，两项绑在一起：
 # 用户口径里它们是同一件事（排行榜上的显示值变好）。
 GROUPS = (
-    ("rank", ("top", "top_nf"), "涨分局（前端成绩，含 NF）"),
-    ("pb", ("pb",), "全PB（每个 3BV 最快的一条）"),
+    ("rank", ("top", "top_nf"), "涨分局"),
+    ("pb", ("pb",), "全PB"),
     ("pb_nf", ("pb_nf",), "NF PB"),
 )
 

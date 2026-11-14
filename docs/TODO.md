@@ -112,8 +112,8 @@
 1. `python test_arb.py`、`python test_resume_ui.py`、`python test_retry.py`、
    `python test_smoke.py`、`python test_upload.py`、`python test_site_pb.py`
    退出码都是 0（`test_tabs.py` 是截图工具，不参与回归判定）。
-2. `build.cmd` → 把 `dist\YuanshenToolbox-v<版本号>.exe` 复制到
-   `%APPDATA%\Metasweeper3.3.4\` 运行 `--probe` → 日志里
+2. `build.cmd` 会自动把 `dist\YuanshenToolbox.exe` 部署到
+   `%APPDATA%\Metasweeper3.3.4\`；在里面运行 `--probe` → 日志里
    `启动 YuanshenToolbox vX.Y.Z` 与 `APP_VER` 一致；文件属性 → 详细信息里的 FileVersion 也一致。
 3. 真机开一次：概览 / PB / 前端成绩 / 上传四页各看一眼（行高、对齐、滚动条）。
 4. 有账号时确认「网站已有 N」与站点实际条数一致（去重键没漂）。

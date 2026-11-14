@@ -6,7 +6,7 @@
 
 **仓库**：<https://github.com/Corday-nkusky/yuanshen-toolbox>
 **直接下载**：<https://github.com/Corday-nkusky/yuanshen-toolbox/releases/latest>
-→ 取 `YuanshenToolbox-v<版本号>.exe`（单文件，文件名带版本号，约 27 MB）。
+→ 取 `YuanshenToolbox.exe`（单文件，约 27 MB，文件名不带版本号，升级直接覆盖）。
 免安装、不需要 Python，双击即用。
 
 ## 干什么用
@@ -41,7 +41,7 @@
 
 阿比特的录像默认**不自动加入**（阿比特目录里常有从网上下载的别人的录像，
 自动收进来会把别人的成绩算成你的）。要加就点「路径 (N)…」→「添加目录…」，
-加之前会确认「这里每一条都算你自己打的」。
+加之前会提醒你：里面的录像会全部计入成绩统计，混有别人的录像要先移出去。
 
 ## 常见问题
 

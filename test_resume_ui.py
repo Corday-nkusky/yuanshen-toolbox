@@ -202,6 +202,56 @@ def main():
                ("用户自己关掉时不误报启动失败", quiet),
                ("宽限期过了仍没起来才报错", expired)]
 
+    # 回执退场不能把「正在启动元扫雷…」捞回来 —— 已经启动成功了，底下还写着
+    # 正在启动，界面上下一对不上，用户以为程序没跟上。
+    win.set_status("扫描 2 个文件 → 2 个完成局", "dim")
+    win.set_status("正在启动元扫雷…", "dim", transient=True)
+    win.set_status("元扫雷已启动", "ok", hold=80)
+    backed = pump(win, lambda: win.lbl_status.cget("text") != "元扫雷已启动", 2)
+    back_text = win.lbl_status.cget("text")
+    checks.append(("回执退场不会退回「正在启动元扫雷」",
+                   backed and "正在启动" not in back_text))
+
+    # 「每次打开工具箱都自动开始上传」：勾上要落盘，并且当场就把上传开起来
+    cfg_before = A.load_config().get("auto_start", None)
+    real_tick = win._auto_tick
+    win._auto_tick = lambda: None          # 别让测试真的往上网站传东西
+    win.set_auto_upload(False)
+    win.var_auto_start.set(True)
+    win.toggle_auto_start()
+    start_on = win._auto_on and win._auto_start
+    start_saved = A.load_config().get("auto_start") is True
+    win.var_auto_start.set(False)
+    win.toggle_auto_start()
+    start_off = (not win._auto_start
+                 and A.load_config().get("auto_start") is False)
+    still_on = win._auto_on                # 取消勾选只是「以后不自动开」，不暂停
+    win._auto_tick = real_tick
+    win.set_auto_upload(False)
+    if cfg_before is None:
+        A.save_config(auto_start=False)
+    else:
+        A.save_config(auto_start=cfg_before)
+    checks += [("勾上「自动开始」会记住", start_saved),
+               ("勾上时当场就开始上传", start_on),
+               ("取消勾选会记住", start_off),
+               ("取消勾选不暂停当前上传", still_on)]
+
+    # 启动回执：不能出现「这局」这种没头没尾的指代，也不能关掉游戏之后还挂着
+    win._auto_on = False
+    win._ms_probe = lambda: (True, "")
+    win._ms_running = False
+    win._ms_launch_at = time.time()
+    win._poll_ms()
+    receipt = win.lbl_status.cget("text")
+    win._ms_probe = lambda: (False, "")
+    win._poll_ms()
+    dropped = win.lbl_status.cget("text") != receipt
+
+    checks += [("启动回执说的是「新成绩」而不是「这局」",
+                "元扫雷已启动" in receipt and "这局" not in receipt),
+               ("关掉元扫雷后启动回执不再挂在底下", dropped)]
+
     # 置前状态机：抢到一次就收工；窗口还没建出来就留到下一拍再试；
     # 用户已经去干别的了就别再打扰他
     real_focus, real_self = A.mslaunch.focus, A.mslaunch.foreground_is_self

@@ -61,8 +61,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def built_exe():
-    hits = glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox-v*.exe")) \
-        or glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox.exe"))
+    hits = glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox.exe")) \
+        or glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox-v*.exe"))
     if not hits:
         raise SystemExit("dist 下没有 YuanshenToolbox exe，先运行 build.cmd")
     return max(hits, key=os.path.getmtime)

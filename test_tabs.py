@@ -1,6 +1,6 @@
 """四页签截图工具（不是回归测试）：更新 README 预览图 / 人工看布局。
 
-用法：python test_tabs.py            # 用 dist\\YuanshenToolbox-v<版本号>.exe
+用法：python test_tabs.py            # 用 dist\\YuanshenToolbox.exe
       python test_tabs.py --src      # 用源码跑（同一套逻辑，方便改样式后快速看）
       python test_tabs.py pb top     # 只截指定页
 退出码：全部截图成功 0，否则 1。
@@ -25,8 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def built_exe():
-    hits = glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox-v*.exe")) \
-        or glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox.exe"))
+    hits = glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox.exe")) \
+        or glob.glob(os.path.join(HERE, "dist", "YuanshenToolbox-v*.exe"))
     if not hits:
         raise SystemExit("dist 下没有 YuanshenToolbox exe，先运行 build.cmd")
     return max(hits, key=os.path.getmtime)
@@ -104,12 +104,19 @@ def run(tab, out, wait=6.0):
     else:
         cmd = [EXE, "--root", REPLAY, "--tab", tab]
         cwd = os.path.dirname(EXE)
+    # 抓「新冒出来的那个窗口」而不是标题第一个：用户自己可能正开着一个工具箱，
+    # 按标题取会截到他那份旧版本，图和代码对不上。
+    # 句柄是 c_void_p 对象，身份比较永远不相等，得先取成整数
+    def _val(h):
+        return h if isinstance(h, int) else (h.value or 0)
+
+    already = {_val(w) for w in find_window()}
     p = subprocess.Popen(cmd, cwd=cwd)
     deadline = time.time() + wait
     hwnd = None
     while time.time() < deadline:
         time.sleep(0.3)
-        wins = find_window()
+        wins = [w for w in find_window() if _val(w) not in already]
         if wins:
             hwnd = wins[0]
             break

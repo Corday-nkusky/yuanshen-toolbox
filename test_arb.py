@@ -262,7 +262,7 @@ def test_ui(ms_dir, arb_dir):
 
 
 def test_default_roots(arb_dir):
-    """默认只认元扫雷；阿比特目录必须手动加，且加之前要确认「全是自己打的」。"""
+    """默认只认元扫雷；阿比特目录必须手动加，且添加前会提醒录像会全部计入成绩统计。"""
     auto = core.default_roots()
     check("默认目录不为空", bool(auto))
     check("默认目录里没有阿比特的 replays（%d 个）" % len(auto),

@@ -33,7 +33,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.17.1"
+APP_VER = "0.20.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -148,20 +148,18 @@ def shrink_path(p, limit=64):
 
 
 def confirm_own_videos(parent, path, replacing=False):
-    """手动加目录前的确认：加进来的录像一律当作「你自己打的」。
+    """手动加目录前的确认：告诉用户加进来的录像会全部计入成绩统计。
 
     自动探测只认元扫雷的 replay 目录。除此之外的目录（阿比特的 replays、
     从网上下载来观摩的录像堆）都是手动添加的，程序无法分辨里面哪一条不是
     自己打的 —— 只能靠用户确认「这里没有别人的录像」。
     """
     return messagebox.askokcancel(
-        "确认这是你自己的录像目录",
-        ("%s\n\n" % ("这会换掉当前的「主目录」。" if replacing else "")) +
-        "加进来之后，这个目录（含子目录）里的每一条录像都会被当作你自己打的：\n"
-        "  · 计入 PB 表 / 前端成绩\n"
-        "  · 出现在上传列表里\n\n"
-        "如果里面有从网上下载的、别人的录像（观摩用），请先挪到别处，\n"
-        "或者单独放一个文件夹再加。\n\n"
+        "确认添加目录",
+        ("%s\n\n" % ("这会替换当前的主目录。" if replacing else "")) +
+        "添加后，这个目录（含子目录）里的录像会全部计入成绩统计，"
+        "并出现在上传列表。\n\n"
+        "如果里面有从网上下载的、别人的录像，请先移出去。\n\n"
         "目录：\n" + path,
         parent=parent)
 
@@ -1353,7 +1351,6 @@ class PathsDialog(tk.Toplevel):
         self.title("录像目录")
         self.configure(bg=C_BG)
         self.transient(app)
-        self.geometry(f"{sc(760)}x{sc(492)}")
         self.minsize(sc(640), sc(400))
 
         self.roots = [dict(r) for r in app.roots]
@@ -1396,14 +1393,15 @@ class PathsDialog(tk.Toplevel):
 
         self.var_auto = tk.BooleanVar(value=bool(getattr(app, "_watch_enabled", True)))
         tk.Checkbutton(
-            wrap, text="有新录像就自动刷新（每 1.5 秒看一眼目录时间戳，切回窗口也会看一次）",
+            wrap, text="有新录像就自动刷新",
             variable=self.var_auto, command=self._toggle_auto, bg=C_BG, fg=C_TEXT,
             activebackground=C_BG, activeforeground=C_TEXT, selectcolor=C_PANEL,
             font=FONT_SMALL, bd=0, highlightthickness=0).pack(anchor="w", pady=(sc(8), 0))
 
         self.lbl_tip = tk.Label(
-            wrap, text="启动时只自动找元扫雷的 replay 目录；阿比特的录像目录一律要手动添加。\n"
-                       "加进来的目录会被当作「全是你自己打的」，别把下载来观摩的录像留在里面。\n"
+            wrap, text="启动时只自动找元扫雷的录像目录；阿比特的录像目录要手动添加。\n"
+                       "手动添加的目录，里面的录像会全部计入成绩统计并出现在上传列表，\n"
+                       "混有下载来观摩的录像要先移出去。\n"
                        "阿比特的 .avf 按内容解析，不看文件名；打比赛产生的录像标识带比赛编号，\n"
                        "先去网站把完整标识登记上，否则上传会被记成「标识不符」。",
             bg=C_BG, fg=C_DIM, font=FONT_SMALL, anchor="w", justify="left",
@@ -1411,6 +1409,20 @@ class PathsDialog(tk.Toplevel):
         self.lbl_tip.pack(fill="x", pady=(sc(8), 0))
 
         self._refresh()
+
+        # 尺寸按内容算：写死高度装不下复选框 + 多行说明，底部那几行会被切掉
+        self.update_idletasks()
+        w = max(sc(760), self.winfo_reqwidth())
+        w = min(w, self.winfo_screenwidth() - sc(80))
+        h = min(self.winfo_reqheight(), self.winfo_screenheight() - sc(120))
+        self.geometry("%dx%d" % (w, h))
+        try:
+            px, py = app.winfo_rootx(), app.winfo_rooty()
+            pw, ph = app.winfo_width(), app.winfo_height()
+            self.geometry("+%d+%d" % (px + max(0, (pw - w) // 2),
+                                      py + max(0, (ph - h) // 3)))
+        except tk.TclError:
+            pass
 
     # --- 数据 ---
     def _peek_all(self):
@@ -1472,7 +1484,7 @@ class PathsDialog(tk.Toplevel):
             self.lbl_msg.config(text="这个目录已经在列表里了", fg=C_WARN)
             return
         if not confirm_own_videos(self, d):
-            self.lbl_msg.config(text="没有添加 —— 里面如果有别人的录像，先挪走再说",
+            self.lbl_msg.config(text="没有添加。里面有别人的录像的话，移出去后再重新添加",
                                 fg=C_WARN)
             return
         self.roots.append({"path": d, "on": True})
@@ -1498,7 +1510,7 @@ class PathsDialog(tk.Toplevel):
             return
         rest = [r for r in self.roots if r["path"] not in sel]
         if not rest and not messagebox.askyesno(
-                "录像目录", "这是最后一个目录，移掉之后程序就没有可读的录像了。\n继续吗？",
+                "录像目录", "这是最后一个录像目录，移掉之后就没有录像可分析了。\n继续吗？",
                 parent=self):
             return
         # 只从配置里去掉，绝不动磁盘上的文件
@@ -1624,7 +1636,11 @@ class App(tk.Tk):
         _cfg = load_config()
         self.auto_flags = autoup.flags_of(
             _cfg.get("auto_scopes") or ["top", "top_nf", "pb"])
-        self._auto_on = bool(_cfg.get("auto_upload", False))
+        # 「打开工具箱就自动开始上传」是页面上一个显式选项。老配置里只有
+        # auto_upload（上次退出时是开是关），按它迁一次就够。
+        self._auto_start = bool(_cfg.get("auto_start",
+                                         _cfg.get("auto_upload", False)))
+        self._auto_on = self._auto_start
         self._auto_watermark = int(_cfg.get("auto_watermark") or 0)
         self._auto_tracker = autoup.Tracker(self._auto_watermark)
         self._auto_stop = ""       # 需要用户动手才能恢复（额度 / 登录 / 封禁）
@@ -1641,6 +1657,7 @@ class App(tk.Tk):
         self._ms_path = ""         # 从运行中的进程反查到的路径
         self._ms_launch_at = 0.0   # 上次点启动的时刻，用于冷启动宽限
         self._ms_focus_until = 0.0   # 让元扫雷露脸的截止时刻，过了就不管了
+        self._ms_status = ""       # 状态栏那句「元扫雷已启动」，关掉时要收回
 
         # 自动刷新：盯「启用目录 + 它们的所有子目录」的 mtime，变了就重扫
         self._watch_dirs = {}      # 目录 -> 上次看到的 mtime_ns
@@ -1964,6 +1981,7 @@ class App(tk.Tk):
     # ---------- 启动元扫雷 ----------
     MS_POLL_MS = 2500          # 查一次进程的间隔（一次约 6 ms）
     MS_FOCUS_WINDOW = 10.0     # 启动之后这几秒内，补着把它的窗口提到前面
+    MS_STATUS_HOLD_MS = 6000   # 「元扫雷已启动」这行挂多久（到点自己退场）
 
     def open_replay(self, path):
         """双击录像：交给元扫雷播放。
@@ -1990,7 +2008,8 @@ class App(tk.Tk):
             self.set_status("没能用元扫雷打开这条录像", "err")
             return
         diag.log.info("用元扫雷打开录像：%s", path)
-        self.set_status("正在用元扫雷打开 %s…" % os.path.basename(path), "dim")
+        self.set_status("正在用元扫雷打开 %s…" % os.path.basename(path), "dim",
+                        hold=5000)
         # 元扫雷的播放窗口默认会压在工具箱下面（Windows 只让前台进程抢前台），
         # 所以这里主动把它提上来 —— 双击之后用户要看的是录像，不是工具箱。
         self._ms_want_front()
@@ -2039,7 +2058,9 @@ class App(tk.Tk):
         # 一直停在「正在启动元扫雷…」。
         self._ms_launch_at = time.time()
         self._draw_banner()
-        self.set_status("正在启动元扫雷…", "dim")
+        # 过渡话：启动成功之后要能干净地退场，不能把「正在启动…」留成底稿
+        self.set_status("正在启动元扫雷…", "dim", transient=True,
+                        hold=int(mslaunch.START_GRACE * 1000) + 3000)
         self._ms_want_front()
 
     def _ask_ms_exe(self):
@@ -2121,22 +2142,37 @@ class App(tk.Tk):
                 if self._ms_launch_at:          # 这次是按钮启动的，才回一句
                     self._ms_launch_at = 0.0
                     if self._auto_on:
-                        self.set_status("元扫雷已启动", "ok")
+                        text = "元扫雷已启动"
                     else:
-                        self.set_status("元扫雷已启动 · 自动上传还关着，这局不会自动传",
-                                        "warn")
+                        text = "元扫雷已启动 · 自动上传关着，新成绩不会自己传"
+                    # 记下这行，用户把元扫雷关掉时要能立刻收回
+                    self.set_status(text, "ok" if self._auto_on else "warn",
+                                    hold=self.MS_STATUS_HOLD_MS)
+                    self._ms_status = text
         else:
             if self._ms_running:
                 # 用户自己关掉的：静默回弹即可。以前这里会误报「没能启动起来」
                 self._ms_running = False
                 self._ms_launch_at = 0.0
                 self._draw_banner()
+                self._drop_ms_status()
             elif self._ms_launch_at and not self._ms_pending():
                 # 点过启动、宽限期过了仍然没见到进程：这才是真没起来
                 self._ms_launch_at = 0.0
                 self._draw_banner()
                 self.set_status("元扫雷没能启动起来，换个位置试试", "err")
         self.after(self.MS_POLL_MS, self._poll_ms)
+
+    def _drop_ms_status(self):
+        """元扫雷关掉之后，底下那句「已启动」不能继续挂着。
+
+        界面上下要一致：横幅已经变回「启动元扫雷」了，状态栏还留着一句
+        「元扫雷已启动」，用户只会觉得程序没跟上。
+        """
+        text = getattr(self, "_ms_status", "")
+        self._ms_status = ""
+        if text and self.lbl_status.cget("text") == text:
+            self._status_back()
 
     # ---------- 小工具 ----------
     def _section(self, parent, title, accent=C_ACCENT, sub=""):
@@ -2492,7 +2528,7 @@ class App(tk.Tk):
         page = self.pages["auto"]
 
         head = tk.Frame(page, bg=C_BG)
-        head.pack(fill="x", pady=(sc(10), sc(6)))
+        head.pack(fill="x", pady=(sc(12), sc(12)))
         self.btn_auto = Pill(head, "", command=self.toggle_auto_upload,
                              accent=C_OK, padx=20, height=34)
         self.btn_auto.pack(side="left")
@@ -2500,33 +2536,32 @@ class App(tk.Tk):
                                       font=FONT_SMALL)
         self.lbl_auto_acct.pack(side="left", padx=(sc(14), 0))
 
-        tk.Label(page, text="只传勾上的那几张表；没勾的一律不动，也不影响上传页的手动操作。",
-                 bg=C_BG, fg=C_DIM, font=FONT_SMALL, anchor="w").pack(
-                     fill="x", pady=(0, sc(10)))
-
-        tips = {
-            "rank": "新成绩挤进网站前五才传。前五被自己占满后，得打破自己的第五名才会触发。",
-            "pb": "比网站上同一个 3BV 的记录更快才传。",
-            "pb_nf": "只在 NF 局之间比，跟全PB 是两张独立的表。",
-        }
+        # 四个开关横着排一行：左边三个管「传什么」，最右边那个管「什么时候开始」，
+        # 靠一段空档分开，不另起一行占高度。
+        row = tk.Frame(page, bg=C_BG)
+        row.pack(fill="x", pady=(0, sc(10)))
         self.auto_vars = {}
         for key, _scopes, label in autoup.GROUPS:
             var = tk.BooleanVar(value=bool(self.auto_flags.get(key)))
             self.auto_vars[key] = var
-            chk = tk.Checkbutton(
-                page, text=label, variable=var,
+            tk.Checkbutton(
+                row, text=label, variable=var,
                 command=lambda k=key: self.toggle_auto_scope(k),
                 bg=C_BG, fg=C_TEXT, activebackground=C_BG, activeforeground=C_TEXT,
                 selectcolor=C_PANEL, font=FONT_UI, bd=0, highlightthickness=0,
-                anchor="w")
-            chk.pack(fill="x")
-            tk.Label(page, text=tips.get(key, ""), bg=C_BG, fg=C_DIM,
-                     font=FONT_SMALL, anchor="w").pack(
-                         fill="x", padx=(sc(26), 0), pady=(0, sc(6)))
+                anchor="w").pack(side="left", padx=(0, sc(26)))
+
+        self.var_auto_start = tk.BooleanVar(value=bool(self._auto_start))
+        tk.Checkbutton(
+            row, text="每次打开工具箱都自动开始上传",
+            variable=self.var_auto_start, command=self.toggle_auto_start,
+            bg=C_BG, fg=C_TEXT, activebackground=C_BG, activeforeground=C_TEXT,
+            selectcolor=C_PANEL, font=FONT_UI, bd=0, highlightthickness=0,
+            anchor="w").pack(side="left", padx=(sc(36), 0))
 
         self.lbl_auto_status = tk.Label(page, text="", bg=C_BG, fg=C_DIM,
                                         font=FONT_SMALL, anchor="w", justify="left")
-        self.lbl_auto_status.pack(fill="x", pady=(sc(2), sc(8)))
+        self.lbl_auto_status.pack(fill="x", pady=(sc(8), sc(8)))
 
         foot = tk.Frame(page, bg=C_BG)
         foot.pack(side="bottom", fill="x", pady=(sc(8), sc(2)))
@@ -2559,9 +2594,22 @@ class App(tk.Tk):
     def toggle_auto_upload(self):
         self.set_auto_upload(not self._auto_on)
 
+    def toggle_auto_start(self):
+        """「每次打开工具箱都自动开始上传」这个选项本身。
+
+        勾上如果当前还没在传，就顺手开起来 —— 用户勾它是想传，不是想让
+        开关停在「已勾上但关闭」这种自相矛盾的状态。
+        """
+        self._auto_start = bool(self.var_auto_start.get())
+        save_config(auto_start=self._auto_start)
+        diag.log.info("自动上传：打开工具箱就自动开始 = %s", self._auto_start)
+        if self._auto_start and not self._auto_on:
+            self.set_auto_upload(True)
+        else:
+            self._refresh_auto_view()
+
     def set_auto_upload(self, on):
         self._auto_on = bool(on)
-        save_config(auto_upload=self._auto_on)
         if self._auto_on:
             self._auto_stop = ""
             self._auto_backoff = 0.0
@@ -2620,8 +2668,9 @@ class App(tk.Tk):
         if why:
             txt, color = why, C_WARN
         else:
-            txt = "盯着新录像，符合范围的直接上传（不弹窗、不打断游戏）"
-            color = C_DIM
+            # 一切正常时什么都不用说。留着这个 label 是为了出问题时那行原因
+            # 出现不会把下面的表格顶下去。
+            txt, color = "", C_DIM
         self.lbl_auto_status.config(text=txt, fg=color)
 
         n_log = len(autolog.items())
@@ -3866,19 +3915,18 @@ class App(tk.Tk):
     def first_run_pick(self):
         messagebox.showinfo(
             APP_TITLE,
-            "程序只自动找元扫雷的录像目录，没找到，所以请你指定一个。\n\n"
-            "元扫雷的 replay 目录，一般位于：\n"
+            "没有自动找到元扫雷的录像目录，请手动指定一个。\n\n"
+            "元扫雷的录像目录一般在：\n"
             "    %APPDATA%\\Metasweeper<版本号>\\replay\n\n"
             "选一次即可，之后会自动记住。\n\n"
-            "阿比特的 .avf 目录不会自动加入 —— 打开后点右上角「路径…」→「添加目录…」"
-            "手动添加（会先问你一句，确认里面没有别人打的录像）。")
+            "阿比特的录像目录不会自动加入：打开后点右上角「路径…」→「添加目录…」手动添加。")
         self.pick_dir(first=True)
 
     def pick_dir(self, first=False):
         if self._up_running:
             self.set_status("上传进行中，先等本批结束再换目录", "warn")
             return
-        title = "选择录像目录（这个目录里的录像都算你自己打的）"
+        title = "选择录像目录"
         initial = (self.root_dir or core.autodetect_root()
                    or os.path.join(os.environ.get("APPDATA") or "", "Metasweeper"))
         d = filedialog.askdirectory(title=title,
@@ -4045,6 +4093,8 @@ class App(tk.Tk):
         n_fail = info["fail_skipped"]
         dup = info["duplicates"]
         extra = []
+        if info.get("non_std"):
+            extra.append(f"跳过 {info['non_std']} 个非标准局")
         if n_fail:
             extra.append(f"跳过 {n_fail} 个没打完的")
         if dup:
@@ -4073,13 +4123,14 @@ class App(tk.Tk):
             f"扫描 {info['files']} 个文件 → {info['unique']} 个完成局{tail}，用时 {used}",
             "warn" if (info.get("tampered") or info.get("truncated")) else "dim")
         self.lbl_meta.config(text=f"{info['unique']} 局完成 · " + self.roots_label())
-        diag.log.info("扫描完成：%d 文件 → %d 局（阿比特 %d%s），NF %s / FL %s，%d ms%s",
+        diag.log.info("扫描完成：%d 文件 → %d 局（阿比特 %d%s），NF %s / FL %s，"
+                      "非标准 %s，%d ms%s",
                       info["files"], info["unique"], n_arb,
                       "，去掉重复副本 %d" % info["dup_removed"]
                       if info.get("dup_removed") else "",
                       info.get("nf_count"),
-                      info.get("fl_count"), elapsed, "（目录数达上限，已截断）"
-                      if info.get("truncated") else "")
+                      info.get("fl_count"), info.get("non_std"), elapsed,
+                      "（目录数达上限，已截断）" if info.get("truncated") else "")
 
         if not games:
             self.lbl_check.config(text="未发现 .evf / .avf 录像，请用「换目录…」或「路径…」指定",
@@ -4279,9 +4330,39 @@ class App(tk.Tk):
             text, color = self._top_site_note()
             self.lbl_top_site.config(text=text, foreground=color)
 
-    def set_status(self, text, kind="dim"):
+    def set_status(self, text, kind="dim", hold=None, transient=False):
+        """写状态栏。``hold`` 是毫秒：到点自动退回写之前那一行。
+
+        一次性回执（「元扫雷已启动」这类）必须自己退场 —— 常驻下来就会变成
+        一句跟当前界面对不上的话，用户关掉游戏之后还能看到它。
+
+        ``transient`` 标的是「说了就过期」的过渡话（「正在启动元扫雷…」）：
+        它自己不需要计时退场，但**不能被当成「原样」记下来**。否则后一条
+        回执退场时会把「正在启动…」捞回来 —— 明明已经启动成功了，底下还
+        写着正在启动。
+        """
         color = {"dim": C_DIM, "ok": C_OK, "warn": C_WARN, "err": C_ERR}.get(kind, C_DIM)
         # 序号一变，排队中的「几秒后恢复原样」就作废 —— 期间有新消息时不能覆盖它
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
+        seq = self._status_seq
+        cur = self.lbl_status.cget("text")
+        # 上一行如果本身就是一条会自己退场的消息，它不能当「原样」被还原 ——
+        # 否则新消息退场时会把一句已经过期的话又捞回来。
+        if cur and cur == getattr(self, "_status_temp", ""):
+            self._status_prev = getattr(self, "_status_temp_prev", ("", C_DIM))
+        else:
+            self._status_prev = (cur, self.lbl_status.cget("foreground"))
+        self._status_temp = text if (hold or transient) else ""
+        self._status_temp_prev = self._status_prev
+        self.lbl_status.config(text=text, foreground=color)
+        if hold:
+            self.after(hold, lambda s=seq: self._status_back(s))
+
+    def _status_back(self, seq=None):
+        """退回写之前那一行。给了 seq 就表示「这条消息还是最新的才退」。"""
+        if seq is not None and getattr(self, "_status_seq", 0) != seq:
+            return
+        text, color = getattr(self, "_status_prev", ("", C_DIM))
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         self.lbl_status.config(text=text, foreground=color)
 

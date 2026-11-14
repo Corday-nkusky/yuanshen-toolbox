@@ -49,6 +49,16 @@ MAX_SCAN_DIRS = 20000
 # ms-toollib 里的 level 编码：3=初级 4=中级 5=高级 6=自定义
 VIDEO_LEVEL = {3: "b", 4: "i", 5: "e"}
 
+# 模式（mode）：0 = 标准。其余都是变体玩法 —— 1 upk、4 win7、5 竞速无猜、
+# 6 强无猜、7 弱无猜、8 准无猜、9 强可猜、10 弱可猜、11 标准递归。
+# 口径出自站点源码 back_end/saolei/config/text_choices.py 的 Mode 枚举，
+# 与元扫雷自己写进文件名的那个数字同源（见 Metasweeper 的 cal_evf_filename）。
+# 本工具只统计标准模式：别的玩法难度不可比，混进 PB 就是把账算错。
+STD_MODE = 0
+
+# 自定义盘面在元扫雷录像文件名里的级别前缀（b_ / i_ / e_ 之外的那个）
+CUSTOM_PREFIX = "c_"
+
 # 录像来源：按扩展名判定（站点也按扩展名分派解析器，见 openms 站点源码 utils/parser.py）
 VIDEO_SRC = {".evf": "ms", ".avf": "arb"}
 SRC_CN = {"ms": "元扫雷", "arb": "阿比特"}
@@ -108,6 +118,10 @@ def read_video(path):
             tms = int(v.rtime_ms)
         except BaseException:                  # noqa: BLE001
             tms = int(round(float(v.rtime) * 1000))
+        try:
+            mode = int(v.mode)
+        except BaseException:                  # noqa: BLE001
+            mode = -1
         return {
             "rce": int(kp.rce),
             "left": int(kp.left),
@@ -117,6 +131,7 @@ def read_video(path):
             "time": float(v.rtime),
             "timems": tms,
             "level": VIDEO_LEVEL.get(int(v.level)),
+            "mode": mode,
             "completed": bool(v.is_completed),
             "ident": ident,
             "valid": valid,
@@ -160,6 +175,7 @@ def parse_filename(fn):
     return {
         "level": lv,
         "flag2": flag2,
+        "mode": flag2,          # 第二字段就是 mode，标准模式是 "0"
         "time": time,
         "bv": bv,
         "bvs_file": bvs_file,
@@ -406,6 +422,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
         "rce_failed": 0,
         "tampered": [],
         "level_conflict": [],
+        "non_std": 0,
         "dirs": set(),
         "by_src": {"ms": 0, "arb": 0},
     }
@@ -463,6 +480,9 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                             _cache.put(path, mt_ns, size, vid)
 
                 if src == "ms":
+                    if fn[:2].lower() == CUSTOM_PREFIX:
+                        info["non_std"] += 1     # 自定义盘面：级别对不上任何一档
+                        continue
                     rec = parse_filename(fn)
                     if rec is None:
                         info["unparsed"].append(fn)
@@ -470,11 +490,28 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     if rec["fail"]:
                         info["fail_skipped"] += 1
                         continue
+                    if rec["mode"] != str(STD_MODE):
+                        info["non_std"] += 1     # 无猜、可猜、win7 这类变体玩法
+                        continue
                 else:
                     # 阿比特：能读内容就以内容为准，读不出才退回文件名。
                     # 内容里已经有 level 时不必再跑文件名正则 —— 2 万局实测省
                     # 0.23 s，而文件名里的 level/time/bv 后面本来就会被内容覆盖。
                     lvl = vid.get("level") if vid is not None else None
+                    if vid is not None:
+                        # level 6 = 自定义盘面；mode 非 0 = 变体玩法。两种都不算成绩。
+                        #
+                        # 老缓存里没有 mode 字段（这一版才加的）。这里**不**为了补它
+                        # 重新解析：阿比特（Arbiter）根本没有无猜玩法，实测 23183 条
+                        # 录像的 mode 全是 0，而重解析 2 万条要十几秒 —— 打开工具箱
+                        # 卡在那儿等十几秒，比放行一条不存在的无猜局更糟。缺字段就按
+                        # 标准放行；新录像解析时自然带上 mode，从下一版起逐条补齐。
+                        # 元扫雷的 mode 来自文件名，任何时候都准，不受这条影响。
+                        mode = vid.get("mode")
+                        if lvl is None or (mode is not None
+                                           and int(mode) != STD_MODE):
+                            info["non_std"] += 1
+                            continue
                     if lvl:
                         rec = {"level": lvl, "flag2": "avf", "time": 0.0, "bv": 0,
                                "bvs_file": 0.0, "player": "", "fail": False}
@@ -1250,7 +1287,7 @@ def default_roots():
 
     阿比特的目录（``<安装目录>\\replays``）故意不放进这里：用户很可能会把录像
     下载到阿比特的安装目录里观摩，自动收进来就会把别人的成绩当成自己的。
-    阿比特目录一律由用户在「路径…」里手动添加，加之前会确认「全是自己打的」。
+    阿比特目录一律由用户在「路径…」里手动添加，添加前会提醒：里面的录像会全部计入成绩统计。
     """
     cands = replay_dirs()
 
