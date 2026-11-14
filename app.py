@@ -28,7 +28,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.13.0"
+APP_VER = "0.14.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1235,6 +1235,13 @@ class PathsDialog(tk.Toplevel):
         self.lbl_msg = tk.Label(row, text="", bg=C_BG, fg=C_DIM, font=FONT_SMALL)
         self.lbl_msg.pack(side="left", padx=(sc(10), 0))
 
+        self.var_auto = tk.BooleanVar(value=bool(getattr(app, "_watch_enabled", True)))
+        tk.Checkbutton(
+            wrap, text="有新录像就自动刷新（每 1.5 秒看一眼目录时间戳，切回窗口也会看一次）",
+            variable=self.var_auto, command=self._toggle_auto, bg=C_BG, fg=C_TEXT,
+            activebackground=C_BG, activeforeground=C_TEXT, selectcolor=C_PANEL,
+            font=FONT_SMALL, bd=0, highlightthickness=0).pack(anchor="w", pady=(sc(8), 0))
+
         self.lbl_tip = tk.Label(
             wrap, text="启动时只自动找元扫雷的 replay 目录；阿比特的录像目录一律要手动添加。\n"
                        "加进来的目录会被当作「全是你自己打的」，别把下载来观摩的录像留在里面。\n"
@@ -1288,6 +1295,9 @@ class PathsDialog(tk.Toplevel):
         self.app.apply_roots(self.roots, rescan=True)
         self.roots = [dict(r) for r in self.app.roots]
         self._refresh()
+
+    def _toggle_auto(self):
+        self.app.set_auto_refresh(bool(self.var_auto.get()))
 
     # --- 操作 ---
     def add_dir(self):
@@ -1382,6 +1392,7 @@ class App(tk.Tk):
                 save_config(roots=self.roots)
         self._need_pick = not self.roots
         self.upload_arb = bool(load_config().get("upload_arb", True))
+        self._watch_enabled = bool(load_config().get("auto_refresh", True))
         note = paths.legacy_note()
         if note:
             diag.log.info(note)
@@ -1407,6 +1418,8 @@ class App(tk.Tk):
         self.diffs = []
         self.ini_ok = False
         self._scanning = False
+        self._scan_auto = False        # 本次扫描是不是自动刷新触发的（不显示进度条）
+        self._scan_sig = None          # 上次扫描的 (文件数, 局数, 最新 mtime)，判断「真的变了吗」
         self._level = "b"
         self._pb_level = ""
         self._pb_style = "all"         # PB 榜：all=全PB / nf=NF PB
@@ -1440,6 +1453,14 @@ class App(tk.Tk):
         self._up_ok = 0
         self._up_dup = 0
         self._up_fail = 0
+        self._up_dirty = True      # 上传页的行要不要重建（不在该页时先不算，省 0.5 s）
+
+        # 自动刷新：盯「启用目录 + 它们的所有子目录」的 mtime，变了就重扫
+        self._watch_dirs = {}      # 目录 -> 上次看到的 mtime_ns
+        self._watch_sig = (0, 0)   # (录像数, 最新 mtime)：目录时间戳看不出来的改动靠它兜底
+        self._watch_job = None
+        self._watch_ticks = 0
+        self._watch_rescan = False  # 强制下一拍重扫（读到过半截文件时用）
 
         self._set_icon()
         self._refresh_icon()      # 窗口 map 后 Tk 会再设一次，隔一拍覆盖回来
@@ -1450,6 +1471,9 @@ class App(tk.Tk):
         self.after(60, self._poll)
         self.after(80, self._boot)
         self.after(700, self._restore_session)
+        # 手动刷新：快捷键；自动刷新从第一轮扫描结束后开始（见 _on_scanned → _watch_rebuild）
+        self.bind("<F5>", lambda _e: self.start_scan())
+        self.bind("<FocusIn>", self._on_focus)
 
     # ---------- 字体 / 图标 / 主题 ----------
     def _init_fonts(self):
@@ -1649,6 +1673,8 @@ class App(tk.Tk):
                 page.pack_forget()
         for k, p in self.tab_pills.items():
             p.set_selected(k == key)
+        if key == "upload":
+            self._ensure_up_rows()      # 懒重建：切到这一页才把 2 万行算出来
 
     # ---------- 横幅 ----------
     def _draw_banner(self, event=None):
@@ -2087,7 +2113,7 @@ class App(tk.Tk):
         self.site_pb_err = ""
         self._clear_site_top()
         self._refresh_acct_label()
-        self._rebuild_up_rows()
+        self._mark_up_dirty()
         self._site_pb_changed()
         self._site_top_changed()
         self.set_status("已退出登录", "dim")
@@ -2259,7 +2285,7 @@ class App(tk.Tk):
                 self._clear_site_top()
                 self._site_top_changed()
         self._refresh_acct_label()
-        self._rebuild_up_rows()
+        self._mark_up_dirty()
         # Top5 通常比账号信息先到，顶部提示要等登录态落定后重画一次，
         # 否则会一直停在「未登录，仅显示本地成绩」
         self.render_top()
@@ -2297,7 +2323,22 @@ class App(tk.Tk):
                    if isinstance(v, dict) and not openms.server_key(v))
 
     # ---------- 上传：选范围 / 选行 ----------
+    def _mark_up_dirty(self):
+        """数据变了：上传页那些行作废。
+
+        正在看上传页就立刻重建（不然眼前是旧表），否则只打个标记 ——
+        2 万局构造 2 万行要 0.5 s，人不在这一页时算它就是白烧。
+        """
+        self._up_dirty = True
+        if getattr(self, "_tab", "") == "upload":
+            self._ensure_up_rows()
+
+    def _ensure_up_rows(self):
+        if getattr(self, "_up_dirty", True):
+            self._rebuild_up_rows()
+
     def _rebuild_up_rows(self):
+        self._up_dirty = False
         have = {}
         for v in self.oms_videos:
             k = openms.server_key(v)
@@ -2458,6 +2499,7 @@ class App(tk.Tk):
         分别记在 ``_scope_skipped_pb`` / ``_scope_skipped_top``，只统计
         仍未上传的那部分。
         """
+        self._ensure_up_rows()
         want = getattr(self, "_scope_want", None)
         if want is None:
             want = set()
@@ -2480,9 +2522,10 @@ class App(tk.Tk):
         self.upload_arb = bool(self.var_arb.get())
         save_config(upload_arb=self.upload_arb)
         diag.log.info("上传包含阿比特录像：%s", self.upload_arb)
-        self._rebuild_up_rows()
+        self._rebuild_up_rows()         # 用户就在这一页点了勾，必须当场变
 
     def _up_stat_text(self):
+        self._ensure_up_rows()
         total = len(self.up_rows)
         up = sum(1 for r in self.up_rows if r.get("uploaded"))
         txt = "本地 %d 个完成局 · 网站已有 %d · 未上传 %d" % (total, up, total - up)
@@ -2500,6 +2543,7 @@ class App(tk.Tk):
 
     def _view_pending(self):
         """当前表格视图里的待传路径。范围过滤后，「上传全部未传」只算眼前这些。"""
+        self._ensure_up_rows()
         return {r["path"] for r in self.up_view if not r.get("uploaded")}
 
     def _update_up_stat(self):
@@ -2510,6 +2554,7 @@ class App(tk.Tk):
         self.btn_up_all.set_text("上传全部未传 (%d)" % len(self._view_pending()))
 
     def _on_up_select(self):
+        self._ensure_up_rows()
         self.up_sel = set(self.tbl_up.selected_paths())
         self.lbl_up_stat.config(text=self._up_stat_text())
         self.btn_up_sel.set_text("上传选中 (%d)" % len(self.up_sel))
@@ -2525,6 +2570,7 @@ class App(tk.Tk):
         self.select_by_scope()
 
     def select_by_scope(self):
+        self._ensure_up_rows()
         if not self._up_scopes:
             self.up_sel = set()
             self._refresh_up_view()      # 取消范围：表里恢复全部
@@ -2535,11 +2581,13 @@ class App(tk.Tk):
         self._refresh_up_view()          # 表里只剩这个范围的行，并选中待传的那几条
 
     def select_all_pending(self):
+        self._ensure_up_rows()
         self.up_sel = self._view_pending()
         self.tbl_up.select_paths(self.up_sel)
         self._update_up_stat()
 
     def clear_selection(self):
+        self._ensure_up_rows()
         self._up_scopes.clear()
         self._scope_want = None
         for p in self.scope_pills.values():
@@ -2551,6 +2599,7 @@ class App(tk.Tk):
 
     # ---------- 上传：执行 ----------
     def _pending_paths(self):
+        self._ensure_up_rows()
         return [r["path"] for r in self.up_rows
                 if not r.get("uploaded") and r["path"] in self.up_sel]
 
@@ -2561,6 +2610,7 @@ class App(tk.Tk):
         return UploadConfirmDialog.ask(self, rows, action=action, hint=hint)
 
     def _rows_for(self, paths):
+        self._ensure_up_rows()
         want = set(paths)
         return [r for r in self.up_rows if r["path"] in want]
 
@@ -2810,6 +2860,7 @@ class App(tk.Tk):
         self.lbl_meta.config(text=self.roots_label())
         diag.log.info("录像目录更新：%s",
                       " ; ".join(r["path"] for r in self.roots) or "（空）")
+        self._watch_rebuild()               # 停用/移除的目录立刻退出监控清单
         if rescan:
             if not self.active_roots():
                 self.set_status("所有录像目录都已停用", "warn")
@@ -2820,6 +2871,147 @@ class App(tk.Tk):
     def _refresh_paths_btn(self):
         n = len(self.roots)
         self.btn_paths.set_text("路径 (%d)…" % n if n else "路径…")
+
+    # ---------- 自动刷新（盯目录时间戳，变了就重扫）----------
+    WATCH_MS = 1500                    # 轻量检查间隔：只 stat 目录，一轮 0.1 ms
+    WATCH_FULL_EVERY = 40              # 每 40 拍走一遍全树（约 1 分钟）
+
+    def set_auto_refresh(self, on):
+        self._watch_enabled = bool(on)
+        save_config(auto_refresh=self._watch_enabled)
+        diag.log.info("自动刷新：%s", "开" if self._watch_enabled else "关")
+        if self._watch_enabled:
+            self._watch_rebuild()
+        elif self._watch_job is not None:
+            try:
+                self.after_cancel(self._watch_job)
+            except Exception:               # noqa: BLE001
+                pass
+            self._watch_job = None
+        self.set_status("自动刷新已%s" % ("开启" if self._watch_enabled else "关闭"), "dim")
+
+    def _watch_rebuild(self):
+        """重建监控清单：启用的目录 + 它们的所有子目录，各记一个 mtime。
+
+        只碰配置里启用的目录 —— 停用、移除的当场就不再看（实测本机 6 个目录
+        一轮 0.1 ms，等于没有开销）。必须连子目录一起盯：`D:\\扫雷` 那种
+        目录树，录像九成在 replays\\ 这类子目录里。
+        """
+        if not getattr(self, "_watch_enabled", False):
+            return
+        roots = self.active_roots()
+        try:
+            self._watch_dirs, self._watch_sig = (
+                self._watch_scan(roots) if roots else ({}, (0, 0)))
+        except Exception:                   # noqa: BLE001  监控坏掉不能影响主流程
+            self._watch_dirs, self._watch_sig = {}, (0, 0)
+        self._watch_ticks = 0
+        self._watch_schedule()
+
+    def _watch_take(self, info):
+        """扫描刚走完整棵树，把它看到的目录时间戳直接当基线，省掉再走一遍。
+
+        只有扫描被目录数上限截断时才退回自己走一遍 —— 那种情况基线是残缺的。
+        """
+        dirs = info.get("dirs_mtime") or {}
+        if not dirs or info.get("truncated"):
+            self._watch_rebuild()
+            return
+        self._watch_dirs = dict(dirs)
+        self._watch_sig = (info.get("files", 0), info.get("newest", 0))
+        self._watch_ticks = 0
+        self._watch_schedule()
+
+    def _watch_scan(self, roots):
+        """走一遍 roots，返回 ({目录: mtime_ns}, (录像数, 最新 mtime_ns))。"""
+        dirs, n, newest = {}, 0, 0
+        stack = [r for r in roots if r]
+        while stack:
+            d = stack.pop()
+            if d in dirs:
+                continue
+            try:
+                dirs[d] = os.stat(d).st_mtime_ns
+                with os.scandir(d) as it:
+                    entries = list(it)
+            except OSError:
+                continue
+            for e in entries:
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        if e.name.lower() not in core.SKIP_DIRS:
+                            stack.append(e.path)
+                        continue
+                    if core.video_src(e.name) is None:
+                        continue
+                    n += 1
+                    m = e.stat().st_mtime_ns
+                except OSError:
+                    continue
+                if m > newest:
+                    newest = m
+        return dirs, (n, newest)
+
+    def _watch_changed(self):
+        for d, m in self._watch_dirs.items():
+            try:
+                if os.stat(d).st_mtime_ns != m:
+                    return True
+            except OSError:
+                return True                 # 目录被删 / 移动盘拔了：交给扫描重新收拢
+        return False
+
+    def _watch_tick(self):
+        self._watch_job = None
+        if not self.winfo_exists():
+            return
+        try:
+            if not self._watch_enabled or self._scanning or self._up_running:
+                return
+            changed = self._watch_rescan
+            self._watch_rescan = False
+            if not changed and self._watch_dirs:
+                changed = self._watch_changed()
+            self._watch_ticks += 1
+            if not changed and self._watch_ticks >= self.WATCH_FULL_EVERY:
+                # 目录时间戳只在「增删文件」时变，原地覆盖同名文件它不会变。
+                # 所以每分钟走一遍全树核对（22k 文件 0.04 s，察觉不到）。
+                self._watch_ticks = 0
+                dirs, sig = self._watch_scan(self.active_roots())
+                if sig != self._watch_sig or dirs != self._watch_dirs:
+                    changed = True
+            if changed:
+                self.start_scan(auto=True)
+        except Exception:                   # noqa: BLE001
+            pass
+        finally:
+            self._watch_schedule()
+
+    def _watch_schedule(self):
+        if not getattr(self, "_watch_enabled", False) or not self.winfo_exists():
+            return
+        if self._watch_job is None:
+            self._watch_job = self.after(self.WATCH_MS, self._watch_tick)
+
+    def _on_focus(self, event=None):
+        """切回窗口先看一眼，不用等下一拍；双屏不切窗口的场景由定时器兜着。
+
+        <FocusIn> 会从任意子控件冒泡上来，所以用时间戳去抖（1 秒最多一次），
+        不去分辨是谁拿了焦点。
+        """
+        now = time.monotonic()
+        if now - getattr(self, "_focus_at", 0.0) < 1.0:
+            return
+        self._focus_at = now
+        if not self._watch_enabled or self._scanning or self._up_running:
+            return
+        if self._watch_job is not None:
+            try:
+                self.after_cancel(self._watch_job)
+            except Exception:               # noqa: BLE001
+                pass
+            self._watch_job = None
+        self._watch_tick()
 
     def _boot(self):
         self._refresh_paths_btn()
@@ -2864,32 +3056,42 @@ class App(tk.Tk):
         self._empty_prompted = False
         self.apply_roots([{"path": d, "on": True}] + rest)
 
-    def start_scan(self):
+    def start_scan(self, auto=False):
+        """auto=True = 自动刷新触发的：不显示进度条、不抢状态栏、不弹窗。"""
         if self._scanning:
             return
         if self._up_running:
-            self.set_status("上传进行中，先等本批结束再重新扫描", "warn")
+            if not auto:
+                self.set_status("上传进行中，先等本批结束再重新扫描", "warn")
             return
         roots = self.active_roots()
         if not roots:
-            self.first_run_pick()
+            if not auto:
+                self.first_run_pick()
             return
         self._scanning = True
-        head = shrink_path(roots[0], 52)
-        self._progress_begin()
-        self.set_status("正在清点 %s%s …"
-                        % (head, "" if len(roots) == 1 else " 等 %d 个目录" % len(roots)),
-                        "dim")
-        self.lbl_meta.config(text=self.roots_label())
-        threading.Thread(target=self._scan_worker, daemon=True).start()
+        self._scan_auto = bool(auto)
+        if auto:
+            self.set_status("发现新录像，正在更新…", "dim")
+        else:
+            head = shrink_path(roots[0], 52)
+            self._progress_begin()
+            self.set_status("正在清点 %s%s …"
+                            % (head, "" if len(roots) == 1 else " 等 %d 个目录" % len(roots)),
+                            "dim")
+            self.lbl_meta.config(text=self.roots_label())
+        threading.Thread(target=self._scan_worker, args=(bool(auto),),
+                         daemon=True).start()
 
-    def _scan_worker(self):
+    def _scan_worker(self, auto=False):
         try:
             roots = self.active_roots()
-            # 清点总数（只读目录项，0.2 秒量级）→ 进度条才有分母
-            self._q.put(("scan_total", core.count_videos(roots)))
-            games, info = core.scan(roots,
-                                    progress=lambda n: self._q.put(("scan", n)))
+            if not auto:
+                # 清点总数（只读目录项，0.2 秒量级）→ 进度条才有分母
+                self._q.put(("scan_total", core.count_videos(roots)))
+            games, info = core.scan(
+                roots,
+                progress=None if auto else (lambda n: self._q.put(("scan", n))))
             pb = core.build_pb_rows(games)   # 全PB / NF PB 两张榜
             cnt = core.count_by_bv(games)
             cnts = {"all": cnt,
@@ -2967,6 +3169,18 @@ class App(tk.Tk):
         self.counts = cnt if isinstance(cnt, dict) and "all" in cnt else {"all": cnt or {}}
         self.summary, self.diffs, self.ini_ok = smy, diffs, ini_ok
 
+        # 自动刷新：数据其实没变就别重画（22k 行表格重画一遍 0.3 s，白闪一下
+        # 没有任何收益）。判据是文件数 + 局数 + 最新一局的 mtime。
+        auto = self._scan_auto
+        sig = (info.get("files"), info.get("unique"), info.get("newest"))
+        unchanged = bool(auto and sig[2] and sig == self._scan_sig)
+        self._scan_sig = sig
+        self._scan_auto = False
+        if unchanged:
+            self.set_status("没有新录像", "dim")
+            self._watch_take(info)
+            return
+
         self.render_cards()
         self.render_recent()
         # 没有 rce 数据（ms-toollib 缺失）时，本地分不出 NF/FL，前端成绩的
@@ -2977,7 +3191,7 @@ class App(tk.Tk):
         self._recompute_pb()
         self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
-        self._rebuild_up_rows()          # 上传页跟着新数据刷新
+        self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
 
         elapsed = info["elapsed"] * 1000
         n_fail = info["fail_skipped"]
@@ -3052,6 +3266,11 @@ class App(tk.Tk):
                 foreground=C_WARN if parts else C_DIM)
             diag.log.info("record.ini 对账：%d/%d 一致，%d 条仅录像有，%d 条仅 ini 有，%d 条冲突",
                           n_same, n_keys, only_mine, only_ini, big)
+
+        if info.get("rce_failed"):
+            # 可能读到了元扫雷正在写的半截文件。它不会被写进缓存，下一拍再按一遍。
+            self._watch_rescan = True
+        self._watch_take(info)
 
     # ---------- 渲染 ----------
     def render_cards(self):

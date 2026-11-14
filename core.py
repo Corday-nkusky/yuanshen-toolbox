@@ -294,6 +294,52 @@ def dedupe_games(games):
     return [rec for rec in games if rec["path"] not in drop], len(drop)
 
 
+def _walk_one_root(root):
+    """深度优先遍历一个根目录，产出 (dirpath, [文件 DirEntry], 目录 mtime_ns)。
+
+    为什么不用 ``os.walk``：Windows 上 ``os.scandir`` 返回的 DirEntry 已经把
+    stat 信息（大小、mtime、是否目录）一并拿回来了，再 ``os.stat(path)`` 一次
+    等于把同一个查询重做一遍。实测 2.2 万个文件：os.walk + os.stat 0.49 s，
+    scandir + DirEntry.stat 0.04 s。
+
+    顺带把每个目录的 mtime 也带出去：界面的「自动刷新」要拿它当基线，
+    有了它就不必在扫描结束后再走一遍树。
+
+    顺序与 os.walk 一致（父目录先于子目录，同层按系统返回顺序），
+    子目录过滤规则（SKIP_DIRS）也一致，所以扫描结果不会因为换实现而变。
+    """
+    stack = [(root, None)]
+    while stack:
+        dirpath, mtime_ns = stack.pop()
+        if mtime_ns is None:
+            try:
+                mtime_ns = os.stat(dirpath).st_mtime_ns
+            except OSError:
+                mtime_ns = 0
+        try:
+            with os.scandir(dirpath) as it:
+                entries = list(it)
+        except OSError:                 # 权限不足 / 扫描期间被删
+            yield dirpath, [], mtime_ns
+            continue
+        files, subs = [], []
+        for ent in entries:
+            try:
+                if ent.is_dir(follow_symlinks=False):
+                    if ent.name.lower() not in SKIP_DIRS:
+                        try:
+                            sub_m = ent.stat().st_mtime_ns
+                        except OSError:
+                            sub_m = None
+                        subs.append((ent.path, sub_m))
+                    continue
+            except OSError:
+                continue
+            files.append(ent)
+        yield dirpath, files, mtime_ns
+        stack.extend(reversed(subs))    # 反着压栈，出栈就还是原来的顺序
+
+
 def count_videos(roots, max_dirs=MAX_SCAN_DIRS):
     """快速清点 scan() 会看到的录像文件个数，给进度条当分母。
 
@@ -367,15 +413,19 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
     if progress:
         progress(0)                   # 立刻亮一下：让进度条从 0 开始，而不是停在上一轮的位置
 
+    newest = 0                          # 最新一局的 mtime（界面判断「真的有没有变」用）
+    wdirs = {}                          # 目录 -> mtime_ns（自动刷新的监控基线）
     for root in roots:
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, files, dir_mtime in _walk_one_root(root):
             info["dirs_visited"] += 1
             if max_dirs and info["dirs_visited"] > max_dirs:
                 info["truncated"] = True
                 break
-            dirnames[:] = [d for d in dirnames if d.lower() not in SKIP_DIRS]
+            if dir_mtime:
+                wdirs[dirpath] = dir_mtime
             hit = False
-            for fn in filenames:
+            for ent in files:
+                fn = ent.name
                 src = video_src(fn)
                 if src is None:
                     continue
@@ -385,18 +435,21 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                 # 「一个目录几百个文件」而几百次才跳一格，进度条看着像卡住）
                 if progress and info["files"] % 200 == 0:
                     progress(info["files"])
-                path = os.path.join(dirpath, fn)
+                path = ent.path
                 if path in seen_paths:      # 两个根目录互相覆盖（选了 replay 和它的上一级）
                     info["duplicates"] += 1
                     continue
 
-                # 先取 stat：缓存要靠它判断录像有没有变
+                # 先取 stat：缓存要靠它判断录像有没有变。
+                # ent.stat() 读的是 scandir 已经拿到的属性，不再发起系统调用。
                 try:
-                    st = os.stat(path)
+                    st = ent.stat()
                     mt, size = st.st_mtime, st.st_size
                     mt_ns = st.st_mtime_ns
                 except OSError:
                     mt = size = mt_ns = 0
+                if mt_ns > newest:
+                    newest = mt_ns
 
                 vid = None
                 if deep:
@@ -415,10 +468,17 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                         info["fail_skipped"] += 1
                         continue
                 else:
-                    # 阿比特：能读内容就以内容为准，读不出才退回文件名
-                    rec = parse_avf_filename(fn) or {
-                        "level": "", "flag2": "avf", "time": 0.0, "bv": 0,
-                        "bvs_file": 0.0, "player": "", "fail": False}
+                    # 阿比特：能读内容就以内容为准，读不出才退回文件名。
+                    # 内容里已经有 level 时不必再跑文件名正则 —— 2 万局实测省
+                    # 0.23 s，而文件名里的 level/time/bv 后面本来就会被内容覆盖。
+                    lvl = vid.get("level") if vid is not None else None
+                    if lvl:
+                        rec = {"level": lvl, "flag2": "avf", "time": 0.0, "bv": 0,
+                               "bvs_file": 0.0, "player": "", "fail": False}
+                    else:
+                        rec = parse_avf_filename(fn) or {
+                            "level": "", "flag2": "avf", "time": 0.0, "bv": 0,
+                            "bvs_file": 0.0, "player": "", "fail": False}
                     if vid is None and not rec["level"]:
                         info["unparsed"].append(fn)
                         continue
@@ -442,6 +502,15 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     continue
 
                 seen_paths.add(path)
+                # 日期只算一次，算完跟着缓存一起存下来：缓存键是 (路径, mtime)，
+                # 文件不变日期就不会变。2 万局省 0.09 s。
+                dtxt = vid.get("date") if vid is not None else None
+                if not dtxt:
+                    dtxt = datetime.fromtimestamp(mt).strftime("%Y-%m-%d") if mt else ""
+                    if vid is not None:      # 老缓存没有 date 字段，补一次并写回
+                        vid = dict(vid)
+                        vid["date"] = dtxt
+                        _cache.put(path, mt_ns, size, vid)
                 rec.update(
                     file=fn,
                     path=path,
@@ -449,7 +518,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     mtime=mt,
                     mtime_ns=mt_ns,
                     size=size,
-                    date=datetime.fromtimestamp(mt).strftime("%Y-%m-%d") if mt else "",
+                    date=dtxt,
                     bvs=rec["bv"] / rec["time"] if rec["time"] > 0 else 0.0,
                     stnb=stnb_of(rec["bv"], rec["time"], rec["level"]),
                 )
@@ -482,6 +551,8 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                 info["dirs"].add(dirpath)
 
     info["dirs"] = sorted(info["dirs"])
+    info["newest"] = newest             # 最新的一个录像的 mtime_ns，0 表示一个都没读到
+    info["dirs_mtime"] = wdirs          # 走过的每个目录的 mtime_ns（界面监控基线）
     if dedupe:
         games, info["dup_removed"] = dedupe_games(games)
         info["by_src"] = {"ms": 0, "arb": 0}
@@ -1082,6 +1153,7 @@ def cross_check(pb_rows, ini_pb):
         elif abs(a - b) > 1e-6:
             diffs.append({"level": k[0], "bv": k[1], "mine": a, "ini": b})
     return diffs
+
 
 
 def has_evf(path):
