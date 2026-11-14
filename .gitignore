@@ -1,6 +1,7 @@
 # --- 构建产物 ---
 build/
 dist/
+archive/
 *.spec
 version_info.txt
 __pycache__/

@@ -23,7 +23,7 @@
 
 到 [Releases](https://github.com/Corday-nkusky/yuanshen-toolbox/releases/latest) 下最新的
 `YuanshenToolbox-v<版本号>.exe`（单文件，带版本号，例如当前的
-`YuanshenToolbox-v0.14.0.exe`，约 27 MB），双击即用，不需要安装、不需要 Python。
+`YuanshenToolbox-v0.14.2.exe`，约 27 MB），双击即用，不需要安装、不需要 Python。
 
 > exe 文件名统一是「英文名 + 版本号」，所以新版不会覆盖旧版 —— 升级后把旧版删掉或挪走，
 > 录像目录里只留当前这一个 exe。

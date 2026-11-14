@@ -414,6 +414,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
         progress(0)                   # 立刻亮一下：让进度条从 0 开始，而不是停在上一轮的位置
 
     newest = 0                          # 最新一局的 mtime（界面判断「真的有没有变」用）
+    newest_ms = 0                       # 只算元扫雷录像：record.ini 对账要拿它比新旧
     wdirs = {}                          # 目录 -> mtime_ns（自动刷新的监控基线）
     for root in roots:
         for dirpath, files, dir_mtime in _walk_one_root(root):
@@ -450,6 +451,8 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     mt = size = mt_ns = 0
                 if mt_ns > newest:
                     newest = mt_ns
+                if src == "ms" and mt_ns > newest_ms:
+                    newest_ms = mt_ns
 
                 vid = None
                 if deep:
@@ -552,6 +555,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
 
     info["dirs"] = sorted(info["dirs"])
     info["newest"] = newest             # 最新的一个录像的 mtime_ns，0 表示一个都没读到
+    info["newest_ms"] = newest_ms       # 最新一局「元扫雷」录像的 mtime_ns（record.ini 对账用）
     info["dirs_mtime"] = wdirs          # 走过的每个目录的 mtime_ns（界面监控基线）
     if dedupe:
         games, info["dup_removed"] = dedupe_games(games)
@@ -1154,6 +1158,37 @@ def cross_check(pb_rows, ini_pb):
             diffs.append({"level": k[0], "bv": k[1], "mine": a, "ini": b})
     return diffs
 
+
+def record_ini_stale(ini_mtime, newest_ms_ns):
+    """record.ini 是否落后于最新一局录像（毫秒/纳秒都按秒口径传）。
+
+    元扫雷**只在退出时**才把成绩写进 record.ini，所以它开着的时候这个文件必然
+    比录像旧。拿它当真值去对账，会把「刚破了 PB」报成「数值冲突」。
+    ini_mtime 是秒（os.path.getmtime），newest_ms_ns 是纳秒（st_mtime_ns）。
+    """
+    if not ini_mtime:
+        return False
+    return (newest_ms_ns or 0) > ini_mtime * 1e9
+
+
+def judge_record_diffs(diffs, n_keys, stale=False):
+    """把 cross_check 的差异分成「该报警的」与「必然的正常现象」。
+
+    stale（record.ini 落后）时，本地更快是必然的：ini 里只留着上次退出时的成绩。
+    真异常只剩两种：本地比 ini 慢（ini 记着一条我们扫不出来的更快成绩）、
+    ini 有而录像里没有（录像被删或移走了）。
+    """
+    only_mine = sum(1 for d in diffs if d["ini"] is None)
+    only_ini = sum(1 for d in diffs if d["mine"] is None)
+    both = [d for d in diffs if d["mine"] is not None and d["ini"] is not None]
+    faster = [d for d in both if d["mine"] < d["ini"]] if stale else []
+    return {
+        "only_mine": only_mine,     # 只有录像有：新 PB / 新 BV，正常
+        "only_ini": only_ini,       # 只有 ini 有：录像不见了，要报
+        "conflict": len(both) - len(faster),   # 数值冲突：落后时只留下「本地更慢」
+        "faster": len(faster),      # 本地更快：落后时属正常，不报
+        "same": n_keys - only_mine - len(both),
+    }
 
 
 def has_evf(path):

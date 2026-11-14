@@ -45,6 +45,17 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+
+rem --- 产物纪律：dist 只留当前这一个 exe，往期版本一律挪到仓库根的 archive\ ---
+rem 部署目录（%APPDATA%\Metasweeper3.3.4）同理，只留当前一个；这条靠人工，见 docs\BUILD.md
+if not exist "%~dp0archive" mkdir "%~dp0archive"
+for %%F in ("%~dp0dist\*.exe") do (
+  if /i not "%%~nxF"=="%APP_EXE%.exe" (
+    echo 归档旧版到 archive\：%%~nxF
+    move /y "%%~fF" "%~dp0archive\" >nul
+  )
+)
+
 echo.
 echo 完成：dist\%APP_EXE%.exe
 pause

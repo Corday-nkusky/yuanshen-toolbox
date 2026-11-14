@@ -28,7 +28,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.14.1"
+APP_VER = "0.14.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1179,6 +1179,82 @@ class UploadConfirmDialog(tk.Toplevel):
         return bool(dlg.result)
 
 
+class IdentsDialog(tk.Toplevel):
+    """账号在网站上的全部标识。
+
+    为什么不在状态行里平铺：真实账号常有几十个标识（站点上每换一次玩家名就多一个），
+    铺出来会把整条状态行挤出屏幕，等于一个都看不清。状态行只留「标识 ×N」，
+    明细放这里 —— 带序号、可滚、能一次复制走。
+    """
+
+    def __init__(self, master, idents, username=""):
+        super().__init__(master)
+        self.idents = [str(x) for x in (idents or [])]
+        self.configure(bg=C_BG)
+        self.title("网站标识")
+        self.transient(master)
+        self.resizable(True, True)
+
+        wrap = tk.Frame(self, bg=C_BG)
+        wrap.pack(fill="both", expand=True, padx=sc(20), pady=sc(16))
+
+        tk.Label(wrap, text="%s 的网站标识 · %d 个"
+                            % (username or "该账号", len(self.idents)),
+                 bg=C_BG, fg=C_TEXT, font=FONT_SECTION).pack(anchor="w")
+        tk.Label(wrap, text="名字对得上其中之一，这条录像就算已经传过。",
+                 bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(anchor="w",
+                                                          pady=(sc(2), sc(12)))
+
+        holder = tk.Frame(wrap, bg=C_PANEL, highlightthickness=1,
+                          highlightbackground=C_LINE)
+        holder.pack(fill="both", expand=True)
+        self.txt = tk.Text(holder, bg=C_PANEL, fg=C_TEXT, relief="flat",
+                           font=FONT_MONO, wrap="char", height=12,
+                           insertbackground=C_ACCENT, selectbackground=C_SEL)
+        sb = ttk.Scrollbar(holder, orient="vertical", command=self.txt.yview)
+        self.txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.txt.pack(side="left", fill="both", expand=True,
+                      padx=sc(10), pady=sc(8))
+        self.txt.insert("1.0", "\n".join("%3d.  %s" % (i + 1, s)
+                                         for i, s in enumerate(self.idents)))
+        self.txt.config(state="disabled")
+
+        foot = tk.Frame(wrap, bg=C_BG)
+        foot.pack(fill="x", pady=(sc(12), 0))
+        Pill(foot, "关闭", command=self.destroy, accent=C_DIM, padx=18,
+             height=30).pack(side="right")
+        Pill(foot, "复制全部", command=self._copy, accent=C_ACCENT2, padx=16,
+             height=30).pack(side="right", padx=(0, sc(8)))
+        self.lbl_msg = tk.Label(foot, text="", bg=C_BG, fg=C_DIM, font=FONT_SMALL)
+        self.lbl_msg.pack(side="left")
+
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.update_idletasks()
+        # 宽度按最长那条标识量（一行放得下就不用滚），高度按条数但不超 12 行
+        probe = tkfont.Font(family=FAM_MONO, size=FONT_MONO[1])
+        need = max([probe.measure(s) for s in self.idents] or [0]) + sc(96)
+        w = min(max(sc(380), int(need)), self.winfo_screenwidth() - sc(80))
+        h = max(sc(260), min(sc(520), self.winfo_reqheight()))
+        self.geometry("%dx%d" % (w, h))
+        try:
+            px, py = master.winfo_rootx(), master.winfo_rooty()
+            pw, ph = master.winfo_width(), master.winfo_height()
+            self.geometry("+%d+%d" % (px + max(0, (pw - w) // 2),
+                                      py + max(0, (ph - h) // 3)))
+        except tk.TclError:
+            pass
+        self.grab_set()
+
+    def _copy(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(self.idents))
+            self.lbl_msg.config(text="已复制 %d 个标识" % len(self.idents), fg=C_OK)
+        except tk.TclError:
+            pass
+
+
 class PathsDialog(tk.Toplevel):
     """录像目录管理。
 
@@ -1436,6 +1512,9 @@ class App(tk.Tk):
         self.oms_idents = []
         self.oms_err = ""
         self.oms_synced = False     # 本次是否真的拉到过网站录像列表
+        # 账号已确认、但「我的录像 / 标识」还没拉回来。为 True 时界面不能把
+        # oms_videos 当权威数据用（那会儿它是空的）。
+        self.oms_loaded = False
         self._last_failed = set()   # 上一批失败的路径（表格会被网站数据重建，得单独记）
         self._arb_rows = 0          # 本地发现多少个阿比特录像（不受「含阿比特」影响）
         self.up_rows = []
@@ -1995,6 +2074,11 @@ class App(tk.Tk):
         self.btn_sync = Pill(head, "刷新网站记录", command=self.refresh_site,
                              accent=C_ACCENT2, padx=17, height=30)
         self.btn_sync.pack(side="left")
+        # 标识放最右：先 pack 的在最右，数量少、位置固定，标识再多也不挤状态行
+        self.lbl_idents = tk.Label(head, text="", bg=C_BG, fg=C_ACCENT2,
+                                   font=FONT_SMALL, cursor="hand2")
+        self.lbl_idents.pack(side="right", padx=(sc(14), 0))
+        self.lbl_idents.bind("<Button-1>", lambda _e: self._open_idents())
         self.lbl_quota = tk.Label(head, text="", bg=C_BG, fg=C_DIM, font=FONT_SMALL)
         self.lbl_quota.pack(side="right")
 
@@ -2081,6 +2165,11 @@ class App(tk.Tk):
 
     def _on_login_done(self, user):
         self.oms_user = user
+        # 刚登录：录像列表还没拉，先标成「未加载」，别让界面把 0 条当真
+        self.oms_videos = []
+        self.oms_idents = []
+        self.oms_loaded = False
+        self.oms_synced = False
         diag.log.info("登录成功：%s（实名=%s）", user.get("username"),
                       bool(user.get("realname")))
         # 换账号了：上一账号的网站 PB 不能留着
@@ -2108,6 +2197,7 @@ class App(tk.Tk):
         self.oms_user = None
         self.oms_videos = []
         self.oms_idents = []
+        self.oms_loaded = False
         self.site_pb = []
         self.site_pb_uid = None
         self.site_pb_err = ""
@@ -2152,6 +2242,11 @@ class App(tk.Tk):
             self._q.put(("site_top", (seq, None, {}, {}, "", "")))
             self._q.put(("acct", (seq, None, [], [], "")))
             return
+
+        # 登录态一确认就先把账号送到界面。录像列表在下面要串行拉几千条明细
+        # （实测 2068 条花 11 秒），这期间界面若还写着「未登录」，点上传就会
+        # 弹登录框 —— 而 Cookie 其实是好的。videos/idents 传 None 表示「还没拉」。
+        self._q.put(("acct", (seq, u, None, None, "")))
 
         try:
             pb = self.oms.pb_records(u["id"])
@@ -2259,12 +2354,18 @@ class App(tk.Tk):
     def _on_account(self, seq, user, videos, idents, err):
         if seq != self._site_seq:
             return                        # 退出/换号前发出的请求，结果作废
+        # videos 为 None 表示「只带账号的早期事件」，录像列表与标识还没拉回来。
+        # 这时绝不能写 oms_videos：空列表会被当成「网站一条都没有」，上传时
+        # 把本地台账全判成未传 → 重复上传。
+        partial = videos is None
         self.oms_user = user
-        self.oms_videos = videos or []
-        self.oms_idents = idents or []
-        self.oms_err = err
-        # 只有真的拉到了列表，才敢拿它否认「本地台账」里的记录
-        self.oms_synced = bool(user) and not err
+        if not partial:
+            self.oms_videos = videos or []
+            self.oms_idents = idents or []
+            self.oms_err = err
+            self.oms_loaded = bool(user)
+            # 只有真的拉到了列表，才敢拿它否认「本地台账」里的记录
+            self.oms_synced = bool(user) and not err
         # 账号明确为空，或网站 PB/ Top5 属于另一个账号 → 清掉，避免把别人的成绩显示成本地
         if not user:
             if self.site_pb or self.site_pb_err:
@@ -2285,7 +2386,8 @@ class App(tk.Tk):
                 self._clear_site_top()
                 self._site_top_changed()
         self._refresh_acct_label()
-        self._mark_up_dirty()
+        if not partial:
+            self._mark_up_dirty()
         # Top5 通常比账号信息先到，顶部提示要等登录态落定后重画一次，
         # 否则会一直停在「未登录，仅显示本地成绩」
         self.render_top()
@@ -2298,16 +2400,18 @@ class App(tk.Tk):
         else:
             self.lbl_acct.config(text="账号：未登录", fg=C_WARN)
             self.btn_login.set_enabled(True)
+        self._refresh_idents_chip()
         bits = []
-        if self.oms_user:
+        if self.oms_user and not self.oms_loaded:
+            # 账号已确认，录像列表还在路上（几千条要十几秒）
+            bits.append("正在读取网站记录…")
+        elif self.oms_user:
             bits.append("网站已有 %d 条" % len(self.oms_videos))
             # 站点改版后明细是单独批量取的；个别录像（未公开/无权限）拿不到解析字段，
             # 就比对不了去重三元组 —— 明说出来，别让人以为是「一条都没传过」。
             unknown = self._site_keyless()
             if unknown:
                 bits.append("其中 %d 条缺少明细，按未上传处理" % unknown)
-            if self.oms_idents:
-                bits.append("标识 " + " / ".join(self.oms_idents))
             if self.oms_user.get("realname"):
                 bits.append("已实名")
             elif not self.oms_user.get("verified"):
@@ -2324,6 +2428,28 @@ class App(tk.Tk):
         """网站列表里拿不到 timems/bv/file_size 的条数（无法参与去重比对）。"""
         return sum(1 for v in self.oms_videos
                    if isinstance(v, dict) and not openms.server_key(v))
+
+    # ---------- 标识 ----------
+    def _refresh_idents_chip(self):
+        """右上角只放「标识 ×N」。
+
+        真实账号常有几十个标识（每换一次玩家名就多一个），全平铺出来会把整条状态行
+        挤到屏幕外，等于什么也看不见。要看明细点这个胶囊。
+        """
+        n = len(self.oms_idents or [])
+        if not self.oms_user or not self.oms_loaded:
+            self.lbl_idents.config(text="", cursor="arrow")
+        elif n:
+            self.lbl_idents.config(text="标识 ×%d ▸" % n, fg=C_ACCENT2,
+                                   cursor="hand2")
+        else:
+            self.lbl_idents.config(text="无标识", fg=C_DIM, cursor="arrow")
+
+    def _open_idents(self):
+        if not (self.oms_user and self.oms_loaded):
+            return
+        IdentsDialog(self, self.oms_idents or [],
+                     self.oms_user.get("username") or "")
 
     # ---------- 上传：选范围 / 选行 ----------
     def _mark_up_dirty(self):
@@ -2647,6 +2773,11 @@ class App(tk.Tk):
         if self._up_running:
             return
         if not self.oms_user:
+            # Cookie 还在、只是账号信息还没读回来（启动后那几秒）：这时候把人
+            # 推去输验证码纯属折腾，等目录栏转成「已登录」再点就行。
+            if self.oms.has_session() and not self.oms_err:
+                self.set_status("正在确认网站登录态，稍等一下再点上传", "warn")
+                return
             if messagebox.askyesno(APP_TITLE, "还没登录 openms.top，现在登录吗？"):
                 self.open_login()
             return
@@ -2790,6 +2921,7 @@ class App(tk.Tk):
         fatal = payload.get("fatal")
         if fatal == "auth":
             self.oms_user = None
+            self.oms_loaded = False
             self.oms.store.clear_session()
             self._refresh_acct_label()
             messagebox.showwarning(APP_TITLE, "登录已失效，本批已停止。\n\n"
@@ -3106,6 +3238,12 @@ class App(tk.Tk):
             smy = core.summary(games)
             ini_path = core.find_record_ini(self.root_dir)
             ini = core.read_record_ini(ini_path) if ini_path else {}
+            # record.ini 只在元扫雷退出时落盘：正在扫雷时它必然比录像旧，
+            # 对账得知道这件事，否则会把「刚破了 PB」报成数值冲突。
+            try:
+                info["ini_mtime"] = os.path.getmtime(ini_path) if ini_path else 0
+            except OSError:
+                info["ini_mtime"] = 0
             # 对账要用「不分风格」的 PB：record.ini 存的是同 BV 最快，不分 NF/FL。
             # 而且只拿元扫雷自己的录像去比 —— record.ini 是元扫雷写的，
             # 把阿比特的成绩混进来只会得到一堆必然对不上的「冲突」。
@@ -3258,21 +3396,28 @@ class App(tk.Tk):
             # record.ini 是元扫雷写的，所以对账的基数也只能是元扫雷的局
             ms_pb = core.build_pb([g for g in games if g.get("src") != "arb"])
             n_keys = len({(r["level"], r["bv"]) for r in ms_pb})  # 全PB：每个 (级别, BV) 一条
-            only_mine = sum(1 for d in diffs if d["ini"] is None)
-            only_ini = sum(1 for d in diffs if d["mine"] is None)
-            big = sum(1 for d in diffs if d["mine"] is not None and d["ini"] is not None)
-            n_same = n_keys - only_mine - big
-            # 对账是后台校验，不是常驻信息：只有真冲突才占状态栏，其余写日志
+            # record.ini 只在元扫雷退出时落盘：它开着时 ini 必然落后，本地更快
+            # 是必然现象。落后时只把「本地更慢 / ini 有而录像没有」当真异常。
+            stale = core.record_ini_stale(info.get("ini_mtime"),
+                                          info.get("newest_ms"))
+            j = core.judge_record_diffs(diffs, n_keys, stale)
+            only_mine, only_ini = j["only_mine"], j["only_ini"]
+            big, faster = j["conflict"], j["faster"]
+            n_same = j["same"]
+            # 对账是后台校验，不是常驻信息：只有真冲突才占状态栏，其余写日志。
+            # 文案按用户视角写：record.ini / mtime 这类词只留在日志和注释里。
             parts = []
             if only_ini:
-                parts.append(f"{only_ini} 条仅 record.ini 有")
+                parts.append(f"{only_ini} 条成绩只在元扫雷记录里，找不到录像")
             if big:
-                parts.append(f"{big} 条数值冲突")
+                parts.append(f"{big} 条成绩与元扫雷记录不一致")
             self.lbl_check.config(
-                text=("record.ini：" + "，".join(parts)) if parts else "",
+                text="；".join(parts) if parts else "",
                 foreground=C_WARN if parts else C_DIM)
-            diag.log.info("record.ini 对账：%d/%d 一致，%d 条仅录像有，%d 条仅 ini 有，%d 条冲突",
-                          n_same, n_keys, only_mine, only_ini, big)
+            diag.log.info("record.ini 对账：%d/%d 一致，%d 条仅录像有，%d 条仅 ini 有，"
+                          "%d 条冲突%s", n_same, n_keys, only_mine, only_ini, big,
+                          ("（record.ini 落后，另有 %d 条本地更快属正常）" % faster)
+                          if faster else "")
 
         if info.get("rce_failed"):
             # 可能读到了元扫雷正在写的半截文件。它不会被写进缓存，下一拍再按一遍。
