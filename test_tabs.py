@@ -134,7 +134,8 @@ def run(tab, out, wait=6.0):
 if __name__ == "__main__":
     only = [a for a in sys.argv[1:] if not a.startswith("--")]
     tabs = [("overview", "tab_overview.png"), ("pb", "tab_pb.png"),
-            ("top", "tab_top.png"), ("upload", "tab_upload.png")]
+            ("top", "tab_top.png"), ("upload", "tab_upload.png"),
+            ("auto", "tab_auto.png")]
     bad = 0
     for tab, out in tabs:
         if only and tab not in only:

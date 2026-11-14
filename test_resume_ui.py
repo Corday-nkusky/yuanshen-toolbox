@@ -109,20 +109,28 @@ def main():
     checks = [
         ("单条失败不中断：成功 2 条", (win._up_ok, win._up_fail) == (2, 1)),
         ("失败项记在集合里", len(win._last_failed) == 1),
-        ("台账只记成功的那 2 条", journal.count() == 2),
+        ("只记下成功的那 2 条", journal.count() == 2),
         ("重试按钮变成 (1)", "1" in win.btn_retry._text and win.btn_retry._enabled),
+        ("有失败时总结不自己退场",
+         win.lbl_status.cget("text").startswith("上传结束")),
     ]
 
-    # 重试失败项：这次全部成功
+    # 重试失败项：这次全部成功（先把总结的停留时间调短，不然要等 6 秒）
+    A.App.UP_STATUS_HOLD_MS = 150
     win.oms.n = 99
     win.retry_failed()
     pump(win, lambda: not win._up_running)
     win.update()
     checks += [
         ("重试后全部成功", (win._up_ok, win._up_fail) == (1, 0)),
-        ("台账累计 3 条", journal.count() == 3),
+        ("累计记下 3 条", journal.count() == 3),
         ("重试按钮回到禁用", not win.btn_retry._enabled),
+        ("传完进度行已收回", not win.row_up_prog.winfo_ismapped()),
+        ("传完右下角那行清空", win.lbl_up_log.cget("text") == ""),
     ]
+    # 全部成功：总结挂一会儿就退回开传前那一行，不能一直占着状态栏
+    gone = pump(win, lambda: not win.lbl_status.cget("text").startswith("上传结束"), 3)
+    checks.append(("全部成功时「上传结束」自己退场", gone))
 
     # 模拟重启且还没联网：台账兜底，不该再显示「未上传」
     win.oms_synced = False
@@ -158,6 +166,125 @@ def main():
     win._up_running = False
     checks += [("上传中禁止重扫/退出登录", guards),
                ("上传中禁用退出登录/路径按钮", buttons)]
+
+    # 横幅上的「启动元扫雷」：点击有绑定；已经在跑时点了不重复启动
+    bound = bool(win.banner.tag_bind("b_play", "<Button-1>"))
+    win._ms_running = True
+    before = win.lbl_status.cget("text")
+    win.launch_game()
+    checks += [("横幅启动按钮已绑定点击", bound),
+               ("已在跑时点启动不重复启动",
+                win.lbl_status.cget("text") == before)]
+
+    # 状态机：点过启动 -> 进程确认起来 -> 状态栏必须走出「正在启动」
+    win._ms_probe = lambda: (True, "")
+    win._ms_running = False
+    win._ms_launch_at = time.time()
+    win._auto_on = False
+    win._poll_ms()
+    settled = ("正在启动" not in win.lbl_status.cget("text")
+               and win._ms_running and win._ms_launch_at == 0.0)
+
+    # 用户自己把元扫雷关掉：静默回弹，不能误报「没能启动起来」
+    win._ms_probe = lambda: (False, "")
+    win._ms_running = True
+    win._ms_launch_at = 0.0
+    win._poll_ms()
+    quiet = (not win._ms_running
+             and "没能启动" not in win.lbl_status.cget("text"))
+
+    # 点了启动、宽限期过了仍没见到进程：这才是真没起来
+    win._ms_launch_at = time.time() - A.mslaunch.START_GRACE - 5
+    win._poll_ms()
+    expired = "没能启动起来" in win.lbl_status.cget("text")
+
+    checks += [("确认启动后状态栏不再停在「正在启动」", settled),
+               ("用户自己关掉时不误报启动失败", quiet),
+               ("宽限期过了仍没起来才报错", expired)]
+
+    # 置前状态机：抢到一次就收工；窗口还没建出来就留到下一拍再试；
+    # 用户已经去干别的了就别再打扰他
+    real_focus, real_self = A.mslaunch.focus, A.mslaunch.foreground_is_self
+    calls = []
+    A.mslaunch.foreground_is_self = lambda: True
+    A.mslaunch.focus = lambda: calls.append(1) or True
+    win._ms_want_front()
+    win._ms_try_focus()
+    front_ok = len(calls) == 1 and win._ms_focus_until == 0.0
+
+    A.mslaunch.focus = lambda: calls.append(1) or False       # 窗口还没建出来
+    win._ms_want_front()
+    win._ms_try_focus()
+    front_retry = win._ms_focus_until > 0 and len(calls) == 2
+
+    A.mslaunch.foreground_is_self = lambda: False             # 用户切到别处了
+    win._ms_try_focus()
+    front_leave = win._ms_focus_until == 0.0 and len(calls) == 2
+    A.mslaunch.focus, A.mslaunch.foreground_is_self = real_focus, real_self
+    win._ms_focus_until = 0.0
+
+    checks += [("抢到前台就收工", front_ok),
+               ("窗口还没出现时留到下一拍再试", front_retry),
+               ("用户切到别处就不再抢前台", front_leave)]
+
+    # 双击分派：录像行交给元扫雷，非录像行（目录之类）仍然复制路径
+    rec = win.tbl_recent
+    opened, copied = [], []
+    real_open, real_copy = win.open_replay, rec._copy_path_text
+    real_is = A.mslaunch.is_replay
+    win.open_replay = lambda p: opened.append(p)
+    rec._copy_path_text = lambda p: copied.append(p)
+    try:
+        kids = rec.tv.get_children()
+        if kids:
+            rec.tv.selection_set(kids[0])
+            rec._on_double()
+        A.mslaunch.is_replay = lambda p: False     # 冒充一行目录
+        if kids:
+            rec._on_double()
+    finally:
+        win.open_replay, rec._copy_path_text = real_open, real_copy
+        A.mslaunch.is_replay = real_is
+    checks += [("双击录像行交给元扫雷播放",
+                bool(opened) and A.mslaunch.is_replay(opened[0])),
+               ("非录像行仍然复制路径", bool(copied))]
+
+    # 右键菜单：项齐不齐、构造会不会抛（tk_popup 换成空实现，免得抢 grab）
+    real_menu, made = A.tk.Menu, []
+
+    class _Menu:
+        def __init__(self, master=None, tearoff=0):
+            self.items = []
+            made.append(self)
+
+        def add_command(self, label, command):
+            self.items.append(label)
+
+        def tk_popup(self, x, y):
+            pass
+
+        def grab_release(self):
+            pass
+
+    class _Evt:
+        x_root = y_root = 100
+        y = 0
+
+    A.tk.Menu = _Menu
+    real_identify = rec.tv.identify_row
+    try:
+        kids = rec.tv.get_children()
+        if kids:
+            # 不赌 bbox 的坐标换算（测试窗口可能还没布局完），直接让它命中第一行
+            rec.tv.identify_row = lambda _y: kids[0]
+            rec._on_right_click(_Evt)
+    finally:
+        rec.tv.identify_row = real_identify
+        A.tk.Menu = real_menu
+    labels = made[0].items if made else []
+    checks += [("右键菜单：播放 / 复制路径 / 打开所在文件夹",
+                labels[:1] == ["用元扫雷播放"] and "复制路径" in labels
+                and "打开所在文件夹" in labels)]
 
     win.destroy()
     journal.clear()

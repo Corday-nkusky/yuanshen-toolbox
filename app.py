@@ -5,12 +5,14 @@
   · PB 表：每个（级别 × BV）的最快完成局
   · 前端成绩：三级别 × time / bvs / stnb 的前五局
   · 上传：把本地完成局传到开源扫雷网（openms.top）
+  · 自动上传：玩的时候盯新录像，符合范围就自动传
 """
 
 import base64
 import ctypes
 import os
 import queue
+import subprocess
 from datetime import datetime
 import sys
 import threading
@@ -19,16 +21,19 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
+import autolog
+import autoup
 import cache
 import core
 import diag
 import journal
+import mslaunch
 import openms
 import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.14.2"
+APP_VER = "0.17.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -551,7 +556,7 @@ class Table(ttk.Frame):
             self.tv.heading(key, text=title, anchor=anchor,
                             command=lambda k=key: self._sort_by(k))
             self.tv.column(key, width=sc(width), anchor=anchor,
-                           stretch=(key in ("file", "path", "player")))
+                           stretch=(key in ("file", "path", "player", "why")))
         self.tv.grid(row=0, column=0, sticky="nsew")
         if vbar:
             vs = ttk.Scrollbar(self, orient="vertical", command=self.tv.yview)
@@ -565,7 +570,8 @@ class Table(ttk.Frame):
 
         self.tv.tag_configure("odd", background=C_ZEBRA)
         self.tv.tag_configure("even", background=C_PANEL)
-        self.tv.bind("<Double-1>", self._copy_path)
+        self.tv.bind("<Double-1>", self._on_double)
+        self.tv.bind("<Button-3>", self._on_right_click)
         self._tip = None
         self._fit_job = None
         self._fit_rows = height
@@ -680,23 +686,100 @@ class Table(ttk.Frame):
             self.tv.heading(k, text=title + (mark if k == key else ""))
         self._redraw()
 
-    def _copy_path(self, _event=None):
-        sel = self.tv.selection()
-        if not sel:
-            return
-        if self.iid_key == "path":
-            path = sel[0]
+    def _row_of(self, iid):
+        """iid → 行数据 dict。取不到就返回空 dict。"""
+        if not iid:
+            return {}
+        if self.iid_key:
+            for r in self.rows:
+                if str(r.get(self.iid_key)) == iid:
+                    return r
+            return {}
+        try:
+            return self.rows[int(iid)]
+        except (IndexError, ValueError):
+            return {}
+
+    def _path_of(self, iid):
+        """这一行对应的本地路径（目录表就是目录本身，录像表是录像文件）。"""
+        if not iid:
+            return ""
+        return self._row_of(iid).get("path") or (
+            iid if self.iid_key == "path" else "")
+
+    def _on_double(self, event=None):
+        """双击：录像交给元扫雷播放，其余（目录之类）仍然复制路径。
+
+        按后缀分派而不是按表格配置：同一张表里，本地行有录像、站点行没有，
+        用后缀判断最省事，也不会因为以后加了一张表就漏掉。
+        """
+        iid = self.tv.identify_row(event.y) if event is not None else None
+        if iid:
+            self.tv.selection_set(iid)
         else:
-            try:
-                path = self.rows[int(sel[0])].get("path")
-            except (IndexError, ValueError):
-                path = None
-        if path:
-            self.clipboard_clear()
-            self.clipboard_append(path)
-            app = self.winfo_toplevel()
-            if hasattr(app, "set_status"):
-                app.set_status("已复制路径：" + path, "dim")
+            sel = self.tv.selection()
+            iid = sel[0] if sel else None
+        if not iid:
+            return
+        path = self._path_of(iid)
+        if not path:
+            top = self.winfo_toplevel()
+            if hasattr(top, "set_status"):
+                top.set_status("这一行没有对应的本地录像文件", "dim")
+            return
+        top = self.winfo_toplevel()
+        if mslaunch.is_replay(path) and hasattr(top, "open_replay"):
+            top.open_replay(path)
+        else:
+            self._copy_path_text(path)
+
+    def _on_right_click(self, event):
+        iid = self.tv.identify_row(event.y)
+        if not iid:
+            return
+        self.tv.selection_set(iid)
+        path = self._path_of(iid)
+        if not path:
+            return
+        top = self.winfo_toplevel()
+        m = tk.Menu(self, tearoff=0)
+        if mslaunch.is_replay(path) and hasattr(top, "open_replay"):
+            m.add_command(label="用元扫雷播放",
+                          command=lambda p=path: top.open_replay(p))
+        m.add_command(label="复制路径", command=lambda p=path: self._copy_path_text(p))
+        m.add_command(label="打开所在文件夹", command=lambda p=path: self._reveal(p))
+        try:
+            m.tk_popup(event.x_root, event.y_root)
+        finally:
+            m.grab_release()
+
+    def _copy_path_text(self, path):
+        self.clipboard_clear()
+        self.clipboard_append(path)
+        top = self.winfo_toplevel()
+        if hasattr(top, "set_status"):
+            top.set_status("已复制路径：" + path, "dim")
+
+    def _reveal(self, path):
+        """在资源管理器里定位它；目录就直接打开目录。"""
+        top = self.winfo_toplevel()
+        try:
+            if os.path.isdir(path):
+                os.startfile(path)
+                return
+            if os.path.isfile(path):
+                # explorer 自己对引号敏感，用字符串交给它，比列表形式可靠
+                subprocess.Popen('explorer /select,"%s"'
+                                 % os.path.normpath(path))
+                return
+            folder = os.path.dirname(path)
+            if os.path.isdir(folder):
+                os.startfile(folder)
+                return
+            raise OSError("路径不存在")
+        except OSError:
+            if hasattr(top, "set_status"):
+                top.set_status("这个位置打不开了：%s" % shrink_path(path, 50), "warn")
 
 
 # ------------------------------------------------------------------ 登录窗
@@ -1425,6 +1508,9 @@ class PathsDialog(tk.Toplevel):
 
 # ------------------------------------------------------------------ 主窗口
 class App(tk.Tk):
+    # 上传结束后「成功 N 条」这行挂多久（毫秒）再退回常态；有失败时不退
+    UP_STATUS_HOLD_MS = 6000
+
     def __init__(self, root_dir=None):
         ensure_bundled_fonts()           # 必须早于 tk.Tk()：Tk 只在创建时枚举字体
         super().__init__()
@@ -1534,6 +1620,28 @@ class App(tk.Tk):
         self._up_fail = 0
         self._up_dirty = True      # 上传页的行要不要重建（不在该页时先不算，省 0.5 s）
 
+        # 自动上传：玩的时候盯新录像。判定逻辑全在 autoup，这里只负责门控与落盘。
+        _cfg = load_config()
+        self.auto_flags = autoup.flags_of(
+            _cfg.get("auto_scopes") or ["top", "top_nf", "pb"])
+        self._auto_on = bool(_cfg.get("auto_upload", False))
+        self._auto_watermark = int(_cfg.get("auto_watermark") or 0)
+        self._auto_tracker = autoup.Tracker(self._auto_watermark)
+        self._auto_stop = ""       # 需要用户动手才能恢复（额度 / 登录 / 封禁）
+        self._auto_backoff = 0.0   # 网络类临时失败：到这个时间点再试
+        self._auto_session = 0     # 本次会话自动传成功几条
+        self._auto_why = {}        # path -> [理由]，上传回调用
+        self._auto_retry = {}      # path -> 已重试次数（网络类临时失败）
+        self._up_silent = False    # 这一批是不是自动上传发的（决定要不要弹窗）
+
+        # 启动元扫雷：横幅按钮。位置来源见 mslaunch 的说明（配置 → 运行中的进程 →
+        # 默认安装位置 → 用户指定一次）。这里只存状态，找路径的事全交给它。
+        self.ms_exe = str(_cfg.get("ms_exe") or "")   # 上次用过的（或者用户手选的）
+        self._ms_running = False   # 元扫雷此刻在不在跑
+        self._ms_path = ""         # 从运行中的进程反查到的路径
+        self._ms_launch_at = 0.0   # 上次点启动的时刻，用于冷启动宽限
+        self._ms_focus_until = 0.0   # 让元扫雷露脸的截止时刻，过了就不管了
+
         # 自动刷新：盯「启用目录 + 它们的所有子目录」的 mtime，变了就重扫
         self._watch_dirs = {}      # 目录 -> 上次看到的 mtime_ns
         self._watch_sig = (0, 0)   # (录像数, 最新 mtime)：目录时间戳看不出来的改动靠它兜底
@@ -1550,6 +1658,7 @@ class App(tk.Tk):
         self.after(60, self._poll)
         self.after(80, self._boot)
         self.after(700, self._restore_session)
+        self.after(1200, self._poll_ms)     # 横幅那个按钮的「在不在跑」状态
         # 手动刷新：快捷键；自动刷新从第一轮扫描结束后开始（见 _on_scanned → _watch_rebuild）
         self.bind("<F5>", lambda _e: self.start_scan())
         self.bind("<FocusIn>", self._on_focus)
@@ -1686,7 +1795,8 @@ class App(tk.Tk):
         for tag, cmd in (("b_rescan", self.start_scan),
                          ("b_dir", lambda: self.pick_dir()),
                          ("b_csv", self.export_csv),
-                         ("b_diag", self.open_diagnostics)):
+                         ("b_diag", self.open_diagnostics),
+                         ("b_play", self.launch_game)):
             self.banner.tag_bind(tag, "<Button-1>", lambda _e, c=cmd: c())
 
         # 主导航
@@ -1694,7 +1804,8 @@ class App(tk.Tk):
         nav.pack(fill="x", padx=sc(20), pady=(sc(12), sc(2)))
         self.tab_pills = {}
         for key, label in (("overview", "概览"), ("pb", "PB 表"),
-                           ("top", "前端成绩"), ("upload", "上传")):
+                           ("top", "前端成绩"), ("upload", "上传"),
+                           ("auto", "自动上传")):
             p = Pill(nav, label, command=lambda k=key: self.show_tab(k),
                      accent=C_ACCENT, padx=22, height=32)
             p.pack(side="left", padx=(0, sc(8)))
@@ -1731,6 +1842,7 @@ class App(tk.Tk):
             "pb": tk.Frame(body, bg=C_BG),
             "top": tk.Frame(body, bg=C_BG),
             "upload": tk.Frame(body, bg=C_BG),
+            "auto": tk.Frame(body, bg=C_BG),
         }
         self._page_host = body
         # 关键：阻止页面内容反向撑大窗口。
@@ -1741,6 +1853,7 @@ class App(tk.Tk):
         self._build_pb()
         self._build_top()
         self._build_upload()
+        self._build_auto()
         self.show_tab("overview")
 
     def show_tab(self, key):
@@ -1754,6 +1867,8 @@ class App(tk.Tk):
             p.set_selected(k == key)
         if key == "upload":
             self._ensure_up_rows()      # 懒重建：切到这一页才把 2 万行算出来
+        elif key == "auto":
+            self._refresh_auto_view()
 
     # ---------- 横幅 ----------
     def _draw_banner(self, event=None):
@@ -1794,8 +1909,17 @@ class App(tk.Tk):
                            (w * 0.24, h * 0.72, 5, "#ffffff")):
             sparkle(cv, x, y, sc(s), a)
 
-        # 右侧按钮（白底粉字）
+        # 右侧按钮（白底粉字）。画法是「从右往左」，所以列表最后一项在最左边：
+        # 启动元扫雷放最后 —— 它在阅读顺序上最先被看到，位置也固定不随其他按钮增减。
         font_m = tkfont.Font(family=FAM_UI, size=9, weight="bold")
+        # 三态：没在跑 / 刚点过启动、等它起来 / 确认在跑。宽度按最长那句
+        # 算死，所以整排按钮不会因为状态变化而左右跳。
+        if self._ms_running:
+            play = "元扫雷正在运行"
+        elif self._ms_pending():
+            play = "正在启动元扫雷"
+        else:
+            play = "启动元扫雷"
         buttons = [("导出 CSV", "b_csv"), ("换目录…", "b_dir"),
                    ("重新扫描", "b_rescan"), ("诊断…", "b_diag")]
         right = w - sc(22)
@@ -1810,8 +1934,209 @@ class App(tk.Tk):
                            fill=C_ACCENT, font=(FAM_UI, 9, "bold"), tags=(tag,))
             right = x1 - sc(10)
 
+        # 启动元扫雷：宽度按最长文案算死，切换状态时整排按钮不会左右跳
+        tri = sc(4.6)
+        inner = tri * 1.5 + sc(7) + font_m.measure("启动元扫雷")
+        bw = max(inner, font_m.measure("元扫雷正在运行")) + sc(32)
+        x1 = right - bw
+        if self._ms_running or self._ms_pending():
+            round_rect(cv, x1, by, right, by + bh, bh / 2.0,
+                       fill="#ffe9f1", width=0, tags=("b_play",))
+            cv.create_text((x1 + right) / 2.0, by + bh / 2.0, text=play,
+                           fill="#cf94ab", font=(FAM_UI, 9, "bold"),
+                           tags=("b_play",))
+        else:
+            round_rect(cv, x1, by, right, by + bh, bh / 2.0,
+                       fill="#ffffff", width=0, tags=("b_play",))
+            # 三角形自己画，不依赖字体里有没有 ▶；三角 + 文字整体居中
+            tcy = by + bh / 2.0
+            gx = (x1 + right) / 2.0 - inner / 2.0
+            cv.create_polygon(gx, tcy - tri, gx, tcy + tri,
+                              gx + tri * 1.5, tcy, fill=C_ACCENT,
+                              width=0, tags=("b_play",))
+            cv.create_text(gx + tri * 1.5 + sc(7), tcy, text="启动元扫雷",
+                           anchor="w", fill=C_ACCENT, font=(FAM_UI, 9, "bold"),
+                           tags=("b_play",))
+
         # 底部柔和收口
         cv.create_line(0, h - 1, w, h - 1, fill="#ffffff", width=1, stipple="gray50")
+
+    # ---------- 启动元扫雷 ----------
+    MS_POLL_MS = 2500          # 查一次进程的间隔（一次约 6 ms）
+    MS_FOCUS_WINDOW = 10.0     # 启动之后这几秒内，补着把它的窗口提到前面
+
+    def open_replay(self, path):
+        """双击录像：交给元扫雷播放。
+
+        元扫雷没在跑时它自己会启动并直接进播放；已经在跑时，新起的那个
+        进程只是把路径转交给已有窗口（本地 socket），随即退出 —— 效果跟
+        把文件拖进元扫雷窗口一样。播放不会产生新录像，也不会动 record.ini。
+        """
+        path = os.path.abspath(path)
+        if not os.path.isfile(path):
+            self.set_status("这个录像已经不在了：%s" % shrink_path(path, 46), "warn")
+            return
+        exe = mslaunch.resolve(self.ms_exe, self._ms_path)
+        if not exe:
+            exe = self._ask_ms_exe()
+            if not exe:
+                return
+        if os.path.normcase(exe) != os.path.normcase(self.ms_exe or ""):
+            self.ms_exe = exe
+            save_config(ms_exe=exe)
+        ok, err = mslaunch.open_file(exe, path)
+        if not ok:
+            diag.log.warning("用元扫雷打开录像失败：%s（%s）", err, path)
+            self.set_status("没能用元扫雷打开这条录像", "err")
+            return
+        diag.log.info("用元扫雷打开录像：%s", path)
+        self.set_status("正在用元扫雷打开 %s…" % os.path.basename(path), "dim")
+        # 元扫雷的播放窗口默认会压在工具箱下面（Windows 只让前台进程抢前台），
+        # 所以这里主动把它提上来 —— 双击之后用户要看的是录像，不是工具箱。
+        self._ms_want_front()
+        self._ms_try_focus()
+
+    def launch_game(self):
+        """横幅上的「启动元扫雷」：找到路径 → 启动 → 盯着它真的起来。
+
+        路径一个都没有时只让用户指一次，指完记进配置；换安装位置或换台机器，
+        也只需要这一次。
+        """
+        if self._ms_running or self._ms_pending():
+            return                          # 已经在跑 / 刚点过还没确认，别开第二个
+        # 按钮画出来到第一次轮询之间有一小段空窗，这期间元扫雷可能早就开着
+        # （很多人习惯先开游戏再开工具箱）。这时再 Popen 只是多起一个转发
+        # 进程，还会让状态栏卡在「正在启动」——所以先同步看一眼。
+        running, _p = self._ms_probe()
+        if running:
+            self._ms_running = True
+            self._draw_banner()
+            self.set_status("元扫雷已经在运行", "dim")
+            return
+        path = mslaunch.resolve(self.ms_exe, self._ms_path)
+        if not path:
+            path = self._ask_ms_exe()
+            if not path:
+                self.set_status("没有启动元扫雷", "dim")
+                return
+        if os.path.normcase(path) != os.path.normcase(self.ms_exe or ""):
+            self.ms_exe = path
+            save_config(ms_exe=path)
+        ok, err = mslaunch.launch(path)
+        if not ok:
+            diag.log.warning("启动元扫雷失败：%s（%s）", err, path)
+            self.set_status("元扫雷没有启动起来", "err")
+            messagebox.showerror(
+                APP_TITLE, "没能启动元扫雷。\n\n%s\n\n程序：%s"
+                % (err, shrink_path(path, 72)))
+            if os.path.normcase(path) == os.path.normcase(self.ms_exe or ""):
+                self.ms_exe = ""            # 这个位置已经不对了，下次重新找
+                save_config(ms_exe="")
+            return
+        diag.log.info("启动元扫雷：%s", path)
+        # 这里只记「点过启动」，运行状态一律交给进程检测。若像以前那样抢先
+        # 把 _ms_running 置 True，_poll_ms 的确认分支就永远进不去，状态栏会
+        # 一直停在「正在启动元扫雷…」。
+        self._ms_launch_at = time.time()
+        self._draw_banner()
+        self.set_status("正在启动元扫雷…", "dim")
+        self._ms_want_front()
+
+    def _ask_ms_exe(self):
+        """让用户指一次元扫雷主程序（装到哪都认）。取消返回空串。"""
+        guess = mslaunch.discover()
+        initial = (os.path.dirname(guess[0]) if guess
+                   else (os.environ.get("ProgramFiles") or ""))
+        p = filedialog.askopenfilename(
+            parent=self, title="选择元扫雷的主程序（metasweeper.exe）",
+            initialdir=initial if os.path.isdir(initial) else None,
+            filetypes=[("元扫雷主程序", "metasweeper*.exe"),
+                       ("可执行文件", "*.exe")])
+        if not p:
+            return ""
+        p = os.path.abspath(p)
+        if not mslaunch.looks_like_metasweeper(p) and not messagebox.askyesno(
+                APP_TITLE, "这个文件看着不像元扫雷：\n%s\n\n仍然启动它吗？"
+                % shrink_path(p, 64)):
+            return ""
+        diag.log.info("用户指定元扫雷主程序：%s", p)
+        return p
+
+    def _ms_probe(self):
+        """查一次元扫雷进程，返回 (在不在跑, 反查到的路径)。
+
+        从进程反查到的路径比任何猜测都准（用户自己从开始菜单开的那次也算）；
+        配置里的路径失效时顺手改过来。
+        """
+        try:
+            found = mslaunch.find_running()
+        except Exception:
+            found = None
+        path = (found[1] if found and len(found) > 1 else "") or ""
+        if path and os.path.isfile(path):
+            self._ms_path = path
+            if not os.path.isfile(self.ms_exe or ""):
+                self.ms_exe = path
+                save_config(ms_exe=path)
+        return bool(found), path
+
+    def _ms_pending(self):
+        """刚点过启动、还没被进程检测确认的这几秒（防连点 + 按钮文案）。"""
+        return (bool(self._ms_launch_at)
+                and time.time() - self._ms_launch_at < mslaunch.START_GRACE)
+
+    def _ms_want_front(self):
+        """从现在起几秒内，把元扫雷的窗口提到最前面。
+
+        冷启动时窗口要过几百毫秒才建出来，一次抢不到，所以开个窗口期让
+        轮询补几次；抢到、超时、或者用户已经去干别的了，就收工。
+        """
+        self._ms_focus_until = time.time() + self.MS_FOCUS_WINDOW
+
+    def _ms_try_focus(self):
+        """补一次「让元扫雷露脸」。只在前台还是工具箱自己时才动手。
+
+        用户双击完就去点浏览器了，说明他这会儿不想被打断 —— 这时候再把
+        元扫雷拽到最前面是很讨厌的。
+        """
+        if not self._ms_focus_until:
+            return
+        if time.time() > self._ms_focus_until:
+            self._ms_focus_until = 0.0
+            return
+        if not mslaunch.foreground_is_self():
+            self._ms_focus_until = 0.0
+            return
+        if mslaunch.focus():
+            self._ms_focus_until = 0.0
+
+    def _poll_ms(self):
+        """每两秒半看一眼元扫雷在不在跑；状态变了才重画横幅。"""
+        self._ms_try_focus()
+        running, _path = self._ms_probe()
+        if running:
+            if not self._ms_running:
+                self._ms_running = True
+                self._draw_banner()
+                if self._ms_launch_at:          # 这次是按钮启动的，才回一句
+                    self._ms_launch_at = 0.0
+                    if self._auto_on:
+                        self.set_status("元扫雷已启动", "ok")
+                    else:
+                        self.set_status("元扫雷已启动 · 自动上传还关着，这局不会自动传",
+                                        "warn")
+        else:
+            if self._ms_running:
+                # 用户自己关掉的：静默回弹即可。以前这里会误报「没能启动起来」
+                self._ms_running = False
+                self._ms_launch_at = 0.0
+                self._draw_banner()
+            elif self._ms_launch_at and not self._ms_pending():
+                # 点过启动、宽限期过了仍然没见到进程：这才是真没起来
+                self._ms_launch_at = 0.0
+                self._draw_banner()
+                self.set_status("元扫雷没能启动起来，换个位置试试", "err")
+        self.after(self.MS_POLL_MS, self._poll_ms)
 
     # ---------- 小工具 ----------
     def _section(self, parent, title, accent=C_ACCENT, sub=""):
@@ -1846,7 +2171,8 @@ class App(tk.Tk):
                       padx=(0 if i == 0 else sc(12), 0))
             self.cards[lv] = card
 
-        head = self._section(page, "最近完成局", C_ACCENT2, "按文件时间倒序，双击复制路径")
+        head = self._section(page, "最近完成局", C_ACCENT2,
+                             "按文件时间倒序，双击用元扫雷播放")
         head.pack(fill="x", pady=(sc(16), sc(6)))
 
         cols = [
@@ -2135,12 +2461,14 @@ class App(tk.Tk):
 
         prog = tk.Frame(page, bg=C_BG)
         prog.pack(side="bottom", fill="x", pady=(0, sc(2)))
+        self.row_up_prog = prog
         self.pb_up = ttk.Progressbar(prog, style="Oms.Horizontal.TProgressbar",
                                      length=sc(220), mode="determinate", maximum=1)
         self.pb_up.pack(side="left")
         self.lbl_up_prog = tk.Label(prog, text="", bg=C_BG, fg=C_DIM,
                                     font=FONT_SMALL)
         self.lbl_up_prog.pack(side="left", padx=(sc(8), 0))
+        prog.pack_forget()              # 没在传的时候不占一行（传完就收回）
 
         cols = [
             ("level_cn", "级别", 56, "center", "str"),
@@ -2158,6 +2486,276 @@ class App(tk.Tk):
         self.tbl_up.tv.bind("<<TreeviewSelect>>",
                             lambda _e: self._on_up_select(), add="+")
         self._refresh_acct_label()
+
+    # ---------- 自动上传页 ----------
+    def _build_auto(self):
+        page = self.pages["auto"]
+
+        head = tk.Frame(page, bg=C_BG)
+        head.pack(fill="x", pady=(sc(10), sc(6)))
+        self.btn_auto = Pill(head, "", command=self.toggle_auto_upload,
+                             accent=C_OK, padx=20, height=34)
+        self.btn_auto.pack(side="left")
+        self.lbl_auto_acct = tk.Label(head, text="", bg=C_BG, fg=C_DIM,
+                                      font=FONT_SMALL)
+        self.lbl_auto_acct.pack(side="left", padx=(sc(14), 0))
+
+        tk.Label(page, text="只传勾上的那几张表；没勾的一律不动，也不影响上传页的手动操作。",
+                 bg=C_BG, fg=C_DIM, font=FONT_SMALL, anchor="w").pack(
+                     fill="x", pady=(0, sc(10)))
+
+        tips = {
+            "rank": "新成绩挤进网站前五才传。前五被自己占满后，得打破自己的第五名才会触发。",
+            "pb": "比网站上同一个 3BV 的记录更快才传。",
+            "pb_nf": "只在 NF 局之间比，跟全PB 是两张独立的表。",
+        }
+        self.auto_vars = {}
+        for key, _scopes, label in autoup.GROUPS:
+            var = tk.BooleanVar(value=bool(self.auto_flags.get(key)))
+            self.auto_vars[key] = var
+            chk = tk.Checkbutton(
+                page, text=label, variable=var,
+                command=lambda k=key: self.toggle_auto_scope(k),
+                bg=C_BG, fg=C_TEXT, activebackground=C_BG, activeforeground=C_TEXT,
+                selectcolor=C_PANEL, font=FONT_UI, bd=0, highlightthickness=0,
+                anchor="w")
+            chk.pack(fill="x")
+            tk.Label(page, text=tips.get(key, ""), bg=C_BG, fg=C_DIM,
+                     font=FONT_SMALL, anchor="w").pack(
+                         fill="x", padx=(sc(26), 0), pady=(0, sc(6)))
+
+        self.lbl_auto_status = tk.Label(page, text="", bg=C_BG, fg=C_DIM,
+                                        font=FONT_SMALL, anchor="w", justify="left")
+        self.lbl_auto_status.pack(fill="x", pady=(sc(2), sc(8)))
+
+        foot = tk.Frame(page, bg=C_BG)
+        foot.pack(side="bottom", fill="x", pady=(sc(8), sc(2)))
+        self.btn_auto_check = Pill(foot, "立即检查一次", command=self.check_auto_now,
+                                   accent=C_ACCENT2, padx=16, height=32)
+        self.btn_auto_check.pack(side="left")
+        self.btn_auto_clear = Pill(foot, "清空记录", command=self.clear_auto_log,
+                                   accent=C_DIM, padx=14, height=32)
+        self.btn_auto_clear.pack(side="left", padx=(sc(8), 0))
+        self.lbl_auto_stat = tk.Label(foot, text="", bg=C_BG, fg=C_DIM,
+                                      font=FONT_SMALL, anchor="e")
+        self.lbl_auto_stat.pack(side="right")
+
+        # 结果排在长文本列前面：为什么不传/传成什么样，先看到；「为什么传」
+        # 放最后一列吃剩余宽度，不把结果推到离内容很远的地方。
+        cols = [
+            ("t", "时间", 108, "center", "str"),
+            ("level_cn", "级别", 56, "center", "str"),
+            ("time", "time", 74, "e", "f3"),
+            ("bv", "3BV", 48, "e", "int"),
+            ("result", "结果", 190, "center", "str"),
+            ("why", "为什么传", 300, "w", "str"),
+        ]
+        _, self.tbl_auto = self._table(page, cols, height=6)
+        self._refresh_auto_view()
+
+    def _auto_scopes(self):
+        return autoup.scopes_of(self.auto_flags)
+
+    def toggle_auto_upload(self):
+        self.set_auto_upload(not self._auto_on)
+
+    def set_auto_upload(self, on):
+        self._auto_on = bool(on)
+        save_config(auto_upload=self._auto_on)
+        if self._auto_on:
+            self._auto_stop = ""
+            self._auto_backoff = 0.0
+            # 换一个 tracker，以当前水位重建基线：历史成绩一律不补传，但
+            # 「关机期间打的局」（mtime 高于水位）进候选池，等下一轮扫描确认。
+            # games 还没扫出来时保持未初始化，让第一轮扫描自己 prime。
+            self._auto_tracker = autoup.Tracker(self._auto_watermark)
+            if self.games:
+                self._auto_tracker.prime(self.games)
+            diag.log.info("自动上传：开启（水位 %s，范围 %s）",
+                          self._auto_watermark,
+                          "、".join(self._auto_scopes()) or "未选择")
+            self.after(150, self._auto_tick)
+        else:
+            diag.log.info("自动上传：关闭")
+        self._refresh_auto_view()
+
+    def toggle_auto_scope(self, _key=None):
+        self.auto_flags = {k: bool(v.get()) for k, v in self.auto_vars.items()}
+        scopes = [s for k, ss, _l in autoup.GROUPS for s in ss
+                  if self.auto_flags.get(k)]
+        save_config(auto_scopes=scopes)
+        diag.log.info("自动上传范围：%s", "、".join(scopes) or "未选择")
+        self._refresh_auto_view()
+
+    def _auto_ready_reason(self):
+        """现在能不能传（用户视角的原因），空字符串表示可以。"""
+        if not self._auto_on:
+            return "自动上传已关闭"
+        if not self._auto_scopes():
+            return "还没勾选要传什么"
+        if not self._watch_enabled:
+            return "自动刷新关着，看不到新录像"
+        if not self.oms_user:
+            return "还没登录 openms.top"
+        if not autoup.ready(self._auto_scopes(), self.site_pb, self.site_top):
+            return "还没读到你在网站上的成绩"
+        if not self.games:
+            return "还没找到录像，先确认一下路径"
+        return ""
+
+    def _refresh_auto_status(self):
+        if not hasattr(self, "lbl_auto_status"):
+            return
+        self.btn_auto.set_text("暂停自动上传" if self._auto_on else "开始自动上传")
+        self.btn_auto.set_selected(self._auto_on)
+        name = (self.oms_user or {}).get("username") or ""
+        self.lbl_auto_acct.config(
+            text=("账号：%s · 已登录" % name) if name else "账号：未登录",
+            fg=C_OK if name else C_WARN)
+
+        why = self._auto_stop or self._auto_ready_reason()
+        left = time.monotonic() - self._auto_backoff
+        if left < 0:
+            why = "网络不稳，%d 秒后再试" % max(1, int(-left))
+        if why:
+            txt, color = why, C_WARN
+        else:
+            txt = "盯着新录像，符合范围的直接上传（不弹窗、不打断游戏）"
+            color = C_DIM
+        self.lbl_auto_status.config(text=txt, fg=color)
+
+        n_log = len(autolog.items())
+        self.lbl_auto_stat.config(
+            text="本次已传 %d 条 · 记录 %d 条" % (self._auto_session, n_log))
+
+    def _refresh_auto_view(self):
+        if not hasattr(self, "tbl_auto"):
+            return
+        self.tbl_auto.set_rows([dict(x) for x in autolog.items()])
+        self._refresh_auto_status()
+
+    def _auto_record(self, game, why, result, ok=False):
+        autolog.add({
+            "level_cn": core.LEVEL_CN.get(game.get("level"), "?"),
+            "time": game.get("time"),
+            "bv": game.get("bv"),
+            "why": "；".join([w for w in (why or []) if w]) or "—",
+            "result": result,
+            "ok": bool(ok),
+            "path": game.get("path") or "",     # 双击这行能回看刚传的那局
+        })
+        if getattr(self, "_tab", "") == "auto":
+            self._refresh_auto_view()
+
+    def _auto_save_watermark(self):
+        mt = self._auto_tracker.newest(self.games)
+        if mt and mt != self._auto_watermark:
+            self._auto_watermark = mt
+            save_config(auto_watermark=mt)
+
+    def check_auto_now(self):
+        if not self._auto_on:
+            messagebox.showinfo(APP_TITLE, "自动上传还没开启。\n\n"
+                                          "先点上面的按钮开启，再点这里。")
+            return
+        self.start_scan()
+
+    def clear_auto_log(self):
+        if not autolog.items():
+            return
+        if not messagebox.askyesno(
+                APP_TITLE,
+                "清空「最近自动上传」这张表？\n\n"
+                "只清这份列表。网站上的录像不受影响，也不会因此重新上传。"):
+            return
+        autolog.clear()
+        self._refresh_auto_view()
+
+    def _auto_handle_fatal(self, fatal, reason=""):
+        """自动上传撞到账号级问题时暂停，不弹窗 —— 元扫雷可能正在前台跑。"""
+        if not fatal:
+            return
+        if fatal == "net":
+            self._auto_backoff = time.monotonic() + 300
+            diag.log.warning("自动上传：连续网络失败，5 分钟后再试")
+            return
+        text = {"auth": "登录已失效，先重新登录",
+                "quota": "网站的录像额度已经用完",
+                "realname": "账号还没实名，网站不收",
+                "identity": "账号还没通过上传准入",
+                "banned": "账号被封禁"}.get(fatal)
+        if fatal == "auth":
+            # 与手动上传的收尾一致：会话作废，界面如实显示未登录
+            self.oms.store.clear_session()
+            self.oms_user = None
+            self.oms_loaded = False
+        if text:
+            self._auto_stop = text
+            diag.log.warning("自动上传暂停：%s", text)
+
+    def _auto_tick(self):
+        """每轮扫描之后跑一次：认出值得传的新局，交给上传线程。
+
+        门控顺序就是「能不能判」的顺序：没开、正在传、正在扫、账号级暂停、
+        网络退避、网站成绩没读到 —— 任何一条不满足都直接返回，不消费候选
+        （候选留在 tracker 里，下一拍还拿得到）。
+        """
+        if not self._auto_on or self._up_running or self._scanning:
+            return
+        if self._auto_stop or time.monotonic() < self._auto_backoff:
+            return
+        if not self.games:
+            return
+        try:
+            ready = self._auto_tracker.observe(self.games)
+        except Exception as exc:            # noqa: BLE001  判定坏掉不能拖垮主流程
+            diag.log.warning("自动上传：识别新录像失败：%s", exc)
+            return
+        if not ready:
+            return
+        why_not = self._auto_ready_reason()
+        if why_not:
+            self._refresh_auto_status()
+            return
+
+        scopes = self._auto_scopes()
+        # 跟上传页的「含阿比特录像」保持同一个开关：不勾就不采信阿比特的成绩。
+        # 池子变了，PB / 涨分的比较基准也跟着变 —— 与上传页是一致的。
+        games = autoup.pool(self.games, self.upload_arb)
+        n_arb = len(self.games) - len(games)
+        if n_arb and set(ready) & {g["path"] for g in self.games
+                                   if (g.get("src") or "ms") == "arb"}:
+            diag.log.info("自动上传：跳过阿比特录像（上传页没勾「含阿比特录像」）")
+        cands = autoup.judge(games, scopes, set(ready),
+                             site_pb=self.site_pb, site_top=self.site_top)
+        keys = set()
+        for v in self.oms_videos or []:
+            k = openms.server_key(v)
+            if k:
+                keys.add(k)
+
+        todo, why = [], {}
+        for c in cands:
+            g = c["game"]
+            reason = autoup.blocked(g, self.oms_idents or None)
+            if not reason:
+                k = openms.game_key(g)
+                if autoup.uploaded_before(g, keys) or (k and journal.has(k)):
+                    reason = "网站上已经有这条了"
+            if reason:
+                self._auto_record(g, c["why"], "没传：" + reason, ok=False)
+                continue
+            todo.append(c["path"])
+            why[c["path"]] = c["why"]
+
+        # 判定完了才 commit：中途因为数据没就绪返回时，这局下次还能再判
+        self._auto_tracker.commit(ready)
+        self._auto_save_watermark()
+        if not todo:
+            self._refresh_auto_status()
+            return
+        diag.log.info("自动上传：%d 条新成绩符合范围", len(todo))
+        self._start_upload(todo, silent=True, why=why)
 
     # ---------- 账号 ----------
     def open_login(self):
@@ -2181,6 +2779,8 @@ class App(tk.Tk):
         self._site_pb_changed()
         self._site_top_changed()
         self.set_status("已登录 openms.top：%s" % (user.get("username") or ""), "ok")
+        self._auto_stop = ""            # 重新登录后把「登录已失效」这类暂停解掉
+        self._refresh_auto_view()
         self.refresh_site()
 
     def do_logout(self):
@@ -2315,6 +2915,8 @@ class App(tk.Tk):
         if self._up_scopes:
             self.up_sel &= self._scope_path_set()
             self._refresh_up_view()
+        # 网站成绩刚回来：之前因为「还没读到你的成绩」压着的候选，现在可以判了
+        self.after(200, self._auto_tick)
 
     def _clear_site_top(self):
         self.site_top = {}
@@ -2350,6 +2952,7 @@ class App(tk.Tk):
         if self._up_scopes:
             self.up_sel &= self._scope_path_set()
             self._refresh_up_view()
+        self.after(200, self._auto_tick)
 
     def _on_account(self, seq, user, videos, idents, err):
         if seq != self._site_seq:
@@ -2417,9 +3020,12 @@ class App(tk.Tk):
             elif not self.oms_user.get("verified"):
                 # 上传闸门：实名或玩家认证满足其一，否则站点直接拒（identity_access_required）
                 bits.append("未实名且无玩家认证，上传会被拒")
+        # 「本机记着传过 N 条」只在网站记录没读到的时候才说：那时候它是唯一依据
+        # （断网重开不至于把传过的再传一遍）。平时网站列表已经说明一切，两个数字
+        # 并排只会让人怀疑哪个是真的。
         n = journal.count()
-        if n:
-            bits.append("本地台账 %d" % n)
+        if n and self.oms_user and (self.oms_err or not self.oms_loaded):
+            bits.append("网站记录还没读到，本机记着 %d 条已传" % n)
         if self.oms_err:
             bits.append(self.oms_err)
         self.lbl_quota.config(text=" · ".join(bits), fg=C_ERR if self.oms_err else C_DIM)
@@ -2769,10 +3375,18 @@ class App(tk.Tk):
             return
         self._start_upload(paths)
 
-    def _start_upload(self, paths):
+    def _start_upload(self, paths, silent=False, why=None):
+        """silent=True 是自动上传发的：不确认、不锁按钮、失败不弹窗。
+
+        自动上传每局都会走这条路，任何弹窗都会抢走元扫雷的焦点，一局就废了。
+        """
         if self._up_running:
+            if not silent:
+                self.set_status("自动上传正在传新成绩，等这一条传完再点", "warn")
             return
         if not self.oms_user:
+            if silent:
+                return
             # Cookie 还在、只是账号信息还没读回来（启动后那几秒）：这时候把人
             # 推去输验证码纯属折腾，等目录栏转成「已登录」再点就行。
             if self.oms.has_session() and not self.oms_err:
@@ -2783,15 +3397,26 @@ class App(tk.Tk):
             return
         self._up_running = True
         self._up_stop = False
+        self._up_silent = bool(silent)
+        self._auto_why = dict(why or {})
         self._up_total = len(paths)
         self._last_failed.clear()
         self._up_done = self._up_ok = self._up_dup = self._up_fail = 0
         self.pb_up.config(maximum=max(1, len(paths)), value=0)
         self.lbl_up_prog.config(text="0/%d" % len(paths))
-        self._set_up_enabled(False)
-        self.btn_stop.set_enabled(True)
+        if not silent and not self.row_up_prog.winfo_ismapped():
+            self.row_up_prog.pack(side="bottom", fill="x", pady=(0, sc(2)))
+        if not silent:
+            self._set_up_enabled(False)
+            self.btn_stop.set_enabled(True)
+        # 记下开传之前那一行：全部成功时原样还回去，免得总结永远挂在底下。
+        # 连续两批挨着传时，上一批的「成功 N」不能当常态存下来。
+        cur = self.lbl_status.cget("text")
+        if not cur.startswith(("正在上传", "上传结束", "自动上传")):
+            self._status_saved = (cur, self.lbl_status.cget("foreground"))
         self._log("开始上传 %d 个录像…" % len(paths), "dim")
-        self.set_status("正在上传 %d 个录像…" % len(paths), "dim")
+        self.set_status(("自动上传 %d 条新成绩…" if silent else "正在上传 %d 个录像…")
+                        % len(paths), "dim")
         keys = {g["path"]: openms.game_key(g) for g in self.games}
         threading.Thread(target=self._upload_worker, args=(paths, keys),
                          daemon=True).start()
@@ -2911,14 +3536,66 @@ class App(tk.Tk):
             self._log("%s → %s" % (os.path.basename(path), reason), "err")
         diag.log.info("上传 %s → %s", os.path.basename(path), status if res.get("ok")
                       else "失败：" + (res.get("reason") or "?"))
+        if self._up_silent:
+            g = next((x for x in self.games if x["path"] == path), None)
+            if g is not None:
+                if res.get("ok"):
+                    self._auto_session += 1
+                    self._auto_retry.pop(path, None)
+                    state = "" if res.get("collision") else (res.get("state") or "")
+                    self._auto_record(
+                        g, self._auto_why.get(path),
+                        "网站已有" if res.get("collision")
+                        else openms.STATE_CN.get(state, "已上传"), ok=True)
+                    # 自动上传不重拉录像列表（那是 2000 条、21 批请求），但页面
+                    # 上的「网站已有」和「未上传」是拿这个列表算的 —— 所以把刚传
+                    # 成功的这条按站点字段补进内存，否则下一次重扫会把它显示回
+                    # 「未上传」，让人以为没传上去。
+                    if not res.get("collision"):
+                        ms = g.get("timems")
+                        if ms is None:
+                            ms = int(round(float(g.get("time") or 0) * 1000))
+                        self.oms_videos.append({
+                            "id": res.get("vid"), "state": res.get("state"),
+                            "timems": ms, "bv": g.get("bv"),
+                            "file_size": g.get("size"),
+                        })
+                else:
+                    self._auto_record(g, self._auto_why.get(path),
+                                      "没传：%s" % (res.get("reason") or "失败"),
+                                      ok=False)
+                    # 断网、5xx 这种可能自己好起来的：放回候选池，20/40/60 秒后再试。
+                    # 判定错（格式、级别、审核码）不放回 —— 再试还是同样的结果。
+                    if res.get("transient"):
+                        n = self._auto_retry.get(path, 0) + 1
+                        self._auto_retry[path] = n
+                        if n <= 3:
+                            self._auto_tracker.requeue(path)
+                            self._auto_backoff = max(self._auto_backoff,
+                                                     time.monotonic() + 20.0 * n)
         self.pb_up.config(value=idx)
         self.lbl_up_prog.config(text="%d/%d" % (idx, total))
 
     def _on_upload_end(self, payload):
         self._up_running = False
+        silent = self._up_silent
+        self._up_silent = False
+        fatal = payload.get("fatal")
+        if silent:
+            # 自动上传：只写状态栏和日志。任何 messagebox 都会抢走元扫雷的焦点。
+            self._auto_handle_fatal(fatal, payload.get("reason"))
+            msg = "自动上传：成功 %d，已有 %d，失败 %d" % (
+                self._up_ok, self._up_dup, self._up_fail)
+            self.set_status(msg, "ok" if not self._up_fail else "warn")
+            self._end_up_progress(keep_status=bool(fatal) or self._up_fail > 0)
+            self._refresh_acct_label()
+            self._update_up_stat()
+            self._refresh_auto_view()
+            # 这一批传完，队列里可能还压着刚落地的局
+            self.after(120, self._auto_tick)
+            return
         self._set_up_enabled(True)
         self.btn_stop.set_enabled(False)
-        fatal = payload.get("fatal")
         if fatal == "auth":
             self.oms_user = None
             self.oms_loaded = False
@@ -2943,7 +3620,7 @@ class App(tk.Tk):
             messagebox.showwarning(
                 APP_TITLE,
                 "连续多条网络或服务器错误，已停止本批。\n\n"
-                "已经传成功的不受影响，也不会重复上传（本地台账已记下）。\n"
+                "已经传成功的不受影响，重试也不会重复上传。\n"
                 "恢复后点「重试失败」只补传剩下的那几条。")
 
         msg = "上传结束：成功 %d，已有 %d，失败 %d" % (
@@ -2955,10 +3632,32 @@ class App(tk.Tk):
         elif self._up_fail and not fatal:
             msg += "，可点「重试失败」补传"
         self.set_status(msg, "ok" if not self._up_fail else "warn")
+        self._end_up_progress(keep_status=bool(fatal) or self._up_fail > 0
+                              or bool(payload.get("stopped")))
         self._refresh_acct_label()      # 上一行会把「登录…」重新启用，这里按真实登录态纠正
         self._update_up_stat()
         # 用服务端数据校正状态（含审核结果 a/c/b/d）
         self.after(400, self.refresh_site)
+
+    def _end_up_progress(self, keep_status=False, hold_ms=None):
+        """一批传完的收尾：进度行收回、右下角那行清掉。
+
+        右下角写的是「正在传哪个」，不是历史 —— 传完就该空出来，历史在表格里。
+        全部成功时总结只留几秒，然后还回开传前那一行；有失败或账号级问题就留着，
+        那是要人处理的事，不能自己消失。
+        """
+        try:
+            self.row_up_prog.pack_forget()
+        except tk.TclError:
+            pass
+        self.lbl_up_prog.config(text="")
+        self.lbl_up_log.config(text="")
+        if keep_status:
+            return
+        hold_ms = self.UP_STATUS_HOLD_MS if hold_ms is None else hold_ms
+        text, color = getattr(self, "_status_saved", ("", C_DIM))
+        if text:
+            self._status_later(hold_ms, text, color)
 
     # ---------- 启动 / 目录 ----------
     @property
@@ -3000,6 +3699,9 @@ class App(tk.Tk):
         diag.log.info("录像目录更新：%s",
                       " ; ".join(r["path"] for r in self.roots) or "（空）")
         self._watch_rebuild()               # 停用/移除的目录立刻退出监控清单
+        # 换了目录：重扫出来的局一律按「旧局」算，否则刚加进来的历史录像会被
+        # 当成新成绩自动传上去。保持未初始化，让下一轮扫描自己建基线。
+        self._auto_tracker = autoup.Tracker(self._auto_watermark)
         if rescan:
             if not self.active_roots():
                 self.set_status("所有录像目录都已停用", "warn")
@@ -3337,21 +4039,22 @@ class App(tk.Tk):
         self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
         self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
+        self._auto_tick()               # 自动上传：看看这轮有没有值得传的新局
 
         elapsed = info["elapsed"] * 1000
         n_fail = info["fail_skipped"]
         dup = info["duplicates"]
         extra = []
         if n_fail:
-            extra.append(f"跳过非完成局 {n_fail}")
+            extra.append(f"跳过 {n_fail} 个没打完的")
         if dup:
-            extra.append(f"去重 {dup}")
+            extra.append(f"重复的 {dup} 个")
         if info["unparsed"]:
-            extra.append(f"无法解析 {len(info['unparsed'])}")
+            extra.append(f"读不出 {len(info['unparsed'])} 个")
         if info.get("nf_count") or info.get("fl_count"):
             extra.append(f"NF {info['nf_count']} · FL {info['fl_count']}")
         if info.get("rce_failed"):
-            extra.append(f"rce 失败 {info['rce_failed']}")
+            extra.append(f"读不出 {info['rce_failed']} 条")
         if info.get("tampered"):
             extra.append(f"文件名与录像不符 {len(info['tampered'])}")
         if info.get("level_conflict"):
@@ -3362,12 +4065,12 @@ class App(tk.Tk):
         if info.get("truncated"):
             extra.append(f"只扫了前 {info['dirs_visited'] - 1} 个子目录就停手"
                          f"（目录太大，建议直接指向 replay）")
-        ck = info.get("cache") or {}
-        if ck.get("hits") and ck.get("misses"):
-            extra.append(f"新解析 {ck['misses']}，其余 {ck['hits']} 走缓存")
         tail = ("，" + "，".join(extra)) if extra else ""
+        # 「用时」按秒说：毫秒精度对用户没有意义，缓存命中率更是纯内部实现
+        used = ("%.1f 秒" % (elapsed / 1000.0)) if elapsed < 10000 \
+            else ("%d 秒" % round(elapsed / 1000.0))
         self.set_status(
-            f"扫描 {info['files']} 个文件 → {info['unique']} 个完成局{tail}，耗时 {elapsed:.0f} ms",
+            f"扫描 {info['files']} 个文件 → {info['unique']} 个完成局{tail}，用时 {used}",
             "warn" if (info.get("tampered") or info.get("truncated")) else "dim")
         self.lbl_meta.config(text=f"{info['unique']} 局完成 · " + self.roots_label())
         diag.log.info("扫描完成：%d 文件 → %d 局（阿比特 %d%s），NF %s / FL %s，%d ms%s",
@@ -3578,7 +4281,20 @@ class App(tk.Tk):
 
     def set_status(self, text, kind="dim"):
         color = {"dim": C_DIM, "ok": C_OK, "warn": C_WARN, "err": C_ERR}.get(kind, C_DIM)
+        # 序号一变，排队中的「几秒后恢复原样」就作废 —— 期间有新消息时不能覆盖它
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
         self.lbl_status.config(text=text, foreground=color)
+
+    def _status_later(self, ms, text, color=None):
+        """过一会儿把状态栏还原成 text；这期间有新消息就不动它。"""
+        seq = getattr(self, "_status_seq", 0)
+        color = color or C_DIM
+
+        def _back():
+            if getattr(self, "_status_seq", 0) == seq:
+                self.lbl_status.config(text=text, foreground=color)
+                self._status_seq += 1
+        self.after(ms, _back)
 
     # ---------- 读取进度条 ----------
     def _progress_begin(self):
