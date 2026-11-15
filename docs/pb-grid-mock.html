@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>PB 网格版式预览</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#faf3fa;color:#3c3352;font:13px/1.55 system-ui,"Microsoft YaHei",sans-serif;padding:22px 24px 40px}
+.wrap{max-width:1120px;margin:0 auto}
+h1{font-size:15px;font-weight:500;margin-bottom:4px}
+.sub{font-size:12px;color:#9b8aae;margin-bottom:16px}
+.card{background:#fff;border:1px solid #f2e2ef;border-radius:12px;padding:14px 16px 12px;margin-bottom:14px}
+.bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sep{width:1px;height:18px;background:#f2e2ef;margin:0 8px}
+button{font:inherit;font-size:12px;border:1px solid #f2e2ef;background:#fff;color:#9b8aae;border-radius:11px;padding:3px 12px;cursor:pointer}
+button.on{color:#fff;border-color:transparent}
+button[disabled]{opacity:.45;cursor:default}
+.seg-level button.on{background:#ff6f9c}
+.seg-board button.on{background:#9b7cf0}
+.seg-metric button.on{background:#5eb9e8}
+.hint{margin-left:auto;font-size:12px;color:#9b8aae}
+.grid{display:grid;grid-template-columns:52px repeat(10,1fr);gap:2px;margin-top:10px}
+.hd,.lb{display:flex;align-items:center;justify-content:center;font-size:11px;color:#bdaec8}
+.lb{justify-content:flex-end;padding-right:6px}
+.cell{height:26px;border-radius:4px;display:flex;align-items:center;justify-content:center;
+ font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer;user-select:none;transition:box-shadow .08s}
+.cell.sel{box-shadow:0 0 0 2px #ff6f9c inset}
+.cell.probe{box-shadow:0 0 0 2px #ffd0e0 inset}
+.detail{display:flex;align-items:baseline;gap:14px;font-size:12px;color:#3c3352;padding-top:10px;margin-top:10px;border-top:1px solid #f8eef6;flex-wrap:wrap}
+.detail b{font-weight:500;font-size:13px}
+.detail span{color:#9b8aae}
+.detail .f{color:#c3b2cd;font-family:Consolas,monospace;font-size:11px;margin-left:auto}
+.legend{display:flex;align-items:center;gap:14px;font-size:11px;color:#9b8aae;margin-top:10px}
+.legend i{width:12px;height:12px;border-radius:3px;display:inline-block;margin-right:5px;vertical-align:-2px}
+.note{font-size:12px;color:#9b8aae;margin-top:6px}
+</style></head><body><div class="wrap">
+<h1>PB 网格版式预览</h1>
+<div class="sub">数据是你本地的全部 PB（初级 39 / 中级 78 / 高级 87 个 BV），排名来自网站。点格子看详情。</div>
+
+<div class="card">
+  <div class="bar">
+    <div class="seg-level bar" id="lv"></div><div class="sep"></div>
+    <div class="seg-board bar" id="bd"></div><div class="sep"></div>
+    <div class="seg-metric bar" id="mt"></div>
+    <div class="hint" id="hint"></div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="legend" id="lg"></div>
+</div>
+
+<div class="card">
+  <div class="detail" id="detail"><b>点一个格子</b><span>这里显示这一格的成绩、名次和录像</span></div>
+  <div class="note">最浅的格子是没成绩的 BV；虚线框的是低于官方门槛（初级 &lt;10、中级 &lt;30、高级 &lt;100）。</div>
+</div>
+</div>
+<script>
+const D = {"data":{"b":{"2":{"t":0.48,"bvs":4.167,"stnb":250.7,"rank":38,"count":79},"4":{"t":0.93,"bvs":4.301,"stnb":162.9,"rank":32,"count":116},"3":{"t":0.87,"bvs":3.448,"stnb":136.8,"rank":26,"count":105},"6":{"t":1.11,"bvs":5.405,"stnb":180.9,"rank":28,"count":129},"7":{"t":1.3,"bvs":5.385,"stnb":161.3,"rank":46,"count":130},"10":{"t":1.52,"bvs":6.579,"stnb":176.7,"rank":31,"count":134},"8":{"t":1.46,"bvs":5.479,"stnb":151.4,"rank":22,"count":131},"14":{"t":2.19,"bvs":6.393,"stnb":132.9,"rank":40,"count":135},"11":{"t":1.77,"bvs":6.215,"stnb":150.0,"rank":40,"count":137},"36":{"t":8.07,"bvs":4.461,"stnb":37.2,"rank":68,"count":78},"17":{"t":2.8,"bvs":6.071,"stnb":106.3,"rank":43,"count":132},"26":{"t":4.07,"bvs":6.388,"stnb":86.1,"rank":50,"count":122},"23":{"t":3.7,"bvs":6.216,"stnb":89.6,"rank":55,"count":125},"21":{"t":3.35,"bvs":6.269,"stnb":96.8,"rank":49,"count":130},"32":{"t":5.4,"bvs":5.926,"stnb":65.5,"rank":44,"count":97},"18":{"t":3.08,"bvs":5.844,"stnb":95.7,"rank":42,"count":129},"28":{"t":5.17,"bvs":5.416,"stnb":61.7,"rank":56,"count":113},"30":{"t":5.45,"bvs":5.505,"stnb":60.5,"rank":61,"count":112},"24":{"t":3.66,"bvs":6.557,"stnb":95.2,"rank":41,"count":119},"16":{"t":2.73,"bvs":5.861,"stnb":104.5,"rank":58,"count":139},"9":{"t":1.67,"bvs":5.389,"stnb":135.5,"rank":45,"count":130},"22":{"t":3.52,"bvs":6.25,"stnb":93.2,"rank":30,"count":126},"5":{"t":1.02,"bvs":4.902,"stnb":174.0,"rank":42,"count":124},"12":{"t":1.97,"bvs":6.091,"stnb":136.4,"rank":37,"count":133},"15":{"t":2.49,"bvs":6.024,"stnb":114.5,"rank":56,"count":132},"13":{"t":2.16,"bvs":6.019,"stnb":126.4,"rank":46,"count":134},"19":{"t":2.87,"bvs":6.62,"stnb":113.9,"rank":45,"count":126},"27":{"t":4.55,"bvs":5.934,"stnb":74.0,"rank":34,"count":114},"20":{"t":3.35,"bvs":5.97,"stnb":92.2,"rank":61,"count":129},"31":{"t":5.06,"bvs":6.126,"stnb":70.9,"rank":44,"count":101},"29":{"t":5.5,"bvs":5.273,"stnb":57.6,"rank":53,"count":106},"35":{"t":6.89,"bvs":5.08,"stnb":47.4,"rank":61,"count":84},"25":{"t":4.11,"bvs":6.083,"stnb":81.4,"rank":55,"count":117},"40":{"t":8.4,"bvs":4.762,"stnb":38.6,"rank":39,"count":54},"34":{"t":6.84,"bvs":4.971,"stnb":46.6,"rank":66,"count":88},"33":{"t":6.21,"bvs":5.314,"stnb":53.3,"rank":66,"count":91},"37":{"t":7.32,"bvs":5.055,"stnb":45.2,"rank":48,"count":68},"38":{"t":8.71,"bvs":4.363,"stnb":34.5,"rank":56,"count":65},"42":{"t":9.57,"bvs":4.389,"stnb":32.5,"rank":25,"count":28}},"e":{"188":{"t":60.43,"bvs":3.111,"stnb":76.7,"rank":68,"count":105},"189":{"t":69.33,"bvs":2.726,"stnb":61.0,"rank":84,"count":106},"155":{"t":58.41,"bvs":2.654,"stnb":67.0,"rank":81,"count":110},"168":{"t":64.14,"bvs":2.619,"stnb":61.9,"rank":87,"count":116},"165":{"t":61.98,"bvs":2.662,"stnb":64.4,"rank":88,"count":117},"192":{"t":75.84,"bvs":2.532,"stnb":53.2,"rank":90,"count":108},"147":{"t":68.72,"bvs":2.139,"stnb":48.2,"rank":84,"count":106},"160":{"t":54.19,"bvs":2.953,"stnb":78.5,"rank":71,"count":112},"202":{"t":115.12,"bvs":1.755,"stnb":27.5,"rank":100,"count":104},"179":{"t":77.62,"bvs":2.306,"stnb":47.7,"rank":82,"count":112},"190":{"t":65.29,"bvs":2.91,"stnb":67.9,"rank":82,"count":104},"205":{"t":68.72,"bvs":2.983,"stnb":67.2,"rank":74,"count":95},"185":{"t":62.09,"bvs":2.98,"stnb":72.0,"rank":62,"count":108},"194":{"t":76.85,"bvs":2.524,"stnb":52.6,"rank":89,"count":105},"216":{"t":131.72,"bvs":1.64,"stnb":23.4,"rank":62,"count":83},"182":{"t":66.72,"bvs":2.728,"stnb":62.7,"rank":86,"count":109},"162":{"t":57.68,"bvs":2.809,"stnb":71.5,"rank":76,"count":116},"151":{"t":143.86,"bvs":1.05,"stnb":14.1,"rank":109,"count":110},"212":{"t":71.05,"bvs":2.984,"stnb":65.6,"rank":65,"count":84},"207":{"t":165.4,"bvs":1.252,"stnb":15.2,"rank":83,"count":99},"201":{"t":87.65,"bvs":2.293,"stnb":43.6,"rank":81,"count":101},"173":{"t":69.62,"bvs":2.485,"stnb":55.4,"rank":91,"count":109},"203":{"t":72.21,"bvs":2.811,"stnb":61.1,"rank":82,"count":102},"137":{"t":53.45,"bvs":2.563,"stnb":68.8,"rank":71,"count":96},"144":{"t":54.38,"bvs":2.648,"stnb":70.2,"rank":67,"count":102},"146":{"t":54.74,"bvs":2.667,"stnb":70.4,"rank":70,"count":104},"177":{"t":55.61,"bvs":3.183,"stnb":83.1,"rank":65,"count":117},"159":{"t":57.58,"bvs":2.761,"stnb":70.4,"rank":79,"count":114},"125":{"t":58.83,"bvs":2.125,"stnb":53.3,"rank":57,"count":70},"161":{"t":59.63,"bvs":2.7,"stnb":67.1,"rank":81,"count":114},"139":{"t":63.13,"bvs":2.202,"stnb":52.6,"rank":86,"count":105},"178":{"t":63.47,"bvs":2.804,"stnb":66.8,"rank":89,"count":113},"166":{"t":63.82,"bvs":2.601,"stnb":61.7,"rank":87,"count":114},"211":{"t":64.65,"bvs":3.264,"stnb":76.7,"rank":59,"count":90},"170":{"t":64.87,"bvs":2.621,"stnb":61.4,"rank":88,"count":114},"174":{"t":58.97,"bvs":2.951,"stnb":74.0,"rank":81,"count":115},"187":{"t":65.88,"bvs":2.838,"stnb":65.8,"rank":83,"count":111},"213":{"t":74.39,"bvs":2.863,"stnb":61.0,"rank":74,"count":85},"163":{"t":63.5,"bvs":2.567,"stnb":61.1,"rank":86,"count":115},"197":{"t":70.47,"bvs":2.796,"stnb":61.9,"rank":79,"count":101},"240":{"t":86.01,"bvs":2.79,"stnb":53.7,"rank":21,"count":22},"138":{"t":88.62,"bvs":1.557,"stnb":29.3,"rank":95,"count":97},"183":{"t":70.3,"bvs":2.603,"stnb":57.7,"rank":89,"count":109},"156":{"t":60.36,"bvs":2.584,"stnb":63.7,"rank":84,"count":111},"148":{"t":57.28,"bvs":2.584,"stnb":66.1,"rank":79,"count":110},"143":{"t":246.26,"bvs":0.581,"stnb":5.4,"rank":null,"count":108},"158":{"t":65.31,"bvs":2.419,"stnb":56.5,"rank":89,"count":116},"233":{"t":390.54,"bvs":0.597,"stnb":4.0,"rank":null,"count":38},"176":{"t":68.77,"bvs":2.559,"stnb":57.6,"rank":88,"count":110},"134":{"t":61.11,"bvs":2.193,"stnb":53.6,"rank":null,"count":92},"145":{"t":55.97,"bvs":2.591,"stnb":67.3,"rank":74,"count":106},"184":{"t":62.35,"bvs":2.951,"stnb":71.1,"rank":74,"count":107},"186":{"t":66.23,"bvs":2.808,"stnb":64.9,"rank":76,"count":113},"199":{"t":79.04,"bvs":2.518,"stnb":51.4,"rank":91,"count":104},"175":{"t":59.68,"bvs":2.932,"stnb":72.9,"rank":79,"count":107},"181":{"t":102.57,"bvs":1.765,"stnb":30.0,"rank":98,"count":113},"191":{"t":68.55,"bvs":2.786,"stnb":62.9,"rank":80,"count":98},"225":{"t":104.99,"bvs":2.143,"stnb":35.9,"rank":64,"count":69},"150":{"t":57.06,"bvs":2.629,"stnb":67.4,"rank":79,"count":111},"129":{"t":57.87,"bvs":2.229,"stnb":56.6,"rank":67,"count":84},"141":{"t":58.34,"bvs":2.417,"stnb":61.0,"rank":76,"count":106},"131":{"t":60.35,"bvs":2.171,"stnb":53.5,"rank":72,"count":82},"154":{"t":60.83,"bvs":2.532,"stnb":62.1,"rank":90,"count":115},"153":{"t":61.34,"bvs":2.494,"stnb":60.8,"rank":85,"count":109},"157":{"t":61.41,"bvs":2.557,"stnb":62.3,"rank":88,"count":110},"114":{"t":61.94,"bvs":1.84,"stnb":44.6,"rank":27,"count":30},"164":{"t":63.78,"bvs":2.571,"stnb":61.0,"rank":78,"count":108},"169":{"t":63.93,"bvs":2.644,"stnb":62.6,"rank":83,"count":113},"180":{"t":64.62,"bvs":2.786,"stnb":65.5,"rank":84,"count":108},"167":{"t":66.92,"bvs":2.496,"stnb":57.2,"rank":92,"count":114},"200":{"t":67.68,"bvs":2.955,"stnb":67.3,"rank":80,"count":107},"204":{"t":69.46,"bvs":2.937,"stnb":65.6,"rank":75,"count":100},"214":{"t":69.61,"bvs":3.074,"stnb":68.6,"rank":65,"count":90},"149":{"t":70.72,"bvs":2.107,"stnb":46.5,"rank":95,"count":110},"135":{"t":71.26,"bvs":1.894,"stnb":41.6,"rank":70,"count":93},"195":{"t":71.38,"bvs":2.732,"stnb":59.9,"rank":84,"count":107},"171":{"t":73.23,"bvs":2.335,"stnb":50.3,"rank":98,"count":113},"152":{"t":75.75,"bvs":2.007,"stnb":42.2,"rank":94,"count":107},"219":{"t":78.55,"bvs":2.788,"stnb":57.2,"rank":60,"count":78},"196":{"t":81.65,"bvs":2.4,"stnb":47.9,"rank":92,"count":99},"223":{"t":82.35,"bvs":2.708,"stnb":53.7,"rank":56,"count":65},"220":{"t":82.7,"bvs":2.66,"stnb":52.6,"rank":66,"count":75},"226":{"t":84.35,"bvs":2.679,"stnb":52.3,"rank":56,"count":62},"172":{"t":88.79,"bvs":1.937,"stnb":36.5,"rank":89,"count":109},"193":{"t":91.03,"bvs":2.12,"stnb":39.2,"rank":88,"count":111},"215":{"t":127.29,"bvs":1.689,"stnb":24.7,"rank":84,"count":85},"210":{"t":545.84,"bvs":0.385,"stnb":2.0,"rank":75,"count":89}},"i":{"38":{"t":10.94,"bvs":3.473,"stnb":105.4,"rank":40,"count":114},"65":{"t":16.77,"bvs":3.876,"stnb":87.2,"rank":68,"count":124},"67":{"t":16.0,"bvs":4.188,"stnb":97.4,"rank":51,"count":126},"39":{"t":11.36,"bvs":3.433,"stnb":101.5,"rank":45,"count":111},"32":{"t":11.44,"bvs":2.797,"stnb":82.3,"rank":38,"count":81},"34":{"t":11.77,"bvs":2.889,"stnb":83.3,"rank":41,"count":102},"61":{"t":15.4,"bvs":3.961,"stnb":94.6,"rank":59,"count":123},"87":{"t":21.4,"bvs":4.065,"stnb":77.1,"rank":63,"count":106},"37":{"t":12.71,"bvs":2.911,"stnb":79.6,"rank":42,"count":106},"41":{"t":12.99,"bvs":3.156,"stnb":84.9,"rank":60,"count":116},"82":{"t":19.26,"bvs":4.258,"stnb":87.0,"rank":57,"count":110},"55":{"t":13.05,"bvs":4.215,"stnb":113.1,"rank":40,"count":124},"51":{"t":13.06,"bvs":3.905,"stnb":104.7,"rank":44,"count":122},"48":{"t":13.4,"bvs":3.582,"stnb":94.3,"rank":54,"count":128},"57":{"t":15.04,"bvs":3.79,"stnb":92.1,"rank":55,"count":131},"45":{"t":13.64,"bvs":3.299,"stnb":85.8,"rank":49,"count":125},"52":{"t":13.94,"bvs":3.73,"stnb":95.6,"rank":54,"count":123},"42":{"t":13.49,"bvs":3.113,"stnb":81.6,"rank":64,"count":120},"56":{"t":15.45,"bvs":3.625,"stnb":86.4,"rank":57,"count":126},"89":{"t":20.14,"bvs":4.419,"stnb":87.5,"rank":47,"count":102},"60":{"t":15.16,"bvs":3.958,"stnb":95.6,"rank":59,"count":124},"73":{"t":16.03,"bvs":4.554,"stnb":105.8,"rank":46,"count":116},"58":{"t":14.7,"bvs":3.946,"stnb":97.4,"rank":54,"count":124},"64":{"t":15.79,"bvs":4.053,"stnb":95.2,"rank":56,"count":128},"47":{"t":13.21,"bvs":3.558,"stnb":94.6,"rank":54,"count":129},"46":{"t":13.29,"bvs":3.461,"stnb":91.7,"rank":54,"count":121},"44":{"t":12.98,"bvs":3.39,"stnb":91.3,"rank":52,"count":119},"68":{"t":15.8,"bvs":4.304,"stnb":101.0,"rank":48,"count":117},"85":{"t":17.92,"bvs":4.743,"stnb":101.9,"rank":41,"count":110},"59":{"t":14.37,"bvs":4.106,"stnb":103.0,"rank":49,"count":128},"78":{"t":18.37,"bvs":4.246,"stnb":89.7,"rank":56,"count":116},"70":{"t":17.22,"bvs":4.065,"stnb":89.8,"rank":59,"count":124},"53":{"t":14.75,"bvs":3.593,"stnb":88.5,"rank":51,"count":123},"77":{"t":18.98,"bvs":4.057,"stnb":83.7,"rank":59,"count":119},"30":{"t":20.73,"bvs":1.447,"stnb":28.1,"rank":57,"count":66},"63":{"t":15.68,"bvs":4.018,"stnb":94.8,"rank":57,"count":118},"81":{"t":20.06,"bvs":4.038,"stnb":80.2,"rank":63,"count":117},"86":{"t":21.12,"bvs":4.072,"stnb":78.0,"rank":63,"count":107},"90":{"t":21.91,"bvs":4.108,"stnb":76.7,"rank":51,"count":100},"84":{"t":21.48,"bvs":3.911,"stnb":74.0,"rank":72,"count":112},"91":{"t":21.82,"bvs":4.17,"stnb":78.1,"rank":60,"count":96},"43":{"t":12.76,"bvs":3.37,"stnb":91.8,"rank":55,"count":118},"69":{"t":18.36,"bvs":3.758,"stnb":79.4,"rank":67,"count":124},"49":{"t":13.3,"bvs":3.684,"stnb":97.5,"rank":50,"count":128},"99":{"t":24.52,"bvs":4.038,"stnb":69.7,"rank":45,"count":77},"76":{"t":18.81,"bvs":4.04,"stnb":83.9,"rank":61,"count":116},"72":{"t":18.05,"bvs":3.989,"stnb":85.3,"rank":51,"count":128},"50":{"t":13.47,"bvs":3.712,"stnb":97.4,"rank":55,"count":123},"74":{"t":18.11,"bvs":4.086,"stnb":87.2,"rank":63,"count":118},"54":{"t":15.01,"bvs":3.598,"stnb":87.5,"rank":68,"count":124},"66":{"t":16.75,"bvs":3.94,"stnb":88.8,"rank":60,"count":121},"98":{"t":26.17,"bvs":3.745,"stnb":61.7,"rank":56,"count":84},"83":{"t":19.6,"bvs":4.235,"stnb":85.5,"rank":53,"count":115},"75":{"t":18.03,"bvs":4.16,"stnb":89.0,"rank":55,"count":116},"71":{"t":16.91,"bvs":4.199,"stnb":94.0,"rank":55,"count":120},"100":{"t":27.01,"bvs":3.702,"stnb":59.7,"rank":52,"count":67},"80":{"t":20.34,"bvs":3.933,"stnb":77.3,"rank":69,"count":111},"96":{"t":22.33,"bvs":4.299,"stnb":79.2,"rank":44,"count":88},"88":{"t":20.54,"bvs":4.284,"stnb":83.7,"rank":49,"count":105},"40":{"t":13.23,"bvs":3.023,"stnb":80.3,"rank":63,"count":113},"79":{"t":20.24,"bvs":3.903,"stnb":77.0,"rank":67,"count":112},"104":{"t":42.94,"bvs":2.422,"stnb":28.2,"rank":51,"count":53},"93":{"t":22.41,"bvs":4.15,"stnb":76.3,"rank":51,"count":92},"103":{"t":29.38,"bvs":3.506,"stnb":53.3,"rank":39,"count":58},"92":{"t":22.65,"bvs":4.062,"stnb":74.1,"rank":54,"count":90},"97":{"t":25.38,"bvs":3.822,"stnb":64.4,"rank":53,"count":84},"35":{"t":13.96,"bvs":2.507,"stnb":64.2,"rank":55,"count":104},"31":{"t":13.34,"bvs":2.324,"stnb":61.4,"rank":53,"count":75},"62":{"t":15.71,"bvs":3.947,"stnb":93.0,"rank":55,"count":126},"36":{"t":12.06,"bvs":2.985,"stnb":84.6,"rank":53,"count":102},"33":{"t":13.96,"bvs":2.364,"stnb":60.5,"rank":60,"count":82},"102":{"t":22.68,"bvs":4.497,"stnb":81.9,"rank":30,"count":74},"94":{"t":24.06,"bvs":3.907,"stnb":68.3,"rank":59,"count":96},"95":{"t":26.65,"bvs":3.565,"stnb":58.0,"rank":62,"count":86},"101":{"t":28.35,"bvs":3.563,"stnb":55.5,"rank":48,"count":74},"106":{"t":28.5,"bvs":3.719,"stnb":57.8,"rank":30,"count":50},"113":{"t":30.4,"bvs":3.717,"stnb":55.2,"rank":12,"count":15},"108":{"t":47.67,"bvs":2.266,"stnb":24.5,"rank":33,"count":33}}},"cn":{"b":"初级","i":"中级","e":"高级"}};
+const METRICS = [["t","时间"],["bvs","3BV/s"],["stnb","stnb"],["rank","排名"]];
+const GATE = {b:10,i:30,e:100};
+let lv = "b", metric = "t";
+const ramps = {
+  b:["#ff6f9c","#ffa8c4","#ffd9e6","#fdeef4"],
+  i:["#3fa9dd","#8fcbe9","#cfe8f8","#eaf6fd"],
+  e:["#8f6ce8","#bda6f3","#ddd2fa","#f0ebfd"]
+};
+const EMPTY = "#f7f1f6";
+
+function fmt(r, m){
+  if (m === "t") return r.t.toFixed(r.t >= 100 ? 0 : r.t >= 10 ? 1 : 3);
+  if (m === "bvs") return r.bvs.toFixed(2);
+  if (m === "stnb") return r.stnb.toFixed(1);
+  return r.rank ? r.rank : "—";
+}
+function pct(r){
+  if (!r.rank || !r.count) return null;
+  return r.rank / r.count;
+}
+function tone(r){
+  const p = pct(r);
+  const ramp = ramps[lv];
+  if (p !== null){
+    return p <= 0.10 ? [ramp[0], "#fff"] : p <= 0.35 ? [ramp[1], "#4a1a2c"]
+         : p <= 0.65 ? [ramp[2], "#4a1a2c"] : [ramp[3], "#8a6a7a"];
+  }
+  return [ramp[3], "#8a6a7a"];
+}
+function badge(){
+  document.getElementById("lv").innerHTML = ["b","i","e"].map(k =>
+    `<button class="${k===lv?"on":""}" onclick="setLv('${k}')">${D.cn[k]}</button>`).join("");
+  document.getElementById("bd").innerHTML = `<button class="on">全PB</button><button disabled title="预览页只做了全PB">NF PB</button>`;
+  document.getElementById("mt").innerHTML = METRICS.map(([k,s]) =>
+    `<button class="${k===metric?"on":""}" onclick="setM('${k}')">${s}</button>`).join("");
+  const ramp = ramps[lv];
+  document.getElementById("lg").innerHTML =
+    [["本级最快",ramp[0]],["偏快",ramp[1]],["偏慢",ramp[2]],["较慢",ramp[3]],["没有成绩",EMPTY]]
+    .map(([s,c]) => `<span><i style="background:${c}"></i>${s}</span>`).join("");
+}
+function render(){
+  const rows = D.data[lv];
+  const bvs = Object.keys(rows).map(Number);
+  const lo = Math.floor(Math.min(...bvs)/10)*10, hi = Math.floor(Math.max(...bvs)/10)*10;
+  const out = ['<div class="hd"></div>'];
+  for (let c=0;c<10;c++) out.push(`<div class="hd">${c}</div>`);
+    for (let s=lo;s<=hi;s+=10){
+    out.push(`<div class="lb">${s}–${s+9}</div>`);
+    for (let c=0;c<10;c++){
+      const bv = s+c, r = rows[bv];
+      if (bv < 1){ out.push(`<div class="cell" style="background:transparent"></div>`); continue; }
+      if (!r){ out.push(`<div class="cell" style="background:${EMPTY};color:#cfbec9">·</div>`); continue; }
+      const [bg,fg] = tone(r);
+      const gate = bv < GATE[lv] ? "outline:1px dashed #d9c6d2;outline-offset:-2px;" : "";
+      out.push(`<div class="cell" data-bv="${bv}" style="background:${bg};color:${fg};${gate}"
+        onmouseenter="peek(${bv})" onmouseleave="unprobe()" onclick="pick(${bv})">${fmt(r,metric)}</div>`);
+    }
+  }
+  document.getElementById("grid").innerHTML = out.join("");
+  const n = bvs.length, span = hi + 10 - Math.max(1, lo);
+  document.getElementById("hint").textContent = `${n} / ${span} 个位置有成绩`;
+  showDetail(Number(document.querySelector(".cell[data-bv]")?.dataset.bv || bvs[0]));
+}
+function showDetail(bv){
+  const r = D.data[lv][bv];
+  document.querySelectorAll(".cell").forEach(e => e.classList.toggle("sel", +e.dataset.bv === bv));
+  const el = document.getElementById("detail");
+  if (!r){ el.innerHTML = `<b>BV ${bv}</b><span>这个位置还没有成绩</span>`; return; }
+  el.innerHTML = `<b>BV ${bv}</b>
+    <span>最快</span>${r.t.toFixed(3)} s
+    <span>3BV/s</span>${r.bvs.toFixed(2)}
+    <span>stnb</span>${r.stnb.toFixed(1)}
+    <span>排名</span>${r.rank ? r.rank + " / " + (r.count||"?") : "—"}
+    <span class="f">本级别共 ${Object.keys(D.data[lv]).length} 个 BV 有成绩</span>`;
+}
+function pick(bv){ showDetail(bv); }
+function peek(bv){
+  const r = D.data[lv][bv];
+  document.querySelectorAll(".cell").forEach(e => e.classList.toggle("probe", r && +e.dataset.bv === bv));
+}
+function unprobe(){ document.querySelectorAll(".cell.probe").forEach(e => e.classList.remove("probe")); }
+function setLv(k){ lv = k; badge(); render(); }
+function setM(k){ metric = k; badge(); render(); }
+badge(); render();
+</script></body></html>
