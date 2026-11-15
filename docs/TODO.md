@@ -110,7 +110,9 @@
 ## 每次发版前的手工验收
 
 1. `python test_arb.py`、`python test_resume_ui.py`、`python test_retry.py`、
-   `python test_smoke.py`、`python test_upload.py`、`python test_site_pb.py`
+   `python test_smoke.py`、`python test_upload.py`、`python test_site_pb.py`、
+   `python test_mode.py`、`python test_autoup.py`、`python test_mslaunch.py`、
+   `python test_record_ini.py`、`python test_auto_flow.py`
    退出码都是 0（`test_tabs.py` 是截图工具，不参与回归判定）。
 2. `build.cmd` 会自动把 `dist\YuanshenToolbox.exe` 部署到
    `%APPDATA%\Metasweeper3.3.4\`；在里面运行 `--probe` → 日志里

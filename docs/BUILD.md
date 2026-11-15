@@ -50,7 +50,9 @@ build.cmd
 1. `dist\` 与部署目录的 exe **md5 一致**；
 2. 文件属性 → 详细信息：`FileVersion` 与 `APP_VER` 相符，`OriginalFilename` 为 `YuanshenToolbox.exe`；
 3. `YuanshenToolbox.exe --probe` 写出 `version=X.Y.Z` / `frozen=True`；
-4. 六个测试全通过：`test_arb` / `test_site_pb` / `test_upload` / `test_smoke` / `test_retry` / `test_resume_ui`；
+4. 测试全通过：`test_arb` / `test_site_pb` / `test_upload` / `test_smoke` / `test_retry` /
+   `test_resume_ui` / `test_mode` / `test_autoup` / `test_mslaunch` / `test_record_ini` /
+   `test_auto_flow`；
 5. 部署目录里**只有 1 个 exe**，且文件名不带版本号；
 6. `docs/CHANGELOG.md` 记一条，`README.md` 里的示例 exe 名同步。
 

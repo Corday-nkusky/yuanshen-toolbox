@@ -85,6 +85,37 @@ def _load_lib():
 
 MSLIB = _load_lib()
 
+# 录像文件的头部特征。ms-toollib 拿到垃圾内容不是抛异常，而是**直接让进程消失**
+# （实测：64 字节全零的 .evf，parse() 里崩在 C++ 层，Python 侧抓不到）。
+# 所以交给它之前先自己核一眼。本机全量核过：270 个 .evf 首字节都是 0x04、第三个
+# 字节都是 0x40；7198 个 .avf 首字节都是 0x34，其余字节不固定。
+_MAGIC = {"ms": (0, 0x04), "arb": (0, 0x34)}
+
+
+def looks_like_video(path, src=None):
+    """头部对不对得上（对不上就是垃圾 / 空文件 / 别的格式）。
+
+    返回 False 的文件一律不送进 ms-toollib —— 宁可这一局算「读不出」，
+    也不能让一个坏文件把整个工具箱带下去。
+    """
+    src = src or video_src(path)
+    if src is None:
+        return False
+    try:
+        size = os.path.getsize(path)
+        if size < 32:
+            return False
+        with open(path, "rb") as fh:
+            head = fh.read(3)
+    except OSError:
+        return False
+    if len(head) < 3:
+        return False
+    pos, val = _MAGIC[src]
+    if head[pos] != val:
+        return False
+    return src != "ms" or head[2] == 0x40
+
 
 def read_video(path):
     """用 ms-toollib 重演一局录像，返回权威指标；失败返回 None。
@@ -96,7 +127,7 @@ def read_video(path):
     if MSLIB is None:
         return None
     src = video_src(path)
-    if src is None:
+    if src is None or not looks_like_video(path, src):
         return None
     try:
         v = (MSLIB.AvfVideo if src == "arb" else MSLIB.EvfVideo)(path)

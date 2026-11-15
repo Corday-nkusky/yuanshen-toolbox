@@ -33,7 +33,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.20.1"
+APP_VER = "0.20.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -2743,6 +2743,35 @@ class App(tk.Tk):
             diag.log.warning("自动上传暂停：%s", text)
 
     def _auto_tick(self):
+        """自动上传的外部入口：判一次，并保证「还在等写稳」的局有下一拍。"""
+        try:
+            self._auto_tick_once()
+        finally:
+            self._arm_auto_tick()
+
+    def _arm_auto_tick(self):
+        """有局在等写稳就排一次闹钟。
+
+        扫描是「有新文件才跑」的，一局落地之后不会有第二次扫描；而刚写完的
+        录像要等 settle 秒才算写稳。只靠扫描驱动的话，这一局得等到下一局落地
+        （或者用户手动点「立即检查」）才会被判定 —— 期间界面上什么也不发生。
+        """
+        if not self._auto_on or getattr(self, "_auto_job", None) is not None:
+            return
+        if self._up_running or self._scanning:
+            return          # 这两种收尾时都会再叫一次 _auto_tick
+        if not self._auto_tracker.pending():
+            return
+        delay = self._auto_tracker.settle * 1000 + 250
+        left = (self._auto_backoff - time.monotonic()) * 1000
+        self._auto_job = self.after(int(max(300, delay, left)), self._auto_beat)
+
+    def _auto_beat(self):
+        self._auto_job = None
+        if self.winfo_exists():
+            self._auto_tick()
+
+    def _auto_tick_once(self):
         """每轮扫描之后跑一次：认出值得传的新局，交给上传线程。
 
         门控顺序就是「能不能判」的顺序：没开、正在传、正在扫、账号级暂停、
@@ -3459,16 +3488,29 @@ class App(tk.Tk):
             self._set_up_enabled(False)
             self.btn_stop.set_enabled(True)
         # 记下开传之前那一行：全部成功时原样还回去，免得总结永远挂在底下。
-        # 连续两批挨着传时，上一批的「成功 N」不能当常态存下来。
-        cur = self.lbl_status.cget("text")
-        if not cur.startswith(("正在上传", "上传结束", "自动上传")):
-            self._status_saved = (cur, self.lbl_status.cget("foreground"))
+        prev = self._status_before_upload()
+        if prev:
+            self._status_saved = prev
         self._log("开始上传 %d 个录像…" % len(paths), "dim")
         self.set_status(("自动上传 %d 条新成绩…" if silent else "正在上传 %d 个录像…")
                         % len(paths), "dim")
         keys = {g["path"]: openms.game_key(g) for g in self.games}
         threading.Thread(target=self._upload_worker, args=(paths, keys),
                          daemon=True).start()
+
+    def _status_before_upload(self):
+        """「开传之前那一行」，传完全部成功时还原它。
+
+        三类话不能收：上一批的结论（「上传结束：成功 1」）、正在进行的这件事
+        本身、以及**已经作废的扫描进度**（「已读 22400 / 22555」）。把进度当
+        常态存下来，传完之后底下就永远挂着一句停在 99% 的假进度。
+        返回 None 表示「这行不值得记」，沿用上一次记下的。
+        """
+        cur = self.lbl_status.cget("text")
+        if not cur or cur.startswith(("正在上传", "上传结束", "自动上传",
+                                      "正在扫描", "正在清点")):
+            return None
+        return (cur, self.lbl_status.cget("foreground"))
 
     def _upload_worker(self, paths, keys=None):
         """串行上传。
@@ -3640,6 +3682,9 @@ class App(tk.Tk):
             self._refresh_acct_label()
             self._update_up_stat()
             self._refresh_auto_view()
+            # 传完必须重读网站：前端成绩 / 网站 PB / 「网站已有」全靠这份数据，
+            # 不重读的话刚涨的分在界面上还是旧的，看着像没传上去。
+            self.after(400, self.refresh_site)
             # 这一批传完，队列里可能还压着刚落地的局
             self.after(120, self._auto_tick)
             return
@@ -4023,7 +4068,8 @@ class App(tk.Tk):
                 elif kind == "scan_total":
                     self._progress_total(payload)
                     if payload:
-                        self.set_status("正在扫描…0 / %d 个录像" % payload, "dim")
+                        self.set_status("正在扫描…0 / %d 个录像" % payload, "dim",
+                                        transient=True)
                 elif kind == "scan":
                     pct = self._progress_set(payload)
                     eta = self._scan_eta_text()
@@ -4034,12 +4080,13 @@ class App(tk.Tk):
                               % (payload, self._scan_total, pct)
                         if eta:
                             txt += "，预计还需 %s" % eta
-                        self.set_status(txt, "dim")
+                        self.set_status(txt, "dim", transient=True)
                         if eta:
                             self.lbl_boot.config(
                                 text="正在读取录像…\n预计还需 %s —— 初始化较慢，请耐心等待" % eta)
                     elif pct is None:
-                        self.set_status("正在扫描…已读到 %d 个录像" % payload, "dim")
+                        self.set_status("正在扫描…已读到 %d 个录像" % payload, "dim",
+                                        transient=True)
                 elif kind == "up_end":
                     self._on_upload_end(payload)
         except queue.Empty:
@@ -4087,7 +4134,6 @@ class App(tk.Tk):
         self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
         self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
-        self._auto_tick()               # 自动上传：看看这轮有没有值得传的新局
 
         elapsed = info["elapsed"] * 1000
         n_fail = info["fail_skipped"]
@@ -4131,6 +4177,11 @@ class App(tk.Tk):
                       info.get("nf_count"),
                       info.get("fl_count"), info.get("non_std"), elapsed,
                       "（目录数达上限，已截断）" if info.get("truncated") else "")
+
+        # 自动上传放在扫描结论写完「之后」：它一开传就会把当前状态栏当成
+        # 「开传前那一行」存下来，若此刻底下还挂着扫描进度，传完之后还原的
+        # 就是一句已经作废的「已读 22400 / 22555（99%）」。
+        self._auto_tick()
 
         if not games:
             self.lbl_check.config(text="未发现 .evf / .avf 录像，请用「换目录…」或「路径…」指定",
