@@ -33,7 +33,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.20.2"
+APP_VER = "0.21.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -554,7 +554,8 @@ class Table(ttk.Frame):
             self.tv.heading(key, text=title, anchor=anchor,
                             command=lambda k=key: self._sort_by(k))
             self.tv.column(key, width=sc(width), anchor=anchor,
-                           stretch=(key in ("file", "path", "player", "why")))
+                           stretch=(key in ("file", "path", "player", "why",
+                                            "vs_pb")))
         self.tv.grid(row=0, column=0, sticky="nsew")
         if vbar:
             vs = ttk.Scrollbar(self, orient="vertical", command=self.tv.yview)
@@ -616,7 +617,7 @@ class Table(ttk.Frame):
                            tags=("odd" if i % 2 else "even",))
 
     def row_values(self, r):
-        """把一条记录转成 Treeview 的 5 列值（格式化规则在这里统一）。"""
+        """把一条记录转成 Treeview 的列值（格式化规则在这里统一）。"""
         vals = []
         for key, _t, _w, _a, kind in self.columns_def:
             v = r.get(key, "")
@@ -626,6 +627,10 @@ class Table(ttk.Frame):
                 v = f"{v:.2f}"
             elif kind == "int" and isinstance(v, (int, float)):
                 v = f"{int(v)}"
+            elif kind == "delta" and isinstance(v, (int, float)):
+                # 与基准的差距：正数带 + 号（数越小越好）。非数值（"PB" / "—"）
+                # 原样显示 —— 它们不是数字，硬格式化只会多出个 0.000。
+                v = f"+{v:.3f}" if v else "0.000"
             vals.append(v)
         return vals
 
@@ -664,6 +669,12 @@ class Table(ttk.Frame):
 
         def keyf(r):
             v = r.get(key)
+            if kind == "delta":
+                # 差距列：数字越小越好。"PB"（同一局，差距 0）排最前，
+                # "—"（没有基准可比）永远垫底，不能按字符串比较。
+                if isinstance(v, (int, float)):
+                    return float(v)
+                return -1.0 if v == "PB" else float("inf")
             if isinstance(v, str):
                 try:
                     return float(v)
@@ -2208,21 +2219,27 @@ class App(tk.Tk):
             self.cards[lv] = card
 
         head = self._section(page, "最近完成局", C_ACCENT2,
-                             "按文件时间倒序，双击用元扫雷播放")
+                             "按时间倒序，取最近 100 局与近三天中较多者，"
+                             "双击用元扫雷播放")
         head.pack(fill="x", pady=(sc(16), sc(6)))
 
         cols = [
-            ("level_cn", "级别", 64, "center", "str"),
-            ("style_cn", "风格", 52, "center", "str"),
-            ("time", "time", 84, "e", "f3"),
-            ("bv", "BV", 52, "e", "int"),
-            ("bvs", "3BV/s", 78, "e", "f3"),
-            ("stnb", "stnb", 72, "e", "f2"),
-            ("date", "日期", 92, "center", "str"),
-            ("clock", "时间", 72, "center", "str"),
-            ("file", "录像文件", 470, "w", "str"),
+            ("level_cn", "级别", 72, "center", "str"),
+            ("style_cn", "风格", 56, "center", "str"),
+            ("time", "time", 96, "e", "f3"),
+            ("bv", "BV", 56, "e", "int"),
+            ("bvs", "3BV/s", 86, "e", "f3"),
+            ("stnb", "stnb", 78, "e", "f2"),
+            ("date", "日期", 100, "center", "str"),
+            ("clock", "时间", 84, "center", "str"),
+            ("vs_pb", "距当前 PB", 130, "e", "delta"),
         ]
         _, self.tbl_recent = self._table(page, cols, height=5)
+        # 这一版没有「录像文件」那种长文本列了，横向多出来的空间只塞给最后一列
+        # 会把那一列撑到 400 px、整行看着像断成两截。九列一起摊，每列宽一点，
+        # 数字仍然贴着各自的表头。
+        for key in (c[0] for c in cols):
+            self.tbl_recent.tv.column(key, stretch=True)
 
         # 首扫时盖在内容区正中（place 不进布局，扫完 place_forget）
         self.lbl_boot = tk.Label(page, text="正在读取录像…\n初始化要逐局重演录像，会比较慢，请耐心等待",
@@ -4124,13 +4141,12 @@ class App(tk.Tk):
             return
 
         self.render_cards()
-        self.render_recent()
         # 没有 rce 数据（ms-toollib 缺失）时，本地分不出 NF/FL，前端成绩的
         # NF 榜一定是空的，退回全PB；PB 榜不强制 —— 网站 PB 不依赖本地重演，
         # NF PB 仍可能有内容（来源列会标「网站」）。
         if not info.get("with_rce") and self._top_style != "all":
             self.set_top_style("all")
-        self._recompute_pb()
+        self._recompute_pb()          # 顺带重画最近完成局（那列要给「距当前 PB」）
         self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
         self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
@@ -4246,10 +4262,34 @@ class App(tk.Tk):
                 ("BV 覆盖", f"{s['bvCount']} 个（{s['bvMin']}–{s['bvMax']}）"),
             ]})
 
+    # ---------- 最近完成局 ----------
+    RECENT_MIN = 100        # 至少列出的局数
+    RECENT_DAYS = 3         # 时间窗口：近三天的局数比 100 多就都列出来
+    RECENT_MAX = 2000       # 上限：一次性导入几万个录像时，「近三天」会退化成全部
+
     def render_recent(self):
-        rows = sorted(self.games, key=lambda g: g.get("mtime") or 0, reverse=True)[:10]
+        """最近完成局：最近 RECENT_MIN 局与近 RECENT_DAYS 天取较多者。
+
+        每行给出「距当前 PB」还差多少秒。PB 会变，所以这里每次都按当前 PB 现算，
+        不保留「当时破 PB」的情形 —— 同一局今天显示 +0.532，等 PB 提上去之后会
+        变成 +0.900。这是这一版的定义，不是算错了。
+        """
+        rows = sorted(self.games, key=lambda g: g.get("mtime") or 0, reverse=True)
+        cut = time.time() - self.RECENT_DAYS * 86400
+        n = min(self.RECENT_MIN, len(rows))
+        while n < len(rows) and (rows[n].get("mtime") or 0) >= cut:
+            n += 1
+        if n > self.RECENT_MAX:
+            # 只有「把别人的存档包整个解压进来」才会走到这里：解压出来的文件
+            # mtime 全是那一刻，两万局全落在三天窗口里。
+            diag.log.info("最近完成局：近 %d 天有 %d 局，只列最新 %d 局",
+                          self.RECENT_DAYS, n, self.RECENT_MAX)
+            n = self.RECENT_MAX
+        pb = {}
+        for r in self.pb_rows or []:
+            pb[(r.get("category") or "all", r.get("level"), r.get("bv"))] = r
         out = []
-        for g in rows:
+        for g in rows[:n]:
             item = dict(g)
             item["level_cn"] = core.LEVEL_CN[g["level"]]
             item["style_cn"] = core.STYLE_CN.get(g.get("style"), "?")
@@ -4257,8 +4297,28 @@ class App(tk.Tk):
                 item["clock"] = datetime.fromtimestamp(g["mtime"]).strftime("%H:%M:%S")
             except Exception:
                 item["clock"] = ""
+            item["vs_pb"] = self._gap_to_pb(g, pb)
             out.append(item)
         self.tbl_recent.set_rows(out)
+
+    @staticmethod
+    def _gap_to_pb(g, pb):
+        """这一局比当前 PB 慢多少秒：同一局 → "PB"，没有基准 → "—"。
+
+        按行的风格取对应的榜（NF 局比 NF PB，其余比全PB），与 PB 页签同口径，
+        两个页面来回看不会出现两个数。用整数毫秒相减，免得浮点差出 1 ms。
+        """
+        cat = "nf" if g.get("style") == "nf" else "all"
+        p = pb.get((cat, g.get("level"), g.get("bv")))
+        if not p:
+            return "—"
+        if p.get("path") and p.get("path") == g.get("path"):
+            return "PB"
+        ms_g = g.get("timems") if g.get("timems") is not None \
+            else int(round(float(g.get("time") or 0) * 1000))
+        ms_p = p.get("timems") if p.get("timems") is not None \
+            else int(round(float(p.get("time") or 0) * 1000))
+        return max(0, int(ms_g) - int(ms_p)) / 1000.0
 
     def set_pb_level(self, key):
         self._pb_level = key
@@ -4273,9 +4333,16 @@ class App(tk.Tk):
         self.render_pb()
 
     def _recompute_pb(self):
-        """本地 PB 与网站 PB 取并集。两边谁先到都行，后到的负责重算。"""
+        """本地 PB 与网站 PB 取并集。两边谁先到都行，后到的负责重算。
+
+        「最近完成局」那列写着「距当前 PB」，所以它跟着这里一起重画 ——
+        网站 PB 是异步后到的，漏掉这一步，比较列会一直停在本地 PB 上，
+        直到下一次扫描才变。重画一次 9~26 ms，可以忽略。
+        """
         self.pb_rows = core.merge_site_pb(self.pb_local_rows, self.site_pb)
         self.render_pb()
+        if getattr(self, "tbl_recent", None) is not None:
+            self.render_recent()
 
     def render_pb(self):
         q = self.var_q.get().strip().lower()
