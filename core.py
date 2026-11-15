@@ -1424,17 +1424,13 @@ def summary(games, style=None):
         sub = [g for g in games
                if g["level"] == lv and (style is None or g.get("style") == style)]
         if not sub:
-            out[lv] = {"games": 0, "bvCount": 0, "nf": 0, "fl": 0}
+            out[lv] = {"games": 0, "nf": 0, "fl": 0}
             continue
         best_time = min(sub, key=lambda g: g["time"])
         best_bvs = max(sub, key=lambda g: g["bvs"])
         best_stnb = max(sub, key=lambda g: g["stnb"])
-        bvs = [g["bv"] for g in sub]
         out[lv] = {
             "games": len(sub),
-            "bvCount": len({g["bv"] for g in sub}),
-            "bvMin": min(bvs),
-            "bvMax": max(bvs),
             "bestTime": best_time,
             "bestBvs": best_bvs,
             "bestStnb": best_stnb,

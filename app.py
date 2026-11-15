@@ -1,7 +1,7 @@
 """YuanshenToolbox —— 原生窗口（tkinter），二次元清爽风。
 
 兼容元扫雷（Metasweeper，.evf）与阿比特（Arbiter，.avf）的扫雷录像，直接显示：
-  · 概览：三级别局数 / BV 覆盖 / 三项最高
+  · 概览：三级别局数 / 三项最高
   · PB 表：每个（级别 × BV）的最快完成局
   · 前端成绩：三级别 × time / bvs / stnb 的前五局
   · 上传：把本地完成局传到开源扫雷网（openms.top）
@@ -488,11 +488,11 @@ class Pill(tk.Canvas):
 
 # ------------------------------------------------------------------ 统计卡片
 class StatCard(tk.Canvas):
-    """一级别一张卡：圆角白底 + 彩色标签 + 五行指标。"""
+    """一级别一张卡：圆角白底 + 彩色标签 + 三行指标。"""
 
     def __init__(self, master, level):
         super().__init__(master, bg=C_BG, highlightthickness=0, bd=0,
-                         height=sc(192))
+                         height=sc(168))
         self.level = level
         self.accent, self.soft = LEVEL_ACCENT[level]
         self.data = {"count": "0 局", "rows": []}
@@ -4957,15 +4957,13 @@ class App(tk.Tk):
             s = self.summary.get(lv) or {}
             if not s.get("games"):
                 card.set_data({"count": "0 局", "rows": [
-                    ("最快单局", "—"), ("最高 3BV/s", "—"), ("最高 stnb", "—"),
-                    ("BV 覆盖", "—")]})
+                    ("最快单局", "—"), ("最高 3BV/s", "—"), ("最高 stnb", "—")]})
                 continue
             bt, bb, bs = s["bestTime"], s["bestBvs"], s["bestStnb"]
             card.set_data({"count": f"{s['games']} 局", "rows": [
                 ("最快单局", f"{fmt_time(bt['time'])} s @BV{bt['bv']}"),
                 ("最高 3BV/s", f"{fmt_bvs(bb['bvs'])} @BV{bb['bv']}"),
                 ("最高 stnb", f"{fmt_stnb(bs['stnb'])} @BV{bs['bv']}"),
-                ("BV 覆盖", f"{s['bvCount']} 个（{s['bvMin']}–{s['bvMax']}）"),
             ]})
 
     # ---------- 最近完成局 ----------
