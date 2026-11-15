@@ -31,7 +31,27 @@ if not defined APP_VER (
   exit /b 1
 )
 
-echo 正在打包 %APP_EXE%.exe （v%APP_VER%）…
+set "DEPLOY=%APPDATA%\Metasweeper3.3.4"
+set /a TRY=0
+
+rem ---------------------------------------------------------------- build
+rem Every build is a brand-new file, and virus scanners judge new one-file exes
+rem with heuristics that are not stable: the same code can pass one build and be
+rem quarantined as a trojan in the next. So every build is actually launched once;
+rem if it does not start, delete it and build again (different bytes, usually passes).
+rem Written in English on purpose: cmd on a UTF-8 code page misparses some CJK
+rem characters in rem lines and tries to run them as commands.
+:build
+set /a TRY+=1
+if %TRY% GTR 3 (
+  echo.
+  echo 连续三次打出来的 exe 都启动不了，卡在自检这一步。
+  echo 把上面这段输出发给我，换一种打包方式。
+  pause
+  exit /b 1
+)
+
+echo 正在打包 %APP_EXE%.exe （v%APP_VER%）…第 %TRY% 次
 "%PYTHON%" -m PyInstaller ^
   --onefile --windowed --noconfirm --clean ^
   --name "%APP_EXE%" ^
@@ -53,6 +73,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
+call :selftest "%~dp0dist\%APP_EXE%.exe"
+if errorlevel 1 (
+  echo 这次打出来的 exe 启动不了，删掉重打。
+  del /q "%~dp0dist\%APP_EXE%.exe" >nul 2>&1
+  goto :build
+)
+
+rem ------------------------------------------------------ archive and deploy
 if not exist "%~dp0archive" mkdir "%~dp0archive"
 
 rem Keep exactly one exe in dist\; older builds move to archive\ in the repo root
@@ -67,7 +95,6 @@ rem Also keep a version-named copy in archive\, so every build is traceable
 copy /y "%~dp0dist\%APP_EXE%.exe" "%~dp0archive\%APP_EXE%-v%APP_VER%.exe" >nul
 
 rem Deploy into the replay folder. A fixed file name means the shortcut never breaks.
-set "DEPLOY=%APPDATA%\Metasweeper3.3.4"
 if exist "%DEPLOY%" (
   echo 正在部署到 %DEPLOY% …
   rem Keep exactly one exe here: purge any exe whose name is not the fixed one
@@ -97,10 +124,31 @@ if exist "%DEPLOY%" (
   )
   rem Drop the old copies moved out above; locked ones get cleaned next round
   del /q "%TEMP%\ytb-old-*.exe" >nul 2>&1
+
+  rem A new path means another scan, so verify again after deploying
+  call :selftest "%DEPLOY%\%APP_EXE%.exe"
+  if errorlevel 1 (
+    echo 复制进录像目录后起不来（多半是刚被隔离），重打并重新部署。
+    del /q "%DEPLOY%\%APP_EXE%.exe" >nul 2>&1
+    del /q "%~dp0dist\%APP_EXE%.exe" >nul 2>&1
+    goto :build
+  )
   echo 部署完成。
 ) else (
   echo 跳过部署：%DEPLOY% 不存在。
 )
 
 echo.
-echo 完成：dist\%APP_EXE%.exe （v%APP_VER%）
+echo 完成：dist\%APP_EXE%.exe （v%APP_VER%），已确认能启动。
+exit /b 0
+
+rem -------------------------------------------------------- launch selftest
+rem Launch with --selftest: no window, no scanning, just writes a receipt and exits.
+rem No receipt means the process never started: blocked, deleted, or failed to unpack.
+:selftest
+set "ST=%TEMP%\ytb-selftest.txt"
+del /q "%ST%" >nul 2>&1
+if not exist "%~1" exit /b 1
+start /wait "" "%~1" --selftest
+if not exist "%ST%" exit /b 1
+exit /b 0

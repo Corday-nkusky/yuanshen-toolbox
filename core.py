@@ -20,6 +20,7 @@ NF / FL 判定用 ms-toollib（eee555/ms-toollib）重演录像得到 rce：
 """
 
 import hashlib
+import heapq
 import math
 import os
 from datetime import datetime
@@ -1151,6 +1152,269 @@ def merge_top_rows(local_rows, site_rows, metric, limit=5):
     merged.sort(key=lambda r: _top_sort_key(r, metric))
     return merged[:max(1, int(limit))]
 
+
+# ------------------------------------------------------------------ LSF
+# 口径：openms.top/docs/zh/guide/top-lsf。18 个 top5 小榜 → 按锚点归一成
+# 单项软实力 → 级别加权 6/14/20 → 普通 0.97 + NF 0.03。
+LSF_TOP = 5
+LSF_MISS_TIMEMS = 999999
+LSF_SOFT_W = {"b": {"t": 32, "b": 48, "s": 20},
+              "i": {"t": 36, "b": 36, "s": 28},
+              "e": {"t": 32, "b": 32, "s": 36}}
+LSF_LEVEL_W = {"b": 6, "i": 14, "e": 20}
+LSF_MODE_W = {"std": 0.97, "nf": 0.03}
+LSF_GRADE_NODES = (0, 1 / 100, 1 / 60, 1 / 55, 1 / 50, 1 / 45,
+                   1 / 40, 1 / 35, 1 / 30, 1 / 25)
+LSF_GRADE_CN = ("新手", "工兵", "小雷神", "大雷神", "小雷圣",
+                "大雷圣", "小雷帝", "大雷帝", "外星人")
+
+
+def anchor_value(anchors, field):
+    """锚点两种形态都吃：``{field: 值}`` 与 ``{field: {"value": 值}}``。"""
+    item = (anchors or {}).get(field)
+    if isinstance(item, dict):
+        item = item.get("value")
+    try:
+        return float(item) if item is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def lsf_radius(mean, anchor, stat):
+    """单项软实力：Time 用 A/V，Bvs 用 V/A，Stnb 用 (V/A)^(1/1.7)。
+
+    1 表示刚好达到该项锚点。锚点缺失时按 0 处理（站点同样不着色不排名）。
+    """
+    if anchor <= 0:
+        return 0.0
+    if stat == "t":
+        return 100.0 * anchor / (mean if mean > 0 else LSF_MISS_TIMEMS)
+    if stat == "s":
+        return 100.0 * (mean / anchor) ** (1 / 1.7) if mean > 0 else 0.0
+    return 100.0 * mean / anchor
+
+
+def lsf_row_value(row, level, metric):
+    """一局在 LSF 榜单里的取值：Time 毫秒、Bvs 3BV/s、Stnb 除以级别常数（iqg）。"""
+    if metric == "time":
+        ms = row.get("timems")
+        if not ms and row.get("time"):
+            try:
+                ms = float(row["time"]) * 1000.0
+            except (TypeError, ValueError):
+                ms = 0.0
+        try:
+            return float(ms) if ms else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+    if metric == "bvs":
+        try:
+            return float(row.get("bvs") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(row.get("stnb") or 0.0) / STNB_CONST[level]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _lsf_mean(rows, level, metric):
+    """前五均值。Time 缺项补 999999 毫秒，Bvs/Stnb 补 0，始终除以五。"""
+    vals = [v for v in (lsf_row_value(r, level, metric)
+                        for r in (rows or [])[:LSF_TOP]) if v > 0]
+    miss = LSF_TOP - len(vals)
+    if metric == "time":
+        return (sum(vals) + miss * LSF_MISS_TIMEMS) / LSF_TOP
+    return sum(vals) / LSF_TOP
+
+
+def lsf_counts(rows, level, metric):
+    """某一项实际有几局进了前五；不足的部分按最差补满，所以会压低均值。"""
+    return sum(1 for r in (rows or [])[:LSF_TOP]
+               if lsf_row_value(r, level, metric) > 0)
+
+
+def _lsf_push(keep, seq, game, bv_min):
+    """把一局塞进它该进的几个「前五」小顶堆，返回新的序号。
+
+    序号只用来在同分时给堆一个稳定的先后，必须单调递增 —— 撞号会让
+    heapq 退化到比较第三项（局本身），那是个 dict，直接 TypeError。
+    """
+    level = game.get("level")
+    if level not in LEVELS or (game.get("bv") or 0) < bv_min.get(level, 0):
+        return seq
+    modes = ("std", "nf") if game.get("nf") is True else ("std",)
+    for mode in modes:
+        for metric in ("time", "bvs", "stnb"):
+            val = game.get(metric)
+            if not val:
+                continue
+            # 统一成「越小越好」再取前五，省掉全表排序
+            score = val if metric == "time" else -val
+            heap = keep.setdefault((mode, level, metric), [])
+            seq += 1
+            item = (-score, seq, game)
+            if len(heap) < LSF_TOP:
+                heapq.heappush(heap, item)
+            elif score < -heap[0][0]:
+                heapq.heapreplace(heap, item)
+    return seq
+
+
+def _lsf_heaps(games, bv_min):
+    """每项维护一个「前五」小顶堆。堆顶是当前最差的一局（-score 最小）。
+
+    返回 ``(keep, seq)``；seq 是最后用掉的序号，接着往里塞局时要往后接。
+    """
+    keep = {}
+    seq = 0
+    for game in games or ():
+        seq = _lsf_push(keep, seq, game, bv_min)
+    return keep, seq
+
+
+def _lsf_means_of(keep):
+    """18 项前五均值（顺序无关，前五这个集合定了，均值就定了）。"""
+    out = {}
+    for mode in ("std", "nf"):
+        for level in LEVELS:
+            for metric in ("time", "bvs", "stnb"):
+                rows = [item[2] for item in sorted(keep.get((mode, level, metric)) or [])]
+                out[(mode, level, metric)] = _lsf_mean(rows, level, metric)
+    return out
+
+
+def _lsf_total(keep, anchors):
+    return lsf_soft(_lsf_means_of(keep), anchors)["lsf"]
+
+
+def lsf_gains(games, anchors, rows, bv_min=None):
+    """``rows`` 里每一局在「它打出来的那一刻」涨了多少分。
+
+    涨分与 PB 无关：没破 PB 的局，只要挤进某一项前五，一样涨分。
+    起点状态由 rows 之前的所有局决定，而前五只看集合、与顺序无关，
+    所以先一遍扫出起点，再按时间顺序把 rows 一局局加进去。
+    返回 ``{path: 涨分}``；算不出来（没锚点 / 没 path）就返回空。
+    """
+    bv_min = bv_min or BV_MIN_DEFAULT
+    target = [g for g in (rows or ()) if g.get("path")]
+    if not target or not anchors:
+        return {}
+    cut = min((g.get("mtime") or 0) for g in target)
+    keep, seq = _lsf_heaps([g for g in (games or ())
+                            if (g.get("mtime") or 0) < cut], bv_min)
+    out = {}
+    for g in sorted(target, key=lambda x: ((x.get("mtime") or 0), x.get("path") or "")):
+        before = _lsf_total(keep, anchors)
+        seq = _lsf_push(keep, seq, g, bv_min)
+        out[g["path"]] = _lsf_total(keep, anchors) - before
+    return out
+
+
+def lsf_top5(games, site_top=None, site_details=None, bv_min=None):
+    """18 项各自的前五局（本地 + 网站合并，按指标排好序，好的在前）。
+
+    返回 ``{(mode, level, metric): [局, ...]}``；每行带 ``source`` 标来源。
+    准入与站点一致：官方 3BV 门槛（不受页面上「BV 下限」输入框影响）。
+    """
+    bv_min = bv_min or BV_MIN_DEFAULT
+    site_map = site_top_rows(site_top, site_details) if site_top else {}
+    keep, _seq = _lsf_heaps(games, bv_min)
+    tops = {}
+    for mode in ("std", "nf"):
+        cat = "nf" if mode == "nf" else "all"
+        for level in LEVELS:
+            for metric in ("time", "bvs", "stnb"):
+                heap = keep.get((mode, level, metric)) or []
+                local_rows = [item[2] for item in sorted(heap)]
+                site_rows = [r for r in site_map.get((cat, level, metric), [])
+                             if r.get("bv") is None
+                             or r["bv"] >= bv_min.get(level, 0)]
+                tops[(mode, level, metric)] = merge_top_rows(
+                    local_rows, site_rows, metric)
+    return tops
+
+
+def lsf_means(games, site_top=None, site_details=None, bv_min=None):
+    """18 项前五均值。Time 单位毫秒，Bvs 为 3BV/s，Stnb 为 iqg。"""
+    tops = lsf_top5(games, site_top, site_details, bv_min)
+    return {key: _lsf_mean(rows, key[1], key[2]) for key, rows in tops.items()}
+
+
+def lsf_soft(means, anchors):
+    """9 项软实力 + LSF。返回 ``{'std:b', 'std:sum', 'nf:e', 'lsf', ...}``。"""
+    vals = {}
+    for mode in ("std", "nf"):
+        level_sum = 0.0
+        for level in LEVELS:
+            total = 0.0
+            for stat, metric in (("t", "time"), ("b", "bvs"), ("s", "stnb")):
+                anchor = anchor_value(anchors, "%s:%s%s" % (mode, level, stat))
+                mean = (means or {}).get((mode, level, metric), 0.0)
+                total += LSF_SOFT_W[level][stat] * lsf_radius(mean, anchor, stat) / 100.0
+            vals["%s:%s" % (mode, level)] = total
+            level_sum += LSF_LEVEL_W[level] * total
+        vals[mode + ":sum"] = level_sum
+    vals["lsf"] = (vals["std:sum"] * LSF_MODE_W["std"]
+                   + vals["nf:sum"] * LSF_MODE_W["nf"])
+    return vals
+
+
+def lsf_et(soft, anchor_et_ms, baseline=4000.0):
+    """等价 et（秒）。锚点缺失或软实力为 0 时返回 None。"""
+    if not anchor_et_ms or anchor_et_ms <= 0 or not soft:
+        return None
+    return anchor_et_ms / (1000.0 * soft / baseline)
+
+
+def lsf_grade(soft, anchor_et_ms, baseline=4000.0):
+    """定阶：返回 ``(称号, 阶数)``；缺锚点返回 None。
+
+    阶数按软实力线性插值，区间宽度取固定节点，允许超过十阶。
+    """
+    if not anchor_et_ms or anchor_et_ms <= 0:
+        return None
+    strength = soft * 1000.0 / (baseline * anchor_et_ms)
+    idx = 0
+    while idx < len(LSF_GRADE_NODES) - 2 and strength >= LSF_GRADE_NODES[idx + 1]:
+        idx += 1
+    lo, hi = LSF_GRADE_NODES[idx], LSF_GRADE_NODES[idx + 1]
+    pos = max(0.0, (strength - lo) / (hi - lo))
+    return LSF_GRADE_CN[idx], 10.0 * pos
+
+
+def lsf_report(games, site_top=None, site_details=None, anchors=None):
+    """一次算全：18 项前五（含每局明细）、9 项软实力、等价 et、定阶。
+
+    ``games`` 传空列表就是「只按网站成绩算」，与站点显示的分数同口径；
+    ``tops`` 是明细对话框的数据源，``levels`` 给每级的 (软实力, et, 定阶)。
+    """
+    tops = lsf_top5(games, site_top, site_details)
+    means = {key: _lsf_mean(rows, key[1], key[2]) for key, rows in tops.items()}
+    soft = lsf_soft(means, anchors)
+    et_std = anchor_value(anchors, "std:et")
+    et_nf = anchor_value(anchors, "nf:et")
+    levels, nf_levels = {}, {}
+    for lv in LEVELS:
+        one = soft["std:" + lv]
+        nf = soft["nf:" + lv]
+        # 单级别以 100 为基准，综合以 4000 为基准，定阶才落在同一把尺子上
+        levels[lv] = {"soft": one, "et": lsf_et(one, et_std, 100.0),
+                      "grade": lsf_grade(one, et_std, 100.0)}
+        nf_levels[lv] = {"soft": nf, "et": lsf_et(nf, et_nf, 100.0),
+                         "grade": lsf_grade(nf, et_nf, 100.0)}
+    return {
+        "means": means,
+        "tops": tops,
+        "anchors": anchors or {},
+        "soft": soft,
+        "et": lsf_et(soft["lsf"], et_std),
+        "grade": lsf_grade(soft["lsf"], et_std),
+        "levels": levels,
+        "nf_levels": nf_levels,
+        "et_std": lsf_et(soft["std:sum"], et_std),
+        "et_nf": lsf_et(soft["nf:sum"], et_nf),
+    }
 
 
 def summary(games, style=None):

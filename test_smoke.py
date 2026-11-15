@@ -142,6 +142,16 @@ def main():
                   and all(r.get("level") == "b" for r in rows))
         check("Top5 至少有一项有成绩",
               any(table.rows for table in win.top_tables.values()))
+
+        # 个人 LSF：有锚点就必须算出数，没有锚点只能留「—」
+        if win.lsf_anchors:
+            value = win.lsf_card.lbl_value.cget("text")
+            check("LSF 卡片有分数（%s）" % value, value not in ("", "—"))
+            cells = [v for line in win.lsf_card.cells for v, _sub in line]
+            check("LSF 卡片八项软实力已填", len(cells) == 8 and all(
+                c.cget("text") not in ("", "—") for c in cells))
+        else:
+            print("跳过：没有锚点（首次离线启动只能显示「—」）")
         shot(win, "shot_top.png")
     finally:
         try:

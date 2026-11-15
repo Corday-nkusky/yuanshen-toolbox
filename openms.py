@@ -526,6 +526,17 @@ class Client:
             return p
         raise OmsError("读取网站 PB 失败（HTTP %s）" % status, status, p)
 
+    def pb_counts(self):
+        """每个小榜的人数，也就是 ``pb_records`` 里 rank 的分母。
+
+        返回 ``{"std:b:17": 132, "nf:b:17": 41, ...}``，字段格式
+        ``(std|nf):(级别):(BV)``。全部小榜一次给全，接口公开、限流 5 次/秒。
+        """
+        status, p = self.get_json_retry("/api/speedranking/pb/counts")
+        if isinstance(p, dict):
+            return p
+        raise OmsError("读取小榜人数失败（HTTP %s）" % status, status, p)
+
     def top_records(self, user_id):
         """读该账号在站点的前端 Top5：18 个小榜的录像明细。
 
@@ -539,6 +550,17 @@ class Client:
         if isinstance(p, dict):
             return p
         raise OmsError("读取网站 Top5 失败（HTTP %s）" % status, status, p)
+
+    def top_anchors(self):
+        """读 18 个锚点：每个小榜前二十名 top5 均值的平均。
+
+        返回 ``{"std:bt": {"value": 毫秒, "sample_count": 20}, ...}``。
+        公开接口，不需要登录，限流 20 次/秒 —— 拉到一次就够算全部分数。
+        """
+        status, p = self.get_json_retry("/api/speedranking/top/anchors")
+        if isinstance(p, dict):
+            return p
+        raise OmsError("读取全站水平失败（HTTP %s）" % status, status, p)
 
     # --- 上传 ---
     def _login_state(self):

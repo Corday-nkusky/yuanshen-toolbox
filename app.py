@@ -33,7 +33,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.21.0"
+APP_VER = "0.23.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -99,6 +99,38 @@ def save_config(**kw):
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def lsf_anchor_path():
+    return os.path.join(paths.data_dir(), "lsf-anchors.json")
+
+
+def load_lsf_anchors():
+    """上次拉到的锚点。LSF 没有锚点就算不出来，断网时靠这份兜底。"""
+    try:
+        import json
+        with open(lsf_anchor_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        anchors = data.get("anchors")
+        if isinstance(anchors, dict) and anchors:
+            return anchors, int(data.get("saved_at") or 0)
+    except Exception:
+        pass
+    return {}, 0
+
+
+def save_lsf_anchors(anchors):
+    try:
+        import json
+        p = lsf_anchor_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"saved_at": int(time.time()), "anchors": anchors},
+                      fh, ensure_ascii=False)
+        os.replace(tmp, p)
     except Exception:
         pass
 
@@ -199,6 +231,7 @@ FONT_BRAND = (FAM_HEAD, 27, "bold")
 FONT_BIG = (FAM_HEAD, 18, "bold")
 FONT_MONO = (FAM_MONO, 11)
 FONT_MONO_B = (FAM_MONO, 11, "bold")
+FONT_LSF = (FAM_HEAD, 23, "bold")
 
 # 高 DPI：字体由 Tk 按实际 DPI 缩放，像素尺寸必须自己跟着放大
 SCALE = 1.0
@@ -526,6 +559,113 @@ class StatCard(tk.Canvas):
                              fill=C_DIM, font=FONT_UI)
 
 
+class LsfCard(tk.Frame):
+    """前端成绩页顶部：个人 LSF。左=总分与定阶，右=普通/NF 各级别软实力。
+
+    每一级下面挂一行这一级单独算的定阶。「明细」把九格摊开，看弱在哪一项。
+    """
+
+    def __init__(self, master):
+        super().__init__(master, bg=C_LINE)
+        self._data = None
+        self._detail = None
+        inner = tk.Frame(self, bg=C_PANEL)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        inner.columnconfigure(1, weight=1)
+
+        left = tk.Frame(inner, bg=C_PANEL)
+        left.grid(row=0, column=0, sticky="w", padx=(sc(18), sc(16)), pady=sc(10))
+        head = tk.Frame(left, bg=C_PANEL)
+        head.pack(anchor="w")
+        tk.Label(head, text="LSF", bg=C_PANEL, fg=C_DIM,
+                 font=FONT_SECTION).pack(side="left", padx=(0, sc(10)))
+        self.lbl_value = tk.Label(head, text="—", bg=C_PANEL, fg=C_TEXT,
+                                  font=FONT_LSF)
+        self.lbl_value.pack(side="left")
+        self.lbl_grade = tk.Label(left, text="", bg=C_PANEL, fg=C_ACCENT3,
+                                  font=FONT_UI_B)
+        self.lbl_grade.pack(anchor="w")
+        self.pill_detail = Pill(left, "明细", command=self.open_detail,
+                                accent=C_ACCENT2, bg=C_PANEL, font=FONT_SMALL,
+                                padx=12, height=24)
+        self.pill_detail.pack(anchor="w", pady=(sc(6), 0))
+
+        mid = tk.Frame(inner, bg=C_PANEL)
+        mid.grid(row=0, column=1, sticky="e", padx=(sc(16), sc(20)), pady=sc(8))
+        for col, text in enumerate(("", "初", "中", "高", "综合")):
+            tk.Label(mid, text=text, bg=C_PANEL, fg=C_DIM,
+                     font=FONT_SMALL).grid(row=0, column=col, sticky="e",
+                                           padx=(sc(10), 0))
+        self.cells = []
+        for row, name in ((1, "普通"), (2, "NF")):
+            tk.Label(mid, text=name, bg=C_PANEL, fg=C_DIM,
+                     font=FONT_UI).grid(row=row, column=0, sticky="w",
+                                        padx=(0, sc(10)), pady=(sc(1), 0))
+            line = []
+            for col in range(1, 5):
+                cell = tk.Frame(mid, bg=C_PANEL)
+                cell.grid(row=row, column=col, sticky="e", padx=(sc(10), 0),
+                          pady=(sc(1), 0))
+                val = tk.Label(cell, text="—", bg=C_PANEL, fg=C_TEXT,
+                               font=FONT_MONO, anchor="e")
+                val.pack(anchor="e")
+                sub = tk.Label(cell, text="", bg=C_PANEL, fg=C_DIM,
+                               font=FONT_SMALL, anchor="e")
+                sub.pack(anchor="e")
+                line.append((val, sub))
+            self.cells.append(line)
+
+    @staticmethod
+    def _sub_text(info):
+        """一格下面的小字：这一级单独算出来的定阶。
+
+        单级 et 四格并排会把卡片撑得比窗口还宽，这里只写定阶。
+        """
+        grade = (info or {}).get("grade")
+        return "%s %.1f" % (grade[0], grade[1]) if grade else ""
+
+    def set_data(self, local=None):
+        self._data = local
+        if not local:
+            self.lbl_value.config(text="—", fg=C_DIM)
+            self.lbl_grade.config(text="")
+            for line in self.cells:
+                for val, sub in line:
+                    val.config(text="—", fg=C_DIM)
+                    sub.config(text="")
+            return
+
+        soft = local["soft"]
+        self.lbl_value.config(text="%.1f" % soft["lsf"], fg=C_TEXT)
+        grade = local.get("grade")
+        et = local.get("et")
+        bits = []
+        if grade:
+            bits.append("%s %.1f 阶" % (grade[0], grade[1]))
+        if et:
+            bits.append("et %.1f s" % et)
+        self.lbl_grade.config(text=" · ".join(bits))
+
+        for line, levels, total in (
+                (self.cells[0], local["levels"], soft["std:sum"]),
+                (self.cells[1], local["nf_levels"], soft["nf:sum"])):
+            for (val, sub), lv in zip(line[:3], core.LEVELS):
+                val.config(text="%.1f" % levels[lv]["soft"], fg=C_TEXT)
+                sub.config(text=self._sub_text(levels[lv]))
+            val, sub = line[3]
+            val.config(text="%.1f" % total, fg=C_ACCENT3)
+            sub.config(text="")
+
+    def open_detail(self):
+        if not self._data:
+            return
+        if self._detail is not None and self._detail.winfo_exists():
+            self._detail.lift()
+            self._detail.focus_set()
+            return
+        self._detail = LsfDetailDialog(self.winfo_toplevel(), self._data)
+
+
 # ------------------------------------------------------------------ 通用表格
 class Table(ttk.Frame):
     """带排序的 Treeview 封装。columns: (key, 标题, 宽度, 对齐, 类型)
@@ -549,6 +689,7 @@ class Table(ttk.Frame):
         keys = [c[0] for c in columns]
         self.tv = ttk.Treeview(self, columns=keys, show="headings",
                                height=height, selectmode=selectmode)
+        self._displayed = tuple(keys)
         for key, title, width, anchor, _kind in columns:
             # 表头跟单元格同向，否则「数字右对齐、标题居中」看着像没对齐
             self.tv.heading(key, text=title, anchor=anchor,
@@ -602,6 +743,18 @@ class Table(ttk.Frame):
             self.tv.configure(height=rows)
 
     # --- 数据 ---
+    def set_hidden(self, keys):
+        """临时藏掉几列。
+
+        给「涨分」这种稀有列用：绝大多数局不涨分，没有内容时连表头带列宽
+        一起收掉，不让它白占一行位置。
+        """
+        hide = set(keys or ())
+        disp = tuple(c[0] for c in self.columns_def if c[0] not in hide)
+        if disp != self._displayed:
+            self._displayed = disp
+            self.tv.configure(displaycolumns=disp or ("#all",))
+
     def set_rows(self, rows):
         self.rows = list(rows)
         if self._sort_key:
@@ -631,6 +784,10 @@ class Table(ttk.Frame):
                 # 与基准的差距：正数带 + 号（数越小越好）。非数值（"PB" / "—"）
                 # 原样显示 —— 它们不是数字，硬格式化只会多出个 0.000。
                 v = f"+{v:.3f}" if v else "0.000"
+            elif kind == "gain":
+                # 涨分：不涨就留空。一行里没有这个数是有意义的信息，
+                # 写成 "0.0" 只会把 96% 的行铺满噪声。
+                v = f"+{v:.1f}" if isinstance(v, (int, float)) and v > 0.05 else ""
             vals.append(v)
         return vals
 
@@ -656,13 +813,16 @@ class Table(ttk.Frame):
 
     def _sort_by(self, key, redraw_only=False):
         if not redraw_only:
-            if self._sort_key == key:
+            switched = self._sort_key != key
+            if not switched:
                 self._sort_rev = not self._sort_rev
             else:
                 self._sort_key, self._sort_rev = key, False
-            # 数值列默认降序更符合直觉（bvs/stnb/局数）
+            # 数值列第一次点默认降序更符合直觉（bvs/stnb/局数）；换到这一列
+            # 才算「第一次」，第二次点必须能反向 —— 否则数值列永远回不来。
             kind = next(c[4] for c in self.columns_def if c[0] == key)
-            if kind in ("f3", "f2", "int") and not self._sort_rev:
+            if switched and kind in ("f3", "f2", "int", "gain") \
+                    and not self._sort_rev:
                 self._sort_rev = True
 
         kind = next(c[4] for c in self.columns_def if c[0] == key)
@@ -675,6 +835,10 @@ class Table(ttk.Frame):
                 if isinstance(v, (int, float)):
                     return float(v)
                 return -1.0 if v == "PB" else float("inf")
+            if kind == "gain":
+                # 涨分列有一半是空的（没涨），空要能参与比较，而且不能被
+                # 当成字符串 —— "+12.3" 按字典序会排在 "+2.8" 前面。
+                return float(v) if isinstance(v, (int, float)) else float("-inf")
             if isinstance(v, str):
                 try:
                     return float(v)
@@ -789,6 +953,484 @@ class Table(ttk.Frame):
         except OSError:
             if hasattr(top, "set_status"):
                 top.set_status("这个位置打不开了：%s" % shrink_path(path, 50), "warn")
+
+
+# ------------------------------------------------------------------ PB 网格
+# 每级四档底色：最深 / 中间 / 更浅 / 最浅。空缺另有一种（灰紫，不带级别色）。
+PB_TONE = {
+    "b": ("#ff6f9c", "#ffa8c4", "#ffc9dc", "#ffe4ee"),
+    "i": ("#3fa9dd", "#8fcbe9", "#b7dcf3", "#e0f3fd"),
+    "e": ("#8f6ce8", "#bda6f3", "#d3c3f8", "#ebe4fd"),
+}
+PB_EMPTY_BG = "#f7f1f6"
+PB_GATE = {"b": 10, "i": 30, "e": 100}       # 官方门槛，低于它的格子描一圈
+FONT_PB = (FAM_MONO, 9)
+
+
+class PBGrid(tk.Frame):
+    """PB 网格：行 = BV 十位段，列 = 个位，一格对应一个 BV。
+
+    BV 是从 1 开始的离散整数，位置固定之后"哪段密、哪段断"才看得见 ——
+    列表做不到这件事，它只显示已有的点。
+
+    用 Label 而不是 Treeview：Treeview 只能整行着色。格子建一次就复用，
+    切级别 / 切指标只改文本和底色，不销毁控件。
+    """
+
+    COLS = 10
+    ROW_H = 26
+
+    def __init__(self, master, on_pick=None):
+        super().__init__(master, bg=C_BG)
+        self._on_pick = on_pick
+        self.level = "b"
+        self.metric = "time"
+        self.cat = "all"
+        self.data = {}
+        self.counts = {}
+        self.hits = set()
+        self.picked = None
+        self.mode = "rank"        # rank=按全国名次上色 / self=按本级快慢上色
+        self._bv_of = {}
+        self._row_start = 0
+
+        self.cv = tk.Canvas(self, bg=C_BG, highlightthickness=0, bd=0)
+        self.vs = ttk.Scrollbar(self, orient="vertical", command=self.cv.yview)
+        self.cv.configure(yscrollcommand=self._on_yscroll)
+        self._vs_on = False
+        self.cv.pack(side="left", fill="both", expand=True)
+        self.inner = tk.Frame(self.cv, bg=C_BG)
+        self._win = self.cv.create_window(0, 0, window=self.inner, anchor="nw")
+        self.cv.bind("<Configure>", self._on_configure)
+        self.inner.bind("<Configure>", self._on_inner)
+
+        tk.Label(self.inner, text="", bg=C_BG).grid(row=0, column=0)
+        for c in range(self.COLS):
+            tk.Label(self.inner, text=str(c), bg=C_BG, fg=C_DIM,
+                     font=FONT_SMALL).grid(row=0, column=c + 1, sticky="ew",
+                                           pady=(0, sc(4)))
+        self.inner.columnconfigure(0, minsize=sc(48))
+        for c in range(self.COLS):
+            self.inner.columnconfigure(c + 1, weight=1, uniform="pbg")
+
+        self.empty_lbl = tk.Label(self.inner, text="", bg=C_BG, fg=C_DIM,
+                                  font=FONT_UI, anchor="w")
+        self.empty_lbl.grid(row=1, column=0, columnspan=self.COLS + 1,
+                            sticky="w", pady=(sc(8), 0))
+        self.empty_lbl.grid_remove()
+        self._rowlab = []
+        self._cells = []
+        self._max_h = 0
+        self._need_h = 0
+
+    # --- 滚动 ---
+    def _on_configure(self, event):
+        self.cv.itemconfigure(self._win, width=event.width)
+        self._sync_vs()
+
+    def _on_inner(self, _e=None):
+        self.cv.configure(scrollregion=self.cv.bbox("all"))
+        self._sync_vs()
+
+    def _on_yscroll(self, first, last):
+        self.vs.set(first, last)
+
+    def _sync_vs(self):
+        # 用算好的内容高度判断，不看 reqheight：bind_data 刚把行 grid_remove
+        # 掉时 reqheight 还是上一级别的旧值，会平白冒出一根滚动条
+        need = self._need_h > self.cv.winfo_height() + 2
+        if need != self._vs_on:
+            self._vs_on = need
+            if need:
+                self.vs.pack(side="right", fill="y", before=self.cv)
+            else:
+                self.vs.pack_forget()
+
+    def set_max_height(self, h):
+        """网格最多占多高；行数少时它自己收缩，剩下的空由页面留白。"""
+        self._max_h = max(sc(80), int(h))
+        self._apply_height()
+
+    def _apply_height(self):
+        h = self._need_h
+        if self._max_h:
+            h = min(h, self._max_h)
+        if h > 0:
+            self.cv.configure(height=h)
+        self._sync_vs()
+
+    def _on_wheel(self, event):
+        if self._vs_on:
+            self.cv.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+    # --- 控件池 ---
+    def _ensure_rows(self, n):
+        while len(self._cells) < n:
+            i = len(self._cells)
+            lab = tk.Label(self.inner, text="", bg=C_BG, fg=C_DIM,
+                           font=FONT_SMALL, anchor="e", padx=sc(8))
+            lab.grid(row=i + 1, column=0, sticky="nsew", pady=(0, sc(2)))
+            row = []
+            for c in range(self.COLS):
+                cell = tk.Label(self.inner, text="", bg=PB_EMPTY_BG, fg=C_TEXT,
+                                font=FONT_PB, bd=0, highlightthickness=1,
+                                highlightbackground=PB_EMPTY_BG,
+                                highlightcolor=PB_EMPTY_BG, cursor="hand2")
+                cell.grid(row=i + 1, column=c + 1, sticky="nsew",
+                          padx=(0, sc(2)), pady=(0, sc(2)))
+                cell.bind("<Button-1>", self._on_click)
+                cell.bind("<Double-1>", self._on_double)
+                cell.bind("<MouseWheel>", self._on_wheel)
+                self._bv_of[cell] = None
+                row.append(cell)
+            self.inner.rowconfigure(i + 1, minsize=sc(self.ROW_H))
+            self._rowlab.append(lab)
+            self._cells.append(row)
+
+    # --- 数据 ---
+    def set_counts(self, counts):
+        self.counts = counts or {}
+
+    def bind_data(self, level, metric, rows, cat="all"):
+        """灌入某一级别某一榜的数据，返回 (有成绩的 BV 数, 网格里一共多少格)。"""
+        self.level, self.metric, self.cat = level, metric, cat
+        self.data = dict(rows or {})
+        self.picked = None
+        self.hits = set()
+        bvs = sorted(self.data)
+        if not bvs:
+            for lab in self._rowlab:
+                lab.grid_remove()
+            for row in self._cells:
+                for cell in row:
+                    cell.grid_remove()
+            self.empty_lbl.config(text="这个级别还没有成绩")
+            self.empty_lbl.grid()
+            self._need_h = sc(44)
+            self._apply_height()
+            self.cv.yview_moveto(0)
+            return 0, 0
+
+        self.empty_lbl.grid_remove()
+        lo = (bvs[0] // 10) * 10
+        hi = (bvs[-1] // 10) * 10
+        n = (hi - lo) // 10 + 1
+        self._row_start = lo
+        self._ensure_rows(n)
+        self.mode = "rank" if any(self.rank_of(r) for r in self.data.values()) else "self"
+        for i, lab in enumerate(self._rowlab):
+            (lab.grid if i < n else lab.grid_remove)()
+        for i, row in enumerate(self._cells):
+            for cell in row:
+                (cell.grid if i < n else cell.grid_remove)()
+        self._paint()
+        self._need_h = sc(24) + n * (sc(self.ROW_H) + sc(2))
+        self._apply_height()
+        self.cv.yview_moveto(0)
+        return len(bvs), n * self.COLS - (1 if lo < 1 else 0)
+
+    def set_hits(self, hits):
+        self.hits = set(hits or ())
+        self._paint()
+
+    def pick(self, bv):
+        self.picked = bv
+        self._paint()
+        if self._on_pick:
+            self._on_pick(bv)
+
+    # --- 上色 ---
+    def rank_of(self, row):
+        """这一格在全国的名次；本地比网站快时网站名次不代表这条成绩。"""
+        rank = row.get("site_rank")
+        if not rank or row.get("source") == "local":
+            return None
+        try:
+            return int(rank)
+        except (TypeError, ValueError):
+            return None
+
+    def count_of(self, row):
+        key = "%s:%s:%d" % ("nf" if self.cat == "nf" else "std",
+                            self.level, int(row.get("bv") or 0))
+        return self.counts.get(key)
+
+    def _tiers(self):
+        """按本级 3BV/s 三分位分档，用于没登录（拿不到名次）时。"""
+        vals = sorted(((float(r.get("bvs") or 0), bv)
+                       for bv, r in self.data.items()), reverse=True)
+        n = len(vals)
+        return {bv: (0 if k < n / 3.0 else 1 if k < 2 * n / 3.0 else 2)
+                for k, (_v, bv) in enumerate(vals)}
+
+    def _tone_index(self, row, tiers):
+        rank, cnt = self.rank_of(row), self.count_of(row)
+        if rank and cnt:
+            p = rank / float(cnt)
+            if p <= 0.10:
+                return 0
+            if p <= 0.35:
+                return 1
+            return 2 if p <= 0.65 else 3
+        if tiers:
+            return tiers.get(int(row.get("bv") or 0), 3)
+        return 3
+
+    def _text(self, row):
+        m = self.metric
+        if m == "bvs":
+            return "%.2f" % float(row.get("bvs") or 0)
+        if m == "stnb":
+            return "%.1f" % float(row.get("stnb") or 0)
+        if m == "rank":
+            rank, cnt = self.rank_of(row), self.count_of(row)
+            return "%d/%d" % (rank, cnt) if rank and cnt else "—"
+        t = float(row.get("time") or 0)
+        if t >= 100:
+            return "%.0f" % t
+        return "%.1f" % t if t >= 10 else "%.2f" % t
+
+    def _paint(self):
+        tones = PB_TONE.get(self.level, PB_TONE["b"])
+        gate = PB_GATE.get(self.level, 0)
+        tiers = self._tiers() if self.mode == "self" else {}
+        for i, row in enumerate(self._cells):
+            start = self._row_start + i * self.COLS
+            self._rowlab[i].config(text="%d–%d" % (start, start + 9))
+            for c, cell in enumerate(row):
+                bv = start + c
+                if bv < 1:                    # BV 从 1 起，第 0 列那个 0 不是格子
+                    cell.config(text="", bg=C_BG, highlightbackground=C_BG,
+                                cursor="")
+                    self._bv_of[cell] = None
+                    continue
+                r = self.data.get(bv)
+                if r is None:
+                    cell.config(text="·", bg=PB_EMPTY_BG, fg="#d3c3cd",
+                                highlightbackground=PB_EMPTY_BG, cursor="")
+                    self._bv_of[cell] = None
+                    continue
+                idx = self._tone_index(r, tiers)
+                bg = tones[idx]
+                # 每格描一圈比底色深一点的边：最浅那档跟页面背景几乎同色，
+                # 没有边就分不出"有成绩的浅格子"和"空白"
+                ring = mix(bg, C_TEXT, 0.16)
+                if bv < gate:
+                    ring = tones[0]
+                if bv in self.hits:
+                    ring = C_ACCENT3
+                if bv == self.picked:
+                    ring = C_TEXT
+                cell.config(text=self._text(r), bg=bg,
+                            fg="#ffffff" if idx == 0 else C_TEXT,
+                            highlightbackground=ring, cursor="hand2")
+                self._bv_of[cell] = bv
+
+    # --- 交互 ---
+    def _on_click(self, event):
+        bv = self._bv_of.get(event.widget)
+        if bv is not None:
+            self.pick(bv)
+
+    def _on_double(self, event):
+        bv = self._bv_of.get(event.widget)
+        if bv is None:
+            return
+        self.pick(bv)
+        self.play(self.data.get(bv) or {})
+
+    def play(self, row):
+        """把这一格的录像交给元扫雷播放。"""
+        path = (row or {}).get("path") or ""
+        top = self.winfo_toplevel()
+        if not path:
+            if hasattr(top, "set_status"):
+                top.set_status("这条成绩没有本地录像", "warn")
+            return
+        if not hasattr(top, "open_replay"):
+            return
+        top.open_replay(path)
+
+    def reveal(self, row):
+        path = (row or {}).get("path") or ""
+        top = self.winfo_toplevel()
+        if not path:
+            if hasattr(top, "set_status"):
+                top.set_status("这条成绩没有本地录像", "warn")
+            return
+        try:
+            if os.path.isfile(path):
+                subprocess.Popen('explorer /select,"%s"' % os.path.normpath(path))
+            else:
+                folder = os.path.dirname(path)
+                if os.path.isdir(folder):
+                    os.startfile(folder)
+                else:
+                    raise OSError("路径不存在")
+        except OSError:
+            if hasattr(top, "set_status"):
+                top.set_status("这个位置打不开了：%s" % shrink_path(path, 50), "warn")
+
+
+# ------------------------------------------------------------------ LSF 明细
+class LsfDetailDialog(tk.Toplevel):
+    """LSF 明细：九个格子（三级 × 三项），普通和 NF 并排。
+
+    格子是「前五均值 · 软实力」。点一行看撑起它的五局，普通 / NF 用上面两枚
+    小标签切换。不放说明文字 —— 这些词玩家都认识。
+    """
+
+    METRIC_CN = {"time": "Time", "bvs": "3BV/s", "stnb": "stnb"}
+    STAT = {"time": "t", "bvs": "b", "stnb": "s"}
+
+    def __init__(self, master, report):
+        super().__init__(master)
+        self.title("LSF 明细")
+        self.configure(bg=C_BG)
+        self.transient(master)
+        self.minsize(sc(720), sc(400))
+        self._report = report or {}
+        self._mode = "std"
+        self._rows = self._build_rows()
+
+        wrap = tk.Frame(self, bg=C_BG)
+        wrap.pack(fill="both", expand=True, padx=sc(20), pady=sc(16))
+
+        # 底边先占住：窗口拉高时多出来的空白落在两张表之间，按钮不会被顶走
+        foot = tk.Frame(wrap, bg=C_BG)
+        foot.pack(side="bottom", fill="x", pady=(sc(10), 0))
+        Pill(foot, "关闭", command=self.destroy, accent=C_DIM,
+             padx=18, height=30).pack(side="right")
+
+        cols = [
+            ("level_cn", "级别", 90, "center", "str"),
+            ("metric_cn", "项目", 110, "center", "str"),
+            ("std", "普通", 242, "center", "str"),
+            ("nf", "NF", 242, "center", "str"),
+        ]
+        holder = tk.Frame(wrap, bg=C_LINE)
+        holder.pack(fill="x")
+        self.tab = Table(holder, cols, height=9, fit=False)
+        self.tab.pack(fill="both", expand=True, padx=1, pady=1)
+        self.tab.set_rows(self._rows)
+        self.tab.tv.bind("<<TreeviewSelect>>", self._on_pick)
+
+        bar = tk.Frame(wrap, bg=C_BG)
+        bar.pack(fill="x", pady=(sc(12), sc(6)))
+        self.pills = {}
+        for mode, text in (("std", "普通"), ("nf", "NF")):
+            pill = Pill(bar, text, command=lambda m=mode: self._set_mode(m),
+                        padx=14, height=26)
+            pill.pack(side="left", padx=(0, sc(8)))
+            pill.set_selected(mode == self._mode)
+            self.pills[mode] = pill
+        self.lbl_games = tk.Label(bar, text="", bg=C_BG, fg=C_DIM,
+                                  font=FONT_SMALL, anchor="w")
+        self.lbl_games.pack(side="left", padx=(sc(12), 0))
+
+        holder2 = tk.Frame(wrap, bg=C_LINE)
+        holder2.pack(fill="x")
+        gcols = [
+            ("rank", "#", 36, "e", "int"),
+            ("time", "时间", 84, "e", "f3"),
+            ("bv", "3BV", 56, "e", "int"),
+            ("bvs", "3BV/s", 74, "e", "f3"),
+            ("stnb", "stnb", 66, "e", "f2"),
+            ("date", "日期", 112, "center", "str"),
+            ("source_cn", "来源", 56, "center", "str"),
+            ("file", "录像", 200, "w", "str"),
+        ]
+        self.tab_games = Table(holder2, gcols, height=5, fit=False)
+        self.tab_games.pack(fill="both", expand=True, padx=1, pady=1)
+
+        if self._rows:
+            self.tab.tv.selection_set("0")
+            self._on_pick()
+        self._fit_on_screen()
+
+    def _fit_on_screen(self):
+        """按内容长完之后收进屏幕里。底边掉到屏幕外，关闭按钮就点不到了。"""
+        self.update_idletasks()
+        wa = work_area()
+        if not wa:
+            return
+        wx, wy, ww, wh = wa
+        w = min(self.winfo_reqwidth(), ww - sc(40))
+        h = min(self.winfo_reqheight(), wh - sc(48))
+        x = wx + max(0, (ww - w) // 2)
+        y = wy + max(0, (wh - h) // 2)
+        self.geometry("%dx%d+%d+%d" % (w, h, x, y))
+
+    # --- 数据 ---
+    def _fmt_mean(self, mean, level, metric):
+        """前五均值按习惯写：时间带秒、stnb 用站点显示的整数刻度。"""
+        if not mean or (metric == "time" and mean >= core.LSF_MISS_TIMEMS):
+            return "—"
+        if metric == "time":
+            return "%.3f s" % (mean / 1000.0)
+        if metric == "stnb":
+            return "%.1f" % (mean * core.STNB_CONST[level])
+        return "%.3f" % mean
+
+    def _cell(self, mean, level, metric, anchor, stat):
+        text = self._fmt_mean(mean, level, metric)
+        if text == "—" or anchor <= 0:
+            return text
+        return "%s · %.0f%%" % (text, core.lsf_radius(mean, anchor, stat))
+
+    def _build_rows(self):
+        rep = self._report
+        means = rep.get("means") or {}
+        anchors = rep.get("anchors") or {}
+        rows = []
+        for lv in core.LEVELS:
+            for metric in ("time", "bvs", "stnb"):
+                stat = self.STAT[metric]
+                item = {
+                    "_level": lv,
+                    "_metric": metric,
+                    "level_cn": core.LEVEL_CN[lv],
+                    "metric_cn": self.METRIC_CN[metric],
+                }
+                for mode in ("std", "nf"):
+                    anchor = core.anchor_value(
+                        anchors, "%s:%s%s" % (mode, lv, stat))
+                    item[mode] = self._cell(means.get((mode, lv, metric), 0.0),
+                                            lv, metric, anchor, stat)
+                rows.append(item)
+        return rows
+
+    def _set_mode(self, mode):
+        self._mode = mode
+        for m, pill in self.pills.items():
+            pill.set_selected(m == mode)
+        self._on_pick()
+
+    def _on_pick(self, _e=None):
+        if not self._rows:
+            return
+        sel = self.tab.tv.selection()
+        try:
+            idx = int(sel[0]) if sel else 0
+        except ValueError:
+            idx = 0
+        row = self._rows[min(idx, len(self._rows) - 1)]
+        self._show_games(row["_level"], row["_metric"])
+
+    def _show_games(self, level, metric):
+        games = (self._report.get("tops") or {}).get(
+            (self._mode, level, metric)) or []
+        out = []
+        for i, g in enumerate(games, 1):
+            item = dict(g)
+            item["rank"] = i
+            item["source_cn"] = core.TOP_SOURCE_CN.get(g.get("source"), "")
+            out.append(item)
+        self.tab_games.set_rows(out)
+        title = "%s %s" % (core.LEVEL_CN[level], self.METRIC_CN[metric])
+        if len(out) < core.LSF_TOP:
+            title += "　%d 局" % len(out)
+        self.lbl_games.config(text=title)
 
 
 # ------------------------------------------------------------------ 登录窗
@@ -1592,11 +2234,16 @@ class App(tk.Tk):
         self.site_pb = []
         self.site_pb_uid = None
         self.site_pb_err = ""
+        self.pb_counts = {}            # 每个小榜的人数，网站名次的分母
         self.site_top = {}             # 站点 18 个前端 Top5 小榜的原始记录
         self.site_top_details = {}     # 上述录像的 staticdetailbatch 明细
         self.site_top_uid = None
         self.site_top_err = ""
         self.site_top_detail_err = ""
+        # LSF：锚点是全站前二十名的水平，只能联网取一次；断网时用上次存下来的。
+        self.lsf_anchors, self.lsf_anchors_at = load_lsf_anchors()
+        self._lsf_cache = None         # (数据指纹, 报告)
+        self._gain_cache = None        # (数据指纹, {path: 涨分})
         self._site_seq = 0             # 网站请求代次：退出/换号后旧结果直接丢弃
         self.summary = {}
         self.counts = {}
@@ -1606,8 +2253,11 @@ class App(tk.Tk):
         self._scan_auto = False        # 本次扫描是不是自动刷新触发的（不显示进度条）
         self._scan_sig = None          # 上次扫描的 (文件数, 局数, 最新 mtime)，判断「真的变了吗」
         self._level = "b"
-        self._pb_level = ""
+        self._pb_level = "b"
         self._pb_style = "all"         # PB 榜：all=全PB / nf=NF PB
+        self._pb_metric = "time"       # 格子里显示的数字：time / bvs / stnb / rank
+        self._pb_index = {}            # 当前网格里 BV -> 行
+        self._pb_picked = None
         self._top_style = "all"        # 前端成绩：all=全PB / nf=NF PB
         self._bvmin_level = None
         self._bv_guard = False
@@ -1686,6 +2336,7 @@ class App(tk.Tk):
         self.after(60, self._poll)
         self.after(80, self._boot)
         self.after(700, self._restore_session)
+        self.after(900, self._lsf_start)
         self.after(1200, self._poll_ms)     # 横幅那个按钮的「在不在跑」状态
         # 手动刷新：快捷键；自动刷新从第一轮扫描结束后开始（见 _on_scanned → _watch_rebuild）
         self.bind("<F5>", lambda _e: self.start_scan())
@@ -1832,7 +2483,7 @@ class App(tk.Tk):
         nav.pack(fill="x", padx=sc(20), pady=(sc(12), sc(2)))
         self.tab_pills = {}
         for key, label in (("overview", "概览"), ("pb", "PB 表"),
-                           ("top", "前端成绩"), ("upload", "上传"),
+                           ("top", "lsf"), ("upload", "上传"),
                            ("auto", "自动上传")):
             p = Pill(nav, label, command=lambda k=key: self.show_tab(k),
                      accent=C_ACCENT, padx=22, height=32)
@@ -2233,6 +2884,7 @@ class App(tk.Tk):
             ("date", "日期", 100, "center", "str"),
             ("clock", "时间", 84, "center", "str"),
             ("vs_pb", "距当前 PB", 130, "e", "delta"),
+            ("gain", "涨分", 64, "e", "gain"),
         ]
         _, self.tbl_recent = self._table(page, cols, height=5)
         # 这一版没有「录像文件」那种长文本列了，横向多出来的空间只塞给最后一列
@@ -2250,12 +2902,14 @@ class App(tk.Tk):
         page = self.pages["pb"]
         top = tk.Frame(page, bg=C_BG)
         top.pack(fill="x", pady=(sc(10), sc(8)))
+        # 级别单选：三级的 BV 范围完全不同，网格里没有"全部"这种东西
         self.pb_seg = {}
-        for key, label in (("", "全部"), ("b", "初级"), ("i", "中级"), ("e", "高级")):
-            p = Pill(top, label, command=lambda k=key: self.set_pb_level(k),
-                     accent=C_ACCENT, padx=16)
+        for lv in core.LEVELS:
+            p = Pill(top, core.LEVEL_CN[lv],
+                     command=lambda k=lv: self.set_pb_level(k),
+                     accent=LEVEL_ACCENT[lv][0], padx=16)
             p.pack(side="left", padx=(0, sc(6)))
-            self.pb_seg[key] = p
+            self.pb_seg[lv] = p
 
         tk.Frame(top, bg=C_LINE, width=1).pack(side="left", fill="y",
                                                padx=(sc(8), sc(10)), pady=sc(2))
@@ -2266,27 +2920,113 @@ class App(tk.Tk):
             p.pack(side="left", padx=(0, sc(6)))
             self.pb_style_seg[key] = p
 
-        tk.Label(top, text="搜索 BV / 文件名", bg=C_BG, fg=C_DIM,
-                 font=FONT_UI).pack(side="left", padx=(sc(14), sc(6)))
-        self.var_q = tk.StringVar()
-        self._entry(top, self.var_q, width=18).pack(side="left")
-        self.var_q.trace_add("write", lambda *_: self.render_pb())
+        tk.Frame(top, bg=C_LINE, width=1).pack(side="left", fill="y",
+                                               padx=(sc(8), sc(10)), pady=sc(2))
+        self.pb_metric_seg = {}
+        for key, label in (("time", "时间"), ("bvs", "3BV/s"),
+                           ("stnb", "stnb"), ("rank", "排名")):
+            p = Pill(top, label, command=lambda k=key: self.set_pb_metric(k),
+                     accent=C_ACCENT2, padx=13)
+            p.pack(side="left", padx=(0, sc(6)))
+            self.pb_metric_seg[key] = p
+
         self.lbl_pb_count = tk.Label(top, text="", bg=C_BG, fg=C_DIM, font=FONT_SMALL)
         self.lbl_pb_count.pack(side="right")
+        self.pb_top = top
 
-        cols = [
-            ("level_cn", "级别", 64, "center", "str"),
-            ("bv", "BV", 60, "e", "int"),
-            ("style_cn", "风格", 60, "center", "str"),
-            ("time", "最快时间", 100, "e", "f3"),
-            ("bvs", "3BV/s", 90, "e", "f3"),
-            ("stnb", "stnb", 90, "e", "f2"),
-            ("games", "本地局数", 88, "e", "int"),
-            ("source_cn", "来源", 64, "center", "str"),
-            ("file", "录像文件", 440, "w", "str"),
-        ]
-        _, self.tbl_pb = self._table(page, cols, height=6)   # 初始行数要小，靠 _fit 自适应撑满
+        sub = tk.Frame(page, bg=C_BG)
+        sub.pack(fill="x", pady=(0, sc(8)))
+        tk.Label(sub, text="搜索 BV / 文件名", bg=C_BG, fg=C_DIM,
+                 font=FONT_SMALL).pack(side="left", padx=(0, sc(6)))
+        self.var_q = tk.StringVar()
+        self._entry(sub, self.var_q, width=20).pack(side="left", ipady=sc(1))
+        self.var_q.trace_add("write", lambda *_: self.render_pb())
+        self.lbl_pb_hint = tk.Label(sub, text="", bg=C_BG, fg=C_DIM, font=FONT_SMALL)
+        self.lbl_pb_hint.pack(side="right")
+        self.pb_sub = sub
+
+        # 顺序：网格 → 详情条 → 撑满剩余的空白。
+        # 详情条必须紧贴网格下沿，不能钉在窗口底部 —— 点完格子抬头看最下面
+        # 一行字，中间隔着半屏空白，那个交互是断的。
+        self.pb_grid = PBGrid(page, on_pick=self._on_pb_pick)
+        self.pb_grid.pack(side="top", fill="x")
+        self._build_pb_detail(page)
+        tk.Frame(page, bg=C_BG).pack(side="top", fill="both", expand=True)
+        page.bind("<Configure>", self._pb_fit)
+
         self.set_pb_style(self._pb_style)
+
+    def _pb_fit(self, _e=None):
+        """网格能占的高度 = 页面剩下的高度。行数少时它自己收缩，别拉长。"""
+        page = self.pages["pb"]
+        if not hasattr(self, "pb_grid"):
+            return
+        used = (self.pb_top.winfo_height() + self.pb_sub.winfo_height()
+                + self.pb_detail_holder.winfo_height())
+        self.pb_grid.set_max_height(page.winfo_height() - used - sc(26))
+
+    def _build_pb_detail(self, page):
+        holder = tk.Frame(page, bg=C_LINE)
+        holder.pack(side="top", fill="x", pady=(sc(8), 0))
+        self.pb_detail_holder = holder
+        bar = tk.Frame(holder, bg=C_PANEL)
+        bar.pack(fill="x", padx=1, pady=1)
+        # 右侧先 pack，让它先占住位置：文件名长短不一，后 pack 会被左边的
+        # 成绩挤到贴在一起（"3 局"和文件名之间连个空格都没有）
+        self.btn_pb_play = Pill(bar, "播放", command=self._play_pb,
+                                accent=C_ACCENT, padx=12, height=24)
+        self.btn_pb_play.pack(side="right", padx=(sc(6), sc(10)), pady=sc(5))
+        self.btn_pb_reveal = Pill(bar, "定位", command=self._reveal_pb,
+                                  accent=C_ACCENT3, padx=12, height=24)
+        self.btn_pb_reveal.pack(side="right", padx=(sc(10), 0), pady=sc(5))
+        self.lbl_pb_file = tk.Label(bar, text="", bg=C_PANEL, fg=C_DIM,
+                                    font=FONT_SMALL, anchor="e")
+        self.lbl_pb_file.pack(side="right", padx=(sc(10), 0), pady=sc(7))
+        self.pb_detail = tk.Label(bar, text="", bg=C_PANEL, fg=C_TEXT,
+                                  font=FONT_UI, anchor="w")
+        self.pb_detail.pack(side="left", fill="x", expand=True,
+                            padx=(sc(12), 0), pady=sc(7))
+        self.btn_pb_play.set_enabled(False)
+        self.btn_pb_reveal.set_enabled(False)
+
+    def _reveal_pb(self):
+        row = (self._pb_index or {}).get(self._pb_picked) or {}
+        self.pb_grid.reveal(row)
+
+    def _play_pb(self):
+        row = (self._pb_index or {}).get(self._pb_picked) or {}
+        self.pb_grid.play(row)
+
+    def _on_pb_pick(self, bv):
+        """单击格子：把这一格的成绩摊到详情条上。"""
+        self._pb_picked = bv
+        r = (self._pb_index or {}).get(bv)
+        if not r:
+            self.pb_detail.config(text="BV %d · 还没有成绩" % bv, fg=C_DIM)
+            self.lbl_pb_file.config(text="")
+            self.btn_pb_play.set_enabled(False)
+            self.btn_pb_reveal.set_enabled(False)
+            return
+        lv = r.get("level") or self._pb_level
+        rank = self.pb_grid.rank_of(r)
+        cnt = self.pb_grid.count_of(r)
+        bits = ["BV %d" % bv,
+                "%.3f s" % float(r.get("time") or 0),
+                "%.2f 3BV/s" % float(r.get("bvs") or 0),
+                "stnb %.1f" % float(r.get("stnb") or 0)]
+        if rank and cnt:
+            bits.append("第 %d / %d" % (rank, cnt))
+        games = (self.counts.get(self._pb_style) or {}).get((lv, bv), 0)
+        if games:
+            bits.append("%d 局" % games)
+        self.pb_detail.config(text="  ·  ".join(bits), fg=C_TEXT)
+        name = r.get("file") or ""
+        if len(name) > 34:                       # 录像文件名自带时间/BV，太长
+            name = name[:15] + "…" + name[-16:]
+        date = (r.get("date") or "").strip()
+        self.lbl_pb_file.config(text="%s  %s" % (date, name) if date else name)
+        self.btn_pb_play.set_enabled(bool(r.get("path")))
+        self.btn_pb_reveal.set_enabled(bool(r.get("path")))
 
     def _entry(self, parent, var, width=8):
         return tk.Entry(parent, textvariable=var, width=width, bg=C_PANEL, fg=C_TEXT,
@@ -2323,28 +3063,29 @@ class App(tk.Tk):
         tk.Label(top, text="（默认官方门槛，0 = 不限）",
                  bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(side="left", padx=(sc(8), 0))
 
+        self.lsf_card = LsfCard(page)
+        self.lsf_card.pack(fill="x", pady=(sc(10), sc(4)))
+
         self.lbl_top_site = tk.Label(page, text="", bg=C_BG, fg=C_DIM,
                                      font=FONT_SMALL, anchor="w")
         self.lbl_top_site.pack(fill="x", pady=(0, sc(6)))
 
+        # 表格高度就是五行数据本身，不随窗口拉长——空框子比留白更难看
         grid = tk.Frame(page, bg=C_BG)
-        # 只吃横向空间：纵向让它按内容高度走，多余高度全留给下方说明面板，
-        # 否则「表格区」和「说明面板」各分一半空白，中间会裂出一条空带。
-        grid.pack(fill="x")
+        grid.pack(fill="x", pady=(0, sc(2)))
         for i in range(3):
             grid.columnconfigure(i, weight=1, uniform="t")
-        grid.rowconfigure(1, weight=1)
 
         self.top_tables = {}
-        specs = [("time", "最快时间 Top5", "越小越好"),
-                 ("bvs", "最高 3BV/s Top5", "每秒解 BV"),
-                 ("stnb", "最高 stnb Top5", "综合实力")]
-        for i, (metric, title, sub) in enumerate(specs):
+        specs = [("time", "最快时间 Top5"),
+                 ("bvs", "最高 3BV/s Top5"),
+                 ("stnb", "最高 stnb Top5")]
+        for i, (metric, title) in enumerate(specs):
             cell = tk.Frame(grid, bg=C_BG)
             cell.grid(row=0, column=i, sticky="new",
                       padx=(0 if i == 0 else sc(12), 0))
             self._section(cell, title, C_ACCENT if i == 0 else
-                          (C_ACCENT2 if i == 1 else C_ACCENT3), sub).grid(
+                          (C_ACCENT2 if i == 1 else C_ACCENT3)).grid(
                 row=0, column=0, sticky="w", pady=(0, sc(6)))
             cols = [
                 ("rank", "#", 32, "e", "int"),
@@ -2362,77 +3103,6 @@ class App(tk.Tk):
             self.top_tables[metric] = t
         self.set_top_style(self._top_style)
 
-        # 说明面板：左右两栏。按内容高度走，不硬撑到页面底部（否则卡片里会空一大片）
-        card = tk.Frame(page, bg=C_LINE)
-        card.pack(fill="x", pady=(sc(14), sc(2)))
-        inner = tk.Frame(card, bg=C_PANEL)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-        inner.rowconfigure(0, weight=1)
-        inner.rowconfigure(2, weight=1)
-        content = tk.Frame(inner, bg=C_PANEL)
-        content.grid(row=1, column=0, sticky="ew")
-        content.columnconfigure(0, weight=3, uniform="info")
-        content.columnconfigure(1, weight=2, uniform="info")
-
-        left = tk.Frame(content, bg=C_PANEL)
-        left.grid(row=0, column=0, sticky="nsew", padx=(sc(18), sc(10)), pady=sc(10))
-        left.columnconfigure(1, weight=1)
-        tk.Label(left, text="✧ 指标说明", bg=C_PANEL, fg=C_TEXT,
-                 font=FONT_SECTION).grid(row=0, column=0, columnspan=2,
-                                         sticky="w", pady=(0, sc(10)))
-        lines = [
-            ("time", "完成用时（rtime），以 0 秒为计时起点，单位秒，保留三位小数；"
-                     "数值越低，成绩越好。"),
-            ("3BV/s", "每秒完成的 3BV 数量，3BV/s = BV ÷ time；"
-                      "数值越高，完成效率越高。"),
-            ("stnb", "综合指标，stnb = C × BV ÷ time^1.7；C 为级别常数"
-                     "（初级 36、中级 162、高级 435），用于三个级别之间的横向比较；"
-                     "数值越高，成绩越好。"),
-        ]
-        key_font = tkfont.Font(family=FONT_MONO_B[0], size=FONT_MONO_B[1],
-                               weight=FONT_MONO_B[2])
-        key_w = max(key_font.measure(k) for k, _ in lines) + sc(14)
-        desc_labels = []
-        for i, (key, desc) in enumerate(lines, start=1):
-            tk.Label(left, text=key, bg=C_PANEL, fg=C_ACCENT, anchor="nw",
-                     font=FONT_MONO_B).grid(row=i, column=0, sticky="nw",
-                                            padx=(0, sc(14)), pady=sc(5))
-            lbl = tk.Label(left, text=desc, bg=C_PANEL, fg=C_DIM, anchor="w",
-                           justify="left", font=FONT_UI)
-            lbl.grid(row=i, column=1, sticky="ew", pady=sc(5))
-            desc_labels.append(lbl)
-
-        def _fit_desc(event=None):
-            # 按页面宽度推左栏宽度（3:2 分栏），不能用 left 自身宽度：
-            # 未换行时 left 会撑到整段文字，wraplength 跟着它走就永远收不回来。
-            total = page.winfo_width() - sc(2)          # 卡片 1px 描边
-            width = int(total * 0.6) - sc(18) - sc(10) - key_w - sc(2)
-            if width < sc(180):
-                return
-            for lbl in desc_labels:
-                if int(lbl.cget("wraplength")) != width:
-                    lbl.configure(wraplength=width)
-        page.bind("<Configure>", _fit_desc, add="+")
-
-        right = tk.Frame(content, bg=C_PANEL)
-        right.grid(row=0, column=1, sticky="nw", padx=(sc(10), sc(18)), pady=sc(10))
-        tk.Label(right, text="✧ 官方 BV 门槛", bg=C_PANEL, fg=C_TEXT,
-                 font=FONT_SECTION).pack(anchor="w", pady=(0, sc(10)))
-        gate = tk.Frame(right, bg=C_PANEL)
-        gate.pack(fill="x")
-        for lv in core.LEVELS:
-            cell = tk.Frame(gate, bg=LEVEL_ACCENT[lv][1])
-            cell.pack(side="left", padx=(0, sc(8)))
-            tk.Label(cell, text=core.LEVEL_CN[lv], bg=LEVEL_ACCENT[lv][1],
-                     fg=LEVEL_ACCENT[lv][0], font=FONT_SMALL).pack(
-                padx=sc(10), pady=(sc(6), 0))
-            tk.Label(cell, text=f"≥ {core.BV_MIN_DEFAULT[lv]}", bg=LEVEL_ACCENT[lv][1],
-                     fg=LEVEL_ACCENT[lv][0], font=FONT_BIG).pack(
-                padx=sc(12), pady=(0, sc(6)))
-        tk.Label(right, text="低于门槛的盘面随机性过大，不参与标准评级。\n"
-                             "本页默认按门槛过滤，可直接改写输入框。",
-                 bg=C_PANEL, fg=C_DIM, font=FONT_SMALL, justify="left",
-                 anchor="w").pack(anchor="w", pady=(sc(8), 0))
 
     # ---------- 上传页 ----------
     def _build_upload(self):
@@ -2870,6 +3540,7 @@ class App(tk.Tk):
         self.site_pb = []
         self.site_pb_uid = None
         self.site_pb_err = ""
+        self.pb_counts = {}
         self._clear_site_top()
         self._site_pb_changed()
         self._site_top_changed()
@@ -2896,6 +3567,7 @@ class App(tk.Tk):
         self.site_pb = []
         self.site_pb_uid = None
         self.site_pb_err = ""
+        self.pb_counts = {}
         self._clear_site_top()
         self._refresh_acct_label()
         self._mark_up_dirty()
@@ -2919,6 +3591,29 @@ class App(tk.Tk):
         self._site_seq += 1
         threading.Thread(target=self._site_worker, args=(self._site_seq,),
                          daemon=True).start()
+
+    def _lsf_start(self):
+        """锚点跟登录无关，开机就取一次。"""
+        threading.Thread(target=self._lsf_worker, daemon=True).start()
+
+    def _lsf_worker(self):
+        try:
+            anchors = self.oms.top_anchors()
+        except Exception as exc:                     # noqa: BLE001
+            diag.log.warning("读取全站水平失败：%s", exc)
+            return
+        self._q.put(("lsf", ("anchors", anchors)))
+
+    def _on_lsf(self, what, value=None):
+        if what == "anchors":
+            self.lsf_anchors = value or {}
+            self.lsf_anchors_at = int(time.time())
+            save_lsf_anchors(self.lsf_anchors)
+            self._lsf_cache = None
+            self._gain_cache = None        # 尺子换了，涨分跟着重算
+            self.render_lsf()
+            if hasattr(self, "tbl_recent"):
+                self.render_recent()
 
     def _site_worker(self, seq=0):
         """读登录态 + 网站 PB + 我的录像 + 我的标识。
@@ -2946,11 +3641,18 @@ class App(tk.Tk):
         try:
             pb = self.oms.pb_records(u["id"])
             diag.log.info("网站 PB：%d 条", len(pb))
-            self._q.put(("site_pb", (seq, u["id"], pb, "")))
         except Exception as exc:                     # noqa: BLE001
             diag.log.warning("读取网站 PB 失败：%s", exc)
             # 右上角只放短句；完整异常进日志，免得把搜索框挤没
             self._q.put(("site_pb", (seq, u["id"], [], "网站 PB 读取失败")))
+        else:
+            # 小榜人数只用来给名次做分母，读不到就不显示百分位，不影响 PB 表
+            counts = {}
+            try:
+                counts = self.oms.pb_counts()
+            except Exception as exc:                 # noqa: BLE001
+                diag.log.warning("读取小榜人数失败：%s", exc)
+            self._q.put(("site_pb", (seq, u["id"], pb, "", counts)))
 
         try:
             top = self.oms.top_records(u["id"])
@@ -2983,13 +3685,14 @@ class App(tk.Tk):
             pass
         self._q.put(("acct", (seq, u, vids, idents, err)))
 
-    def _on_site_pb(self, seq, uid, rows, err):
+    def _on_site_pb(self, seq, uid, rows, err, counts=None):
         if seq != self._site_seq:
             return                        # 退出/换号前发出的请求，结果作废
         if uid is None:
             self.site_pb = []
             self.site_pb_uid = None
             self.site_pb_err = ""
+            self.pb_counts = {}
         else:
             cur = self.oms_user or {}
             if not cur and not self.oms.has_session():
@@ -2999,6 +3702,7 @@ class App(tk.Tk):
             self.site_pb = rows or []
             self.site_pb_uid = uid
             self.site_pb_err = err
+            self.pb_counts = counts or {}
         self._site_pb_changed()
 
     def _site_pb_changed(self):
@@ -4080,6 +4784,8 @@ class App(tk.Tk):
                     self._on_site_pb(*payload)
                 elif kind == "site_top":
                     self._on_site_top(*payload)
+                elif kind == "lsf":
+                    self._on_lsf(*payload)
                 elif kind == "up":
                     self._on_upload_result(*payload)
                 elif kind == "scan_total":
@@ -4288,6 +4994,7 @@ class App(tk.Tk):
         pb = {}
         for r in self.pb_rows or []:
             pb[(r.get("category") or "all", r.get("level"), r.get("bv"))] = r
+        gains = self._recent_gains(rows[:n])
         out = []
         for g in rows[:n]:
             item = dict(g)
@@ -4298,8 +5005,38 @@ class App(tk.Tk):
             except Exception:
                 item["clock"] = ""
             item["vs_pb"] = self._gap_to_pb(g, pb)
+            item["gain"] = gains.get(g.get("path") or "")
             out.append(item)
         self.tbl_recent.set_rows(out)
+        # 没有涨分局就把这一列收起来：涨分本来就稀有，留一列空白是白占地方
+        self.tbl_recent.set_hidden([] if any(
+            isinstance(it["gain"], float) and it["gain"] > 0.05 for it in out)
+            else ["gain"])
+
+    def _recent_gains(self, rows):
+        """最近这批局在各自打出来那一刻涨了多少分。
+
+        与 PB 无关：没破 PB 的局只要挤进某一项前五，一样涨分。
+        锚点不到（没登录过、也从来没存下过）就算不出来，这时整列不显示。
+        """
+        if not rows or not self.lsf_anchors:
+            return {}
+        window = [g for g in rows if g.get("path")]
+        # 一键导入（解压出来的 mtime 全在同一秒）时顺序没有意义，
+        # 涨分只能算出一个假的先后，宁可不显示
+        if len(window) > 5 and len({g.get("mtime") or 0 for g in window}) < 3:
+            return {}
+        key = (id(self.games), len(self.games), len(window),
+               id(self.lsf_anchors))
+        if self._gain_cache and self._gain_cache[0] == key:
+            return self._gain_cache[1]
+        t0 = time.perf_counter()
+        gains = core.lsf_gains(self.games, self.lsf_anchors, window)
+        n = sum(1 for v in gains.values() if v > 0.05)
+        diag.log.info("最近 %d 局的涨分：%d 局有涨分，用时 %.0f ms",
+                      len(window), n, (time.perf_counter() - t0) * 1000)
+        self._gain_cache = (key, gains)
+        return gains
 
     @staticmethod
     def _gap_to_pb(g, pb):
@@ -4332,6 +5069,12 @@ class App(tk.Tk):
             p.set_selected(k == key)
         self.render_pb()
 
+    def set_pb_metric(self, key):
+        self._pb_metric = key
+        for k, p in self.pb_metric_seg.items():
+            p.set_selected(k == key)
+        self.render_pb()
+
     def _recompute_pb(self):
         """本地 PB 与网站 PB 取并集。两边谁先到都行，后到的负责重算。
 
@@ -4346,30 +5089,49 @@ class App(tk.Tk):
 
     def render_pb(self):
         q = self.var_q.get().strip().lower()
-        cnt = self.counts.get(self._pb_style, {}) if isinstance(self.counts, dict) else {}
-        rows = []
+        lv, cat = self._pb_level, self._pb_style
+        rows = {}
         for r in self.pb_rows:
-            if self._pb_level and r["level"] != self._pb_level:
-                continue
             # 两张榜各自独立：全PB 里会出现 NF 获胜局（风格列标 NF），
             # NF PB 里的每一行必然也是 NF，但它们是不同榜，不能混在一起。
-            if (r.get("category") or "all") != self._pb_style:
+            if r["level"] != lv or (r.get("category") or "all") != cat:
                 continue
-            if q:
-                hay = f"{r['bv']} {r['file']}".lower()
-                if q not in hay:
-                    continue
-            item = dict(r)
-            item["level_cn"] = core.LEVEL_CN[r["level"]]
-            item["games"] = cnt.get((r["level"], r["bv"]), 0)
-            item["source_cn"] = core.PB_SOURCE_CN.get(r.get("source"), "")
-            rows.append(item)
-        self.tbl_pb.set_rows(rows)
+            rows[int(r["bv"])] = r
 
-        bits = ["%d 行" % len(rows)]
+        self._pb_index = rows
+        grid = self.pb_grid
+        grid.set_counts(self.pb_counts)
+        n, cells = grid.bind_data(lv, self._pb_metric, rows, cat)
+
+        hits = set()
+        if q:
+            if q.isdigit():
+                hits = {bv for bv in rows if str(bv) == q}
+            else:
+                hits = {bv for bv, r in rows
+                        if q in (r.get("file") or "").lower()}
+            grid.set_hits(hits)
+
+        self._pb_picked = None
+        self.lbl_pb_file.config(text="")
+        self.btn_pb_play.set_enabled(False)
+        self.btn_pb_reveal.set_enabled(False)
+        self.lbl_pb_hint.config(
+            text=("颜色按全国名次" if grid.mode == "rank" else "颜色按本级快慢")
+            if n else "")
+        if n:
+            text = "%s %d / %d 个位置有成绩" % (core.LEVEL_CN[lv], n, cells)
+            if q:
+                text += "，搜到 %d 个" % len(hits)
+            self.pb_detail.config(text=text, fg=C_TEXT)
+        else:
+            self.pb_detail.config(
+                text="%s还没有成绩" % core.LEVEL_CN[lv], fg=C_DIM)
+
+        bits = []
         if self.site_pb:
             n_site = sum(1 for r in self.pb_rows
-                         if (r.get("category") or "all") == self._pb_style
+                         if (r.get("category") or "all") == cat
                          and r.get("source") == "site")
             bits.append("网站 PB %d 条%s" % (
                 len(self.site_pb),
@@ -4381,6 +5143,7 @@ class App(tk.Tk):
         self.lbl_pb_count.config(
             text=" · ".join(bits),
             fg=C_ERR if self.site_pb_err else C_DIM)
+        self.after_idle(self._pb_fit)
 
     def _on_bvmin_change(self):
         if self._bv_guard:
@@ -4447,6 +5210,28 @@ class App(tk.Tk):
         if hasattr(self, "lbl_top_site"):
             text, color = self._top_site_note()
             self.lbl_top_site.config(text=text, foreground=color)
+        self.render_lsf()
+
+    def render_lsf(self):
+        """个人 LSF：本地 + 网站合并口径，跟上面三张表同一批数据。
+
+        锚点是全站前二十名的水平，没有它算不出来；没有时卡片留「—」。
+        """
+        card = getattr(self, "lsf_card", None)
+        if card is None:
+            return
+        if not self.lsf_anchors:
+            card.set_data(None)
+            return
+        key = (id(self.games), len(self.games), id(self.site_top),
+               id(self.site_top_details), id(self.lsf_anchors))
+        if self._lsf_cache and self._lsf_cache[0] == key:
+            local = self._lsf_cache[1]
+        else:
+            local = core.lsf_report(self.games, self.site_top,
+                                    self.site_top_details, self.lsf_anchors)
+            self._lsf_cache = (key, local)
+        card.set_data(local)
 
     def set_status(self, text, kind="dim", hold=None, transient=False):
         """写状态栏。``hold`` 是毫秒：到点自动退回写之前那一行。
@@ -4608,6 +5393,18 @@ class App(tk.Tk):
 
 
 def main():
+    if "--selftest" in sys.argv[1:]:
+        # 打包后自检用：证明这份 exe 能启动、能解包，然后立刻退出。
+        # 不建窗口、不扫录像，只往 %TEMP% 写一行回执；build.cmd 靠这个文件
+        # 判断产物有没有被安全软件当场拦掉（被拦时进程起不来，回执也不会出现）。
+        try:
+            out = os.path.join(os.environ.get("TEMP") or ".", "ytb-selftest.txt")
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write("version=%s\nfrozen=%s\n"
+                         % (APP_VER, bool(getattr(sys, "frozen", False))))
+        except Exception:
+            pass
+        return
     enable_dpi()                      # 幂等；模块导入时已经调过一次
     diag.setup()
     tk_callback = diag.install_hooks()
