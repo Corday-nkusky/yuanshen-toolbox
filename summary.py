@@ -88,8 +88,12 @@ def daily_text(row, level_cn, ver=""):
     return "\n".join(lines)
 
 
-def today_text(items, ver="", day=""):
-    """今天有局的几个级别合在一起。items = [(级别名, 行), ...]"""
+def levels_text(items, ver="", day=""):
+    """某一天有局的几个级别合在一起。items = [(级别名, 行), ...]
+
+    当天用就是「今日总结」，往日用就是「当日总结」—— 差别只在标题后缀，
+    由 _today_tag 判断，函数本身不认识「今天」。
+    """
     items = [(cn, r) for cn, r in items if r]
     if not items:
         return ""
@@ -382,8 +386,8 @@ def daily_png(row, level_key, level_cn, ver="", now=None, with_mascot=True,
     return sh.render(fy + 30)
 
 
-def today_png(items, ver="", day="", now=None, with_mascot=True):
-    """今天有局的几个级别，一个级别一块往下排。
+def levels_png(items, ver="", day="", now=None, with_mascot=True):
+    """某一天有局的几个级别，一个级别一块往下排。
 
     以前是「级别 × 九列」的横表，一行一个级别：那种表只有横屏才看得下去，
     竖屏手机上字缩到看不清。三个块上下排，列还是那三列（最好 / 平均 / 最差），

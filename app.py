@@ -3156,7 +3156,12 @@ class App(tk.Tk):
         """
         if not hasattr(self, "tbl_daily"):
             return
-        rows = core.daily_rows(self.games, self._daily_level)
+        # 三个级别各聚合一次：右键菜单要给出「当天全部级别」的总结，一弹出就要
+        # 知道那天有哪几级（标签要写出来），不能等点下去再算。实测 22723 局
+        # 三级合计约 20 ms，一次渲染付一次，之后菜单只是查表。
+        self.daily_by_level = {lv: core.daily_rows(self.games, lv)
+                               for lv in core.LEVELS}
+        rows = self.daily_by_level[self._daily_level]
         self.daily_rows = rows
         self.tbl_daily.set_rows(rows)
         self.lbl_daily_count.config(
@@ -3220,15 +3225,26 @@ class App(tk.Tk):
 
     # ---------- 当日 / 今日总结 ----------
     def _daily_menu(self, iid, menu):
-        """每日页的右键菜单：把这一天的记录抄成文本或图片。"""
+        """每日页的右键菜单。
+
+        两组：正在看的这一级、当天全部级别（那天有局的几级并在一张卡片里，
+        与概览页的「今日总结」同一套版式）。当天只有这一级时两组输出一样，
+        但照样都给 —— 少一项会让人以为功能没做。
+        """
         row = self.tbl_daily._row_of(iid) if hasattr(self, "tbl_daily") else {}
         day = row.get("date")
         if not day:
             return
-        menu.add_command(label="复制当日总结（文本）",
+        cn = core.LEVEL_CN[self._daily_level]
+        menu.add_command(label="复制当日总结 · %s（文本）" % cn,
                          command=lambda d=day: self._copy_daily("text", d))
-        menu.add_command(label="复制当日总结（图片）",
+        menu.add_command(label="复制当日总结 · %s（图片）" % cn,
                          command=lambda d=day: self._copy_daily("png", d))
+        menu.add_separator()
+        menu.add_command(label="复制当日总结 · 全部级别（文本）",
+                         command=lambda d=day: self._copy_levels(d, "text"))
+        menu.add_command(label="复制当日总结 · 全部级别（图片）",
+                         command=lambda d=day: self._copy_levels(d, "png"))
 
     def _daily_row(self, day=None):
         """当天那一行（聚合后的）；day 为空就用当前选中的那天。"""
@@ -3271,13 +3287,23 @@ class App(tk.Tk):
     def _today_rows(self):
         """今天有完成局的级别：[(级别, 名称, 该天聚合行), ...]。"""
         today = core.day_text(time.time())
+        return today, self._day_level_rows(today)
+
+    def _day_level_rows(self, day):
+        """某一天有完成局的级别，按 初级/中级/高级 顺序。
+
+        走 render_daily 缓存的 daily_by_level（三级各一份），右键菜单弹出时只是
+        查表，不会为了某一天再扫一遍两万多局。
+        """
+        by = getattr(self, "daily_by_level", None)
+        if not by:              # 每日页还没建好就先算一份，别静默返回空
+            by = {lv: core.daily_rows(self.games, lv) for lv in core.LEVELS}
         out = []
         for lv in core.LEVELS:
-            r = next((x for x in core.daily_rows(self.games, lv)
-                      if x["date"] == today), None)
+            r = next((x for x in by.get(lv) or [] if x["date"] == day), None)
             if r:
                 out.append((lv, core.LEVEL_CN[lv], r))
-        return today, out
+        return out
 
     def _today_menu(self):
         m = tk.Menu(self, tearoff=0)
@@ -3294,31 +3320,43 @@ class App(tk.Tk):
 
     def _copy_today(self, kind):
         """今天的总结：把有局的级别并在一张图 / 一段文字里。"""
-        today, items = self._today_rows()
+        self._copy_levels(core.day_text(time.time()), kind)
+
+    def _copy_levels(self, day, kind):
+        """某一天全部级别的总结。今天用就是「今日总结」，往日就是「当日总结」。
+
+        与概览页那个按钮共用一套版式：日子不同只影响标题里的「今日」后缀，
+        所以每日页任意一天都能直接出三级别卡片，不必先等到今天。
+        """
+        items = self._day_level_rows(day)
+        is_today = day == core.day_text(time.time())
+        word = "今日" if is_today else "当日"
         if not items:
-            self.set_status("今天还没有完成局", "dim")
+            self.set_status("今天还没有完成局" if is_today
+                            else "%s 没有完成局" % day, "dim")
             return
         if kind == "text":
-            text = summary.today_text([(cn, r) for _lv, cn, r in items],
-                                      APP_VER, today)
+            text = summary.levels_text([(cn, r) for _lv, cn, r in items],
+                                       APP_VER, day)
             try:
                 summary.copy_text(self, text)
             except tk.TclError as e:
                 self.set_status("复制失败：%s" % e, "err")
                 return
-            self.set_status("已复制今日总结（文本，%d 个级别）" % len(items), "ok")
+            self.set_status("已复制 %s %s总结（文本，%d 个级别）"
+                            % (day, word, len(items)), "ok")
             return
         try:
-            img = summary.today_png(items, APP_VER, today)
+            img = summary.levels_png(items, APP_VER, day)
         except Exception as e:                  # noqa: BLE001
-            diag.log.exception("画今日总结图失败")
+            diag.log.exception("画 %s 总结图失败" % word)
             self.set_status("画图失败：%s" % e, "err")
             return
         if img is None or not summary.copy_image(img):
             self.set_status("图片复制失败（剪贴板被别的程序占着？）", "err")
             return
-        self.set_status("已复制今日总结（图片 %d×%d，%d 个级别）"
-                        % (img.size[0], img.size[1], len(items)), "ok")
+        self.set_status("已复制 %s %s总结（图片 %d×%d，%d 个级别）"
+                        % (day, word, img.size[0], img.size[1], len(items)), "ok")
 
     def _build_pb(self):
         page = self.pages["pb"]
@@ -5846,9 +5884,20 @@ def main():
                 mk = "mascot=%dx%d" % img2.size if img2 is not None else "mascot=missing"
             except Exception as e:              # noqa: BLE001
                 mk = "mascot=ERR %r" % (e,)
+            # 每日页右键的「全部级别」走 levels_png：三级块 + 贴纸 + 字体一起用，
+            # 只有打包后才可能缺东西，单独报一行
+            lvl = "levels_png=?"
+            try:
+                img3 = summary.levels_png(
+                    [("b", "初级", dict(probe, games=2)),
+                     ("e", "高级", probe)], APP_VER, "2026-11-17")
+                lvl = "levels_png=%dx%d" % img3.size
+            except Exception as e:              # noqa: BLE001
+                lvl = "levels_png=ERR %r" % (e,)
             with open(out, "w", encoding="utf-8") as fh:
-                fh.write("version=%s\nfrozen=%s\n%s\n%s\n"
-                         % (APP_VER, bool(getattr(sys, "frozen", False)), png, mk))
+                fh.write("version=%s\nfrozen=%s\n%s\n%s\n%s\n"
+                         % (APP_VER, bool(getattr(sys, "frozen", False)), png, mk,
+                            lvl))
         except Exception:
             pass
         return

@@ -61,12 +61,19 @@ def test_text():
                                      "高级").splitlines()))
     check("空行返回空串", summary.daily_text(None, "高级") == "")
 
-    a = summary.today_text([("高级", r), ("中级", row(games=9))], "0.28.0")
+    a = summary.levels_text([("高级", r), ("中级", row(games=9))], "0.28.0")
     print(a)
     check("今日首行汇总局数（3+9=12）", a.splitlines()[0].endswith("共 12 局"))
     check("今日逐个级别成段", "高级 · 3 局" in a and "中级 · 9 局" in a)
     check("今日段里同样写 FL / NF", "· FL 2 · NF 1 ·" in a)
-    check("今日为空返回空串", summary.today_text([], "0.28.0") == "")
+    check("今日为空返回空串", summary.levels_text([], "0.28.0") == "")
+
+    # 同一套函数给「往日」用：标题不带「今日」后缀，级别与指标照旧
+    yesterday = row(date="2026-11-14")
+    b = summary.levels_text([("高级", yesterday)], "0.28.0", "2026-11-14")
+    check("往日合并文本不带「今日」后缀", b.splitlines()[0] == "2026-11-14 · 共 3 局")
+    check("往日合并文本仍逐级给三项", "stnb：最高" in b and "高级 · 3 局" in b)
+    check("往日文本整段没有「今日」二字", "今日" not in b)
 
 
 def test_png():
@@ -103,8 +110,8 @@ def test_png():
     check("贴纸左右留白对称（左右边 20 px 内那一行仍是页底）",
           _row_is_bg(img, y0 + 20, 0, m) and _row_is_bg(img, y0 + 20, w - m, w))
 
-    one = summary.today_png([("e", "高级", row())], "0.28.0")
-    three = summary.today_png([("b", "初级", row(games=7)),
+    one = summary.levels_png([("e", "高级", row())], "0.28.0")
+    three = summary.levels_png([("b", "初级", row(games=7)),
                                ("i", "中级", row(games=9)),
                                ("e", "高级", row())], "0.28.0")
     check("今日图：一个级别也能画", one is not None and one.size[0] > 800)
@@ -113,14 +120,14 @@ def test_png():
           one.size == summary.daily_png(row(), "e", "高级", "0.28.0").size)
     check("今日图：三个级别也还是竖图（不是横表）",
           three.size[1] > three.size[0])
-    two = summary.today_png([("i", "中级", row(games=9)),
+    two = summary.levels_png([("i", "中级", row(games=9)),
                              ("e", "高级", row())], "0.28.0")
     m2 = summary._Sheet.MARGIN * summary.SCALE
     check("今日图：三个级别比两个级别的卡片高",
           _card_height(three, m2 + 20) > _card_height(two, m2 + 20))
-    check("今日图：没有级别时返回 None", summary.today_png([]) is None)
+    check("今日图：没有级别时返回 None", summary.levels_png([]) is None)
     check("今日图：图宽与单日图一致（同一套列宽）",
-          summary.today_png([("b", "初级", row(games=7)),
+          summary.levels_png([("b", "初级", row(games=7)),
                              ("i", "中级", row(games=9)),
                              ("e", "高级", row())],
                             with_mascot=False).size[0]

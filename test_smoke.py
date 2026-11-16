@@ -153,9 +153,15 @@ def main():
         # 右键某天：把当天记录抄成文本 / 图片
         menu = tk.Menu(win, tearoff=0)
         win._daily_menu(r0["date"], menu)
-        items = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)]
-        check("右键菜单有「文本 / 图片」两项",
-              items == ["复制当日总结（文本）", "复制当日总结（图片）"])
+        items = [menu.entrycget(i, "label")             # 分隔符没有 -label 选项
+                 for i in range(menu.index("end") + 1)
+                 if menu.type(i) != "separator"]
+        cn0 = A.core.LEVEL_CN[win._daily_level]
+        check("右键菜单：本级两项 + 当天全部级别两项",
+              items == ["复制当日总结 · %s（文本）" % cn0,
+                        "复制当日总结 · %s（图片）" % cn0,
+                        "复制当日总结 · 全部级别（文本）",
+                        "复制当日总结 · 全部级别（图片）"])
         win._copy_daily("text", r0["date"])
         got = win.clipboard_get()
         check("当日总结（文本）进了剪贴板，首行带日期与级别",
@@ -164,6 +170,27 @@ def main():
         check("文本里有 stnb 一行", "stnb：最高" in got)
         win._copy_daily("png", r0["date"])
         check("当日总结（图片）复制成功",
+              "图片" in win.lbl_status.cget("text"))
+
+        # 当天全部级别：任意一天都能出（不必等到今天）
+        lv_items = win._day_level_rows(r0["date"])
+        check("当天有 %d 个级别，且包含正在看的那一级" % len(lv_items),
+              bool(lv_items)
+              and win._daily_level in [lv for lv, _c, _r in lv_items]
+              and [lv for lv, _c, _r in lv_items]
+              == [lv for lv in A.core.LEVELS
+                  if lv in [x for x, _c, _r in lv_items]])
+        win._copy_levels(r0["date"], "text")
+        got = win.clipboard_get()
+        want = A.summary.levels_text([(c, r) for _lv, c, r in lv_items],
+                                     A.APP_VER, r0["date"])
+        check("当天全部级别（文本）与合并逻辑逐字一致", got == want)
+        check("当天全部级别（文本）首行写日期与总局数",
+              got.splitlines()[0].startswith(r0["date"])
+              and got.splitlines()[0].endswith(
+                  "共 %d 局" % sum(r["games"] for _lv, _c, r in lv_items)))
+        win._copy_levels(r0["date"], "png")
+        check("当天全部级别（图片）复制成功",
               "图片" in win.lbl_status.cget("text"))
         shot(win, "shot_daily.png")
 
