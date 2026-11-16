@@ -42,17 +42,21 @@ def _clock(t):
     return core.clock_text(t)
 
 
-def _style_text(row):
-    """完成方式：FL（插旗）与 NF（无旗）各多少局。
+def _meta_text(t_from, t_till, fl=None, nf=None, brief=False):
+    """卡片上那行小字：起止 + FL / NF 各多少局。
 
-    两者互斥，加起来不一定等于总局数 —— 录像里判不出模式的局（老阿比特
-    的 avf 没有元数据）两边都不算，这种日子若一局都判不出，整段不写。
+    只有这三样。不再顺手算一句「跨度 12 小时 48 分」—— 看的人要的是区间
+    本身，不是我们再替他做的一位数减法（说过一次，别再往这里加回去）。
+    FL（插旗）与 NF（无旗）互斥，但加起来不一定等于总局数：判不出完成方式
+    的局（老阿比特的 avf 没有元数据）两边都不算，那种日子这半截整段不写。
+
+    brief=True 用多级别卡里的小块：时分就够，秒在那儿太挤。
     """
-    fl = int(row.get("fl") or 0)
-    nf = int(row.get("nf") or 0)
-    if not fl and not nf:
-        return ""
-    return "FL %d · NF %d" % (fl, nf)
+    fmt = (lambda t: _clock(t)[:5]) if brief else _clock
+    out = "%s – %s" % (fmt(t_from), fmt(t_till))
+    if fl or nf:
+        out += " · FL %d · NF %d" % (int(fl or 0), int(nf or 0))
+    return out
 
 
 def _today_tag(day):
@@ -209,6 +213,13 @@ class _Sheet:
     def line(self, x1, y1, x2, y2, color, width=1):
         self.ops.append(("l", x1, y1, x2, y2, color, width))
 
+    def poly(self, points, color, width=1.2):
+        """折线。joint="curve" 才不会有折角处的缺口（走势图很密）。"""
+        self.ops.append(("p", list(points), color, width))
+
+    def dot(self, x, y, r, color):
+        self.ops.append(("e", x, y, r, color))
+
     def text_w(self, s, size, bold=False):
         return _font(size, bold).getlength(s) / float(SCALE)
 
@@ -243,6 +254,14 @@ class _Sheet:
                     d.rounded_rectangle(box, radius=_px(radius), fill=color)
                 else:
                     d.rectangle(box, fill=color)
+            elif op[0] == "p":
+                _k, pts, color, width = op
+                d.line([(_px(a), _px(b) + off) for a, b in pts], fill=color,
+                       width=max(1, _px(width)), joint="curve")
+            elif op[0] == "e":
+                _k, cx, cy, r, color = op
+                d.ellipse((_px(cx - r), _px(cy - r) + off,
+                           _px(cx + r), _px(cy + r) + off), fill=color)
             else:
                 _k, x1, y1, x2, y2, color, width = op
                 d.line((_px(x1), _px(y1) + off, _px(x2), _px(y2) + off),
@@ -293,13 +312,9 @@ def daily_png(row, level_key, level_cn, ver="", now=None, with_mascot=True,
     _chip(sh, PAD + tw + 12, y + 5, level_cn, accent, size=13, padh=10, h=24)
     sh.text(W - PAD, y + 5, "%d 局" % row["games"], 18, C_INK, True, anchor="rt")
 
-    # 起止是「这一天从几点打到几点」，不再顺手算一句「历时 12 小时 48 分」：
-    # 手机上看的人要的是区间本身，不是我们再帮他做的一位数减法。
-    meta = "%s – %s" % (_clock(row["t_from"]), _clock(row["t_till"]))
-    style = _style_text(row)
-    if style:
-        meta += " · " + style
-    sh.text(PAD, y + 54, meta, 14, C_DIM)
+    sh.text(PAD, y + 54,
+            _meta_text(row["t_from"], row["t_till"],
+                       row.get("fl"), row.get("nf")), 14, C_DIM)
 
     # 指标表：指标名 + 三列数字（最好 / 平均 / 最差）。三行指标的「好」
     # 方向不同（时间越小越好、3BV/s 与 stnb 越大越好），所以表头只能
@@ -369,7 +384,9 @@ def levels_png(items, ver="", day="", now=None, with_mascot=True):
     for j, (k, cn, r) in enumerate(items):
         accent = LEVEL_ACCENT.get(k, (C_INK, CARD_BG))[0]
         w = _chip(sh, PAD, by, cn, accent, size=13, padh=10, h=24)
-        sh.text(PAD + w + 10, by + 4, "%d 局" % r["games"], 14, C_DIM)
+        info = "%d 局 · %s" % (r["games"], _meta_text(
+            r["t_from"], r["t_till"], r.get("fl"), r.get("nf"), brief=True))
+        sh.text(PAD + w + 10, by + 5, info, 12, C_DIM)
         ry = by + 34
         for label, vals, prec in (
                 ("时间（秒）", (r["best"], r["avg"], r["worst"]), 3),
@@ -391,18 +408,6 @@ def levels_png(items, ver="", day="", now=None, with_mascot=True):
 
 
 
-def _span_text(sec):
-    """4 小时 5 分 / 43 分 12 秒 / 18 秒。总结卡不写这个，详细版才写。"""
-    sec = int(round(float(sec or 0)))
-    h, rest = divmod(sec, 3600)
-    m, s = divmod(rest, 60)
-    if h:
-        return "%d 小时 %d 分" % (h, m)
-    if m:
-        return "%d 分 %d 秒" % (m, s)
-    return "%d 秒" % s
-
-
 def _median(vals):
     vals = sorted(v for v in vals if v)
     n = len(vals)
@@ -411,6 +416,50 @@ def _median(vals):
     if n % 2:
         return vals[n // 2]
     return (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+
+
+def _by_time(games):
+    """按开始时刻**升序**。
+
+    core.daily_games 给的是倒序（新的在前，界面上要这样列），但走势图必须从
+    第一局画到最后一局，直接拿倒序画就成了「时间反着流」。
+    """
+    return sorted(games, key=lambda g: g.get("t0") or 0)
+
+
+def _trend(sh, x, y, w, h, vals, accent, fmt="%.1f"):
+    """按完成顺序的折线：这一天是一路越打越快，还是打到后面手越来越沉。
+
+    左边留 40 给最高 / 最低两个数 —— 竖图上横向每一点都紧张，数值标在轴外
+    太浪费。平均线画成虚线：画实线会和折线抢注意力，而它只是个参照。
+    不足 4 局或数值几乎不变成一条直线时返回 False，让调用方写一句说明。
+    """
+    vals = [float(v) for v in vals if v]
+    if len(vals) < 4:
+        return False
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1e-6:
+        return False
+    lx, pw = x + 40, w - 40
+
+    def yy(v):
+        return y + h - (v - lo) / (hi - lo) * h
+
+    sh.line(lx, y + h, lx + pw, y + h, C_LINE)
+    ay = yy(sum(vals) / float(len(vals)))
+    xx = lx
+    while xx < lx + pw:
+        sh.line(xx, ay, min(xx + 4.0, lx + pw), ay, C_DIM, 0.4)
+        xx += 8
+    sh.poly([(lx + pw * i / float(len(vals) - 1), yy(v))
+             for i, v in enumerate(vals)], accent, 1.3)
+    # 最高、最低那两点点一下：四十个点连成的线，眼睛需要一个落点
+    for v in (hi, lo):
+        i = vals.index(v)
+        sh.dot(lx + pw * i / float(len(vals) - 1), yy(v), 2.2, accent)
+    sh.text(lx - 6, y, fmt % hi, 9.5, C_DIM, anchor="rt")
+    sh.text(lx - 6, y + h, fmt % lo, 9.5, C_DIM, anchor="rb")
+    return True
 
 
 def _hist_bars(sh, x, y, w, h, times, accent, n=8):
@@ -445,14 +494,36 @@ def _hist_bars(sh, x, y, w, h, times, accent, n=8):
     return True
 
 
-def _extreme(sh, x, y, w, games, slowest, accent, n=5):
-    """最快 / 最慢各 5 局：用时 · 3BV · 完成方式。返回写了几行。"""
-    games = [g for g in games if g.get("time")]
-    pick = sorted(games, key=lambda g: g["time"], reverse=slowest)[:n]
+def _pick(games, key, n=5, reverse=False):
+    """按某个字段挑 n 局；缺这个字段的局直接跳过（老 avf 没 stnb）。"""
+    pool = [g for g in games if g.get(key)]
+    return sorted(pool, key=lambda g: g[key], reverse=reverse)[:n]
+
+
+def _rows_fast(sh, x, y, w, games, accent, n=5):
+    """最快 n 局：用时 · 3BV · 完成方式。返回写了几行。"""
+    pick = _pick(games, "time", n)
     for i, g in enumerate(pick):
-        ry = y + i * 21
+        ry = y + i * 22
         sh.text(x, ry, "%.3f" % g["time"], 12, C_INK, True)
-        sh.text(x + 62, ry + 1, "%d BV" % int(g.get("bv") or 0), 11, C_DIM)
+        sh.text(x + 56, ry + 1, "%d BV" % int(g.get("bv") or 0), 11, C_DIM)
+        st = core.STYLE_CN.get(g.get("style"))
+        if st:
+            sh.text(x + w, ry + 1, st, 11, accent, True, anchor="rt")
+    return len(pick)
+
+
+def _rows_stnb(sh, x, y, w, games, accent, n=5):
+    """stnb 最低 n 局：stnb · 用时 · 完成方式。
+
+    比「最慢 5 局」有话说：慢往往只是那盘 BV 多，stnb 低才是「这盘明明不难，
+    但我推得乱」—— 那是真该复盘的五局。
+    """
+    pick = _pick(games, "stnb", n)
+    for i, g in enumerate(pick):
+        ry = y + i * 22
+        sh.text(x, ry, "%.2f" % g["stnb"], 12, C_INK, True)
+        sh.text(x + 50, ry + 1, "%.3f s" % float(g.get("time") or 0), 11, C_DIM)
         st = core.STYLE_CN.get(g.get("style"))
         if st:
             sh.text(x + w, ry + 1, st, 11, accent, True, anchor="rt")
@@ -461,14 +532,21 @@ def _extreme(sh, x, y, w, games, slowest, accent, n=5):
 
 def levels_detail_png(items, games_by_level, ver="", day="", now=None,
                       with_mascot=True):
-    """详细版的总结：在总结卡的基础上多给「用时分布」与「最快 / 最慢 5 局」。
+    """详细版的总结：在总结卡的基础上多给四块。
 
     总结卡回答「这一天打得怎么样」（最好 / 平均 / 最差），详细版回答「这些数
-    是怎么来的」。分布柱看手感波动 —— 一把 16 秒、其余 20 秒，和均匀 19 秒
-    平均起来差不多，是两种日子；极值表看极端局是多大盘、什么完成方式。
+    是怎么来的」：
+
+    - **用时 / stnb 走势**：按完成顺序连成的折线。平均分不出「前面 20 秒、
+      最后一把 16 秒」和「一路匀速」；折线能，而且能看出热身与疲劳。
+    - **用时分布**：八等分桶。一把特别快、其余都慢，平均会被拉低，直方图不会。
+    - **最快 5 局 / stnb 最低 5 局**：极端局是多大盘、什么完成方式。挑 stnb
+      最低而不是最慢，是因为慢常常只是盘大，stnb 低才是推得乱。
+    - **前半程 / 后半程、FL / NF 的平均用时**：同一批局换个切法，看有没有
+      越打越沉、插旗到底慢多少。
 
     items = [(级别键, 级别名, 该天聚合行)]；games_by_level = {级别键: [该天每局]}。
-    每局只取 time / bv / style 三个字段，其余不画。
+    每局只取 time / bv / stnb / style / t0，其余不画。
     """
     items = [(k, cn, r) for k, cn, r in items if r]
     if not items:
@@ -482,6 +560,7 @@ def levels_detail_png(items, games_by_level, ver="", day="", now=None,
     t_till = max(r["t_till"] for _k, _c, r in items)
     fl = sum(int(r.get("fl") or 0) for _k, _c, r in items)
     nf = sum(int(r.get("nf") or 0) for _k, _c, r in items)
+    cw2 = (W - PAD * 2 - 24) / 2.0
 
     y = 30
     title = day + _today_tag(day)
@@ -493,11 +572,7 @@ def levels_detail_png(items, games_by_level, ver="", day="", now=None,
               LEVEL_ACCENT.get(k, (C_INK, CARD_BG))[0], size=13, padh=10, h=24)
     sh.text(W - PAD, y + 5, "共 %d 局" % total, 18, C_INK, True, anchor="rt")
 
-    meta = "%s – %s · 跨度 %s" % (_clock(t_from), _clock(t_till),
-                                  _span_text(t_till - t_from))
-    if fl or nf:
-        meta += " · FL %d · NF %d" % (fl, nf)
-    sh.text(PAD, y + 40, meta, 13, C_DIM)
+    sh.text(PAD, y + 40, _meta_text(t_from, t_till, fl, nf), 13, C_DIM)
     y += 40 + 28
     sh.line(PAD, y, W - PAD, y, C_LINE)
     y += 18
@@ -507,12 +582,12 @@ def levels_detail_png(items, games_by_level, ver="", day="", now=None,
         accent = LEVEL_ACCENT.get(k, (C_INK, CARD_BG))[0]
         # 只有一个级别时，级别名与局数在标题里已经写过，不再重复一行
         if not only:
-            cw = _chip(sh, PAD, y, cn, accent, size=12, padh=9, h=22)
-            sh.text(PAD + cw + 8, y + 3, "%d 局" % r["games"], 12, C_DIM)
-            sh.text(W - PAD, y + 3, "%s – %s"
-                    % (_clock(r["t_from"])[:5], _clock(r["t_till"])[:5]),
-                    12, C_DIM, anchor="rt")
-            y += 30
+            cw = _chip(sh, PAD, y, cn, accent, size=13, padh=10, h=24)
+            info = "%d 局 · %s" % (r["games"], _meta_text(
+                r["t_from"], r["t_till"], r.get("fl"), r.get("nf"),
+                brief=True))
+            sh.text(PAD + cw + 10, y + 5, info, 12, C_DIM)
+            y += 32
 
         # 每块自带「最好 / 平均 / 最差」：块之间隔着图和表，共用一次表头会让人
         # 对不上列（总结卡是紧挨着的矩阵，那种才适合共用）。
@@ -530,37 +605,89 @@ def levels_detail_png(items, games_by_level, ver="", day="", now=None,
             y += 38
 
         games = games_by_level.get(k) or []
-        times = [g.get("time") for g in games if g.get("time")]
-        y += 8
-        sh.text(PAD, y, "用时分布", 12, C_DIM)
+        seq = _by_time(games)
+        times = [float(g["time"]) for g in seq if g.get("time")]
+        stnbs = [float(g["stnb"]) for g in seq if g.get("stnb")]
+
+        # 走势：两张并排，各自只看自己的量级（共用一根纵轴的话，stnb 与秒数
+        # 根本不在一个数量级）
+        y += 10
+        bw, bh = cw2, 74
+        if len(times) >= 4 and max(times) - min(times) >= 0.5:
+            sh.text(PAD, y, "用时走势", 11, C_DIM)
+            sh.text(PAD + cw2 + 24, y, "stnb 走势", 11, C_DIM)
+            sh.text(PAD + cw2 - 8, y + 1, "平均 %.1f s" % (sum(times) / len(times)),
+                    9.5, C_DIM, anchor="rt")
+            if len(stnbs) >= 4:
+                sh.text(W - PAD, y + 1, "平均 %.1f"
+                        % (sum(stnbs) / len(stnbs)), 9.5, C_DIM, anchor="rt")
+            y += 18
+            _trend(sh, PAD, y, bw, bh, times, accent)
+            if len(stnbs) >= 4:
+                _trend(sh, PAD + cw2 + 24, y, bw, bh, stnbs, accent, "%.1f")
+            else:
+                sh.text(PAD + cw2 + 24, y + bh / 2.0, "不足 4 局",
+                        10, C_DIM, anchor="lm")
+            y += bh + 16
+        else:
+            sh.text(PAD, y + 12, "不足 4 局，画不出走势", 11, C_DIM)
+            y += 36
+
+        # 分布
+        sh.text(PAD, y, "用时分布", 11, C_DIM)
         if times:
             sh.text(W - PAD, y + 1, "中位 %.2f s" % _median(times),
-                    10, C_DIM, anchor="rt")
-        y += 22
-        if _hist_bars(sh, PAD, y, W - PAD * 2, 52, times, accent):
-            y += 52 + 20
+                    9.5, C_DIM, anchor="rt")
+        y += 20
+        if _hist_bars(sh, PAD, y, W - PAD * 2, 54, times, accent):
+            y += 54 + 20
         else:
-            sh.text(PAD, y + 14, "不足 4 局或用时几乎相同，画不出分布",
+            sh.text(PAD, y + 12, "不足 4 局或用时几乎相同，画不出分布",
                     11, C_DIM, anchor="lm")
-            y += 40
+            y += 34
 
-        y += 8
+        # 极值：快的那头看手感上限，stnb 低的那头看该复盘的五局
+        y += 6
         if len(games) < 3:
-            # 一局两局的日子，「最快 5」和「最慢 5」是同一批局，两栏只会重复
-            sh.text(PAD, y, "全部 %d 局" % len(games), 12, C_DIM)
+            # 一局两局的日子，两栏是同一批局，只列一次
+            sh.text(PAD, y, "全部 %d 局" % len(games), 11, C_DIM)
             y += 20
-            rows = _extreme(sh, PAD, y, 210, games, False, accent)
-            y += max(1, rows) * 21 + 10
+            rows = _rows_fast(sh, PAD, y, W - PAD * 2, games, accent)
+            y += max(1, rows) * 22 + 8
         else:
-            sh.text(PAD, y, "最快 5 局", 12, C_DIM)
-            sh.text(PAD + 240, y, "最慢 5 局", 12, C_DIM)
+            sh.text(PAD, y, "最快 5 局", 11, C_DIM)
+            sh.text(PAD + cw2 + 24, y, "stnb 最低 5 局", 11, C_DIM)
             y += 20
-            rows = _extreme(sh, PAD, y, 210, games, False, accent)
-            _extreme(sh, PAD + 240, y, 210, games, True, accent)
-            y += max(1, rows) * 21 + 10
+            n1 = _rows_fast(sh, PAD, y, cw2, games, accent)
+            n2 = _rows_stnb(sh, PAD + cw2 + 24, y, cw2, games, accent)
+            y += max(n1, n2) * 22 + 8
+
+        # 换两个切法看同一批局：前半程 / 后半程、插旗 / 无旗
+        half = len(times) // 2
+        if half >= 3:
+            a, b = times[:half], times[half:]
+            sh.text(PAD, y, "前半程", 11, C_DIM)
+            sh.text(PAD + cw2 - 8, y, "%.3f s" % (sum(a) / len(a)),
+                    12, C_INK, True, anchor="rt")
+            sh.text(PAD + cw2 + 24, y, "后半程", 11, C_DIM)
+            sh.text(W - PAD, y, "%.3f s" % (sum(b) / len(b)),
+                    12, C_INK, True, anchor="rt")
+            y += 22
+        flocks = [float(g["time"]) for g in seq
+                  if g.get("style") == "fl" and g.get("time")]
+        nfocks = [float(g["time"]) for g in seq
+                  if g.get("style") == "nf" and g.get("time")]
+        if flocks and nfocks:
+            sh.text(PAD, y, "FL 局平均", 11, C_DIM)
+            sh.text(PAD + cw2 - 8, y, "%.3f s" % (sum(flocks) / len(flocks)),
+                    12, C_INK, True, anchor="rt")
+            sh.text(PAD + cw2 + 24, y, "NF 局平均", 11, C_DIM)
+            sh.text(W - PAD, y, "%.3f s" % (sum(nfocks) / len(nfocks)),
+                    12, C_INK, True, anchor="rt")
+            y += 22
 
         if j < len(items) - 1:
-            y += 4
+            y += 6
             sh.line(PAD, y, W - PAD, y, C_LINE)
             y += 18
 

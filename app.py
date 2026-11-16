@@ -3228,7 +3228,8 @@ class App(tk.Tk):
         """每日页的右键菜单：总结 / 详细总结 × 这一级 / 当天全部级别。
 
         只有图片，没有文本 —— 文本那版没人用，两个入口都只出图，所以标签里
-        不再写「图片」二字。详细版多给「用时分布」与「最快 / 最慢 5 局」。
+        不再写「图片」二字。详细版多给「用时 / stnb 走势」「用时分布」
+        「最快 5 局 / stnb 最低 5 局」与「前半程 / 后半程、FL / NF 平均」。
         """
         row = self.tbl_daily._row_of(iid) if hasattr(self, "tbl_daily") else {}
         day = row.get("date")
@@ -5891,7 +5892,8 @@ def main():
             # 详细版（每日页右键「详细总结」）多画分布与极值两块，打包后同样要能跑
             det = "detail_png=?"
             try:
-                g6 = [{"time": 10.0 + i, "bv": 30 + i, "style": "nf"}
+                g6 = [{"time": 10.0 + i, "bv": 30 + i, "style": "nf",
+                       "stnb": 30.0 + i * 2.0, "t0": 1763200000.0 + i * 60}
                       for i in range(6)]
                 img4 = summary.levels_detail_png(
                     [("e", "高级", probe)], {"e": g6}, APP_VER, "2026-11-17")

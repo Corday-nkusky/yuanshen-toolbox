@@ -206,6 +206,7 @@ def _games(n=12, base=18.0, step=0.8):
     out = []
     for i in range(n):
         out.append({"time": base + step * i, "bv": 20 + 3 * i,
+                    "stnb": 40.0 + 2.5 * (n - i),
                     "style": "nf" if i % 3 else "fl",
                     "t0": 1763200000.0 + i * 60})
     return out
@@ -242,12 +243,82 @@ def test_detail():
     check("没有级别时返回 None", summary.levels_detail_png([], {}) is None)
 
 
-def test_span_text():
-    check("跨度 2 小时 55 分", summary._span_text(10512) == "2 小时 55 分")
-    check("跨度 43 分 12 秒", summary._span_text(2592) == "43 分 12 秒")
-    check("跨度 18 秒", summary._span_text(18) == "18 秒")
+def test_meta_text():
+    """小字那一行：只有起止与 FL / NF。
+
+    这里钉的是「不许再算跨度」—— 加过一次「跨度 12 小时 48 分」，被要求删掉后
+    又混进详细版。小字归 _meta_text 一家生产，两张卡都不许自己拼。
+    """
+    t0 = datetime(2026, 11, 15, 21, 2, 11).timestamp()
+    t1 = datetime(2026, 11, 15, 23, 58, 3).timestamp()
+    line = summary._meta_text(t0, t1, 0, 37)
+    check("小字 = 起止 + FL / NF", line == "21:02:11 – 23:58:03 · FL 0 · NF 37")
+    check("小字里没有「小时 / 分 / 跨度 / 历时」",
+          not any(w in line for w in ("小时", "分", "跨度", "历时")))
+    check("FL 为 0 也照写（全 NF 的日子要看得出是 0）", "FL 0" in line)
+    check("判不出完成方式时只剩起止",
+          summary._meta_text(t0, t1, 0, 0) == "21:02:11 – 23:58:03")
+    check("多级别小块里用时分",
+          summary._meta_text(t0, t1, 3, 4, brief=True)
+          == "21:02 – 23:58 · FL 3 · NF 4")
+
+
+def test_helpers():
     check("中位数取中间两个的平均", abs(summary._median([1, 2, 3, 10]) - 2.5) < 1e-9)
     check("空列表的中位数是 0", summary._median([]) == 0.0)
+    # 走势图必须按时间正序画，而 daily_games 给的是倒序
+    g = [{"t0": 300.0}, {"t0": 100.0}, {"t0": 200.0}]
+    check("走势按开始时刻升序", [x["t0"] for x in summary._by_time(g)]
+          == [100.0, 200.0, 300.0])
+
+
+def test_detail_blocks():
+    """详细版真的多画了东西 —— 数调用，不数像素：版式改了也不会误红。"""
+    names = ("_trend", "_hist_bars", "_rows_fast", "_rows_stnb")
+    calls = dict((n, 0) for n in names)
+    orig = dict((n, getattr(summary, n)) for n in names)
+    for n in names:
+        def wrap(*a, _n=n, **kw):
+            calls[_n] += 1
+            return orig[_n](*a, **kw)
+        setattr(summary, n, wrap)
+    try:
+        summary.levels_detail_png([("e", "高级", row(games=12))],
+                                  {"e": _games(12)}, "0.28.0", "2026-11-15")
+    finally:
+        for n in names:
+            setattr(summary, n, orig[n])
+    check("详细版画了两张走势（用时 + stnb）", calls["_trend"] == 2)
+    check("详细版画了分布", calls["_hist_bars"] == 1)
+    check("详细版两栏极值：最快 5 局 + stnb 最低 5 局",
+          calls["_rows_fast"] == 1 and calls["_rows_stnb"] == 1)
+
+    # 只有一局：走势与分布都画不出来，只剩「全部 N 局」那一栏，别硬凑两栏
+    calls = dict((n, 0) for n in names)
+    for n in names:
+        def wrap2(*a, _n=n, **kw):
+            calls[_n] += 1
+            return orig[_n](*a, **kw)
+        setattr(summary, n, wrap2)
+    try:
+        summary.levels_detail_png([("e", "高级", row(games=1))],
+                                  {"e": _games(1)}, "0.28.0", "2026-11-15")
+    finally:
+        for n in names:
+            setattr(summary, n, orig[n])
+    check("只有一局时不画走势（分布试了一下也放弃）",
+          calls["_trend"] == 0 and calls["_hist_bars"] <= 1)
+    check("只有一局时只出一栏（不重复列同一局）",
+          calls["_rows_fast"] == 1 and calls["_rows_stnb"] == 0)
+
+    # stnb 那一栏按 stnb 升序挑，不是按用时挑
+    games = [{"time": 10.0, "stnb": 90.0}, {"time": 30.0, "stnb": 10.0},
+             {"time": 20.0, "stnb": 50.0}]
+    check("stnb 最低 5 局按 stnb 升序挑",
+          [g["stnb"] for g in summary._pick(games, "stnb")] == [10.0, 50.0, 90.0])
+    check("缺 stnb 的局直接跳过",
+          summary._pick([{"time": 1.0}, {"time": 2.0, "stnb": 3.0}], "stnb") ==
+          [{"time": 2.0, "stnb": 3.0}])
 
 
 def test_none_hooks():
@@ -257,9 +328,11 @@ def test_none_hooks():
 def main():
     test_png()
     test_detail()
-    test_span_text()
+    test_meta_text()
+    test_helpers()
     test_mascot()
     test_accent()
+    test_detail_blocks()
     test_none_hooks()
     test_clipboard()
     bad = sum(1 for _l, ok in checks if not ok)
