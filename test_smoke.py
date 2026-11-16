@@ -63,42 +63,97 @@ def main():
               not status.startswith("扫描失败") and "处理结果出错" not in status)
         shot(win, "shot_overview.png")
 
-        # PB 页：级别筛选 / 搜索 / 排序
+        # PB 页：级别单选 / 网格落位 / 搜索 / 指标 / 点格 / 双击播放
         win.show_tab("pb")
+        check("PB 级别是单选，没有「全部」",
+              set(win.pb_seg) == set(A.core.LEVELS))
+
         win.set_pb_level("b")
-        rows_b = win.tbl_pb.rows
-        expect_b = [r for r in win.pb_rows
+        win.update()
+        grid = win.pb_grid
+        idx = win._pb_index
+        expect_b = {int(r["bv"]): r for r in win.pb_rows
                     if r["level"] == "b"
-                    and (r.get("category") or "all") == win._pb_style]
-        check("PB 级别筛选只剩 b（%d 行）" % len(rows_b),
-              len(rows_b) == len(expect_b) and all(r["level"] == "b" for r in rows_b))
+                    and (r.get("category") or "all") == win._pb_style}
+        check("PB 网格只收 b 级（%d 格）" % len(idx),
+              set(idx) == set(expect_b) and grid.level == "b" and bool(idx))
         shot(win, "shot_pb.png")
 
-        win.set_pb_level("")
-        all_rows = win.tbl_pb.rows
-        check("PB 表有数据（%d 行）" % len(all_rows), bool(all_rows))
-        cats = {r.get("category") for r in win.pb_rows}
-        check("PB 只有全PB / NF PB 两类", cats <= {"all", "nf"} and "all" in cats)
-        check("全PB 行都标了获胜局风格",
-              all(r.get("style_cn") in ("NF", "FL", "—", "同速", "?")
-                  for r in win.pb_rows if r.get("category") == "all"))
+        # 网格的硬约束：BV n 必须落在第 n//10 行、第 n%10 列 —— 位置错了就
+        # 会「哪一段断着一眼看见」这个前提失效，界面上看不出来
+        cells = {}
+        for i, line in enumerate(grid._cells):
+            for c, cell in enumerate(line):
+                bv = grid._bv_of.get(cell)
+                if bv is not None:
+                    cells[bv] = (i, c)
+        check("每个 BV 都落在（十位段, 个位）对应的格子里",
+              set(cells) == set(idx)
+              and all(i * 10 + c + grid._row_start == bv
+                      for bv, (i, c) in cells.items()))
+        lo = (min(idx) // 10) * 10
+        check("第一行标签是 %d–%d" % (lo, lo + 9),
+              grid._rowlab[0].cget("text") == "%d–%d" % (lo, lo + 9))
 
+        # 搜索：只给命中格子描边，不把别的格子藏掉（藏了会造出假断层）
+        bv0 = max(idx)
+        cell0 = cells[bv0]
+        win.var_q.set(str(bv0))
+        win.render_pb()
+        check("搜 BV=%d 只命中这一格" % bv0, grid.hits == {bv0})
+        check("搜索不从网格里删格子",
+              set(win._pb_index) == set(expect_b) and len(cells) == len(idx))
+        check("命中格描了高亮边",
+              grid._cells[cell0[0]][cell0[1]].cget("highlightbackground")
+              == A.C_ACCENT3)
+        check("页面上写出搜到几格", "搜到 1 个" in win.pb_detail.cget("text"))
+        win.var_q.set("")
+        win.render_pb()
+
+        # 指标只换数字：格子位置、颜色都不该跟着动
+        row0 = idx[bv0]
+        before_bg = grid._cells[cell0[0]][cell0[1]].cget("bg")
+        win.set_pb_metric("bvs")
+        text_bvs = grid._cells[cell0[0]][cell0[1]].cget("text")
+        check("切到 3BV/s 后格子显示 %.2f" % float(row0.get("bvs") or 0),
+              text_bvs == "%.2f" % float(row0.get("bvs") or 0))
+        check("切指标不改格子底色",
+              grid._cells[cell0[0]][cell0[1]].cget("bg") == before_bg)
+        win.set_pb_metric("time")
+
+        # 单击看数据，双击播录像
+        grid.pick(bv0)
+        check("单击格子把成绩写进详情条",
+              ("BV %d" % bv0) in win.pb_detail.cget("text"))
+        played = []
+        orig_open = win.open_replay
+        win.open_replay = lambda p: played.append(p)
+
+        class _Ev(object):
+            widget = None
+
+        ev = _Ev()
+        ev.widget = grid._cells[cell0[0]][cell0[1]]
+        grid._on_double(ev)
+        check("双击格子用元扫雷播这一局",
+              bool(row0.get("path")) and played == [row0.get("path")])
+        win.open_replay = orig_open
+
+        # NF PB 榜：网格里不能混进全PB 的局
         win.set_pb_style("nf")
-        nf_rows = win.tbl_pb.rows
-        check("切到 NF PB 后只显示 NF 榜（%d 行）" % len(nf_rows),
-              all((r.get("category") or "all") == "nf" for r in nf_rows)
-              and len(nf_rows) == len([r for r in win.pb_rows
-                                       if (r.get("category") or "all") == "nf"]))
+        win.update()
+        check("NF PB 榜只收 NF 局（%d 格）" % len(win._pb_index),
+              all((r.get("category") or "all") == "nf"
+                  for r in win._pb_index.values()))
         win.set_pb_style("all")
 
-        # 网站 PB 合并：离线注入一条网站独有记录，验证表格与来源列（不联网）
+        # 网站 PB 合并：离线注入一条网站独有记录，验证网格与计数（不联网）
         win.site_pb = [{"level": "b", "bv": 999, "nf": False,
                         "timems": 1000, "video_id": 777, "rank": 1}]
         win._recompute_pb()
-        site_rows = [r for r in win.tbl_pb.rows if r["bv"] == 999]
-        check("网站独有 PB 会出现在全PB 表里",
-              len(site_rows) == 1 and site_rows[0].get("source") == "site"
-              and site_rows[0].get("source_cn") == "网站")
+        check("网站独有的 PB 会进网格（BV 999）",
+              999 in win._pb_index
+              and win._pb_index[999].get("source") == "site")
         check("PB 右上角标出网站 PB 条数",
               "网站 PB 1 条" in win.lbl_pb_count.cget("text"))
         win.site_pb = []
@@ -112,23 +167,21 @@ def main():
                           "timems": 1000, "video_id": 777, "rank": 1}], "")
         check("退出登录后迟到的网站 PB 被拒绝", not win.site_pb)
         win.oms.has_session = orig_has
-        if all_rows:
-            q = str(all_rows[0]["bv"])
-            base = len(all_rows)
-            win.var_q.set(q)
-            win.render_pb()
-            hits = win.tbl_pb.rows
-            check("搜索 BV=%s 有结果且全部命中（%d 行）" % (q, len(hits)),
-                  bool(hits) and len(hits) <= base
-                  and all(q in ("%s %s" % (r["bv"], r["file"])).lower() for r in hits))
-            win.var_q.set("")
-            win.render_pb()
 
-            win.tbl_pb._sort_by("time")
-            times = [r["time"] for r in win.tbl_pb.rows]
-            check("PB 按时间排序单调（%s）"
-                  % ("降序" if win.tbl_pb._sort_rev else "升序"),
-                  times == sorted(times, reverse=win.tbl_pb._sort_rev))
+        # 最近完成局的涨分列：有涨分局才出现，没有就连表头收起
+        disp = win.tbl_recent.tv.cget("displaycolumns")
+        if isinstance(disp, (tuple, list)):
+            shown = {str(x) for x in disp}
+        else:
+            shown = set(str(disp).replace(",", " ").split())
+        # displaycolumns 默认是 "#all"，意思是「一列都没藏」，等价于全部显示
+        if "#all" in shown:
+            shown = {c[0] for c in win.tbl_recent.columns_def}
+        gains = [r.get("gain") for r in win.tbl_recent.rows]
+        hot = sum(1 for g in gains if isinstance(g, float) and g > 0.05)
+        check("涨分列的出现/收起跟内容一致（%d 行有 %d 局涨分，显示=%s）"
+              % (len(gains), hot, "gain" in shown),
+              ("gain" in shown) == (hot > 0))
 
         # 前端成绩页：三张表都按 b 级渲染
         win.show_tab("top")
