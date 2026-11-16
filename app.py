@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.26.0"
+APP_VER = "0.27.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -5827,6 +5827,7 @@ def main():
             # 顺带画一张总结图：PIL / 字体 / 剪贴板这条路只有在打包后才可能
             # 出问题（少打一个模块、少打一个字体），回执里必须能看出来
             png = "summary_png=?"
+            mk = "mascot=?"
             try:
                 probe = {"date": "2026-11-17", "games": 1,
                          "t_from": 0.0, "t_till": 60.0, "span": 60.0,
@@ -5838,9 +5839,16 @@ def main():
                 png = "summary_png=%dx%d" % img.size
             except Exception as e:              # noqa: BLE001
                 png = "summary_png=ERR %r" % (e,)
+            # 贴纸是后加的 --add-data，漏打时图照样能出（只是右边空着），
+            # 所以必须单独报一行，否则「图能画」会被当成「一切都对」
+            try:
+                img2 = summary.mascot(120 * summary.SCALE)
+                mk = "mascot=%dx%d" % img2.size if img2 is not None else "mascot=missing"
+            except Exception as e:              # noqa: BLE001
+                mk = "mascot=ERR %r" % (e,)
             with open(out, "w", encoding="utf-8") as fh:
-                fh.write("version=%s\nfrozen=%s\n%s\n"
-                         % (APP_VER, bool(getattr(sys, "frozen", False)), png))
+                fh.write("version=%s\nfrozen=%s\n%s\n%s\n"
+                         % (APP_VER, bool(getattr(sys, "frozen", False)), png, mk))
         except Exception:
             pass
         return

@@ -74,28 +74,110 @@ def test_span():
 
 
 def test_png():
-    img = summary.daily_png(row(), "i", "中级", "0.26.0")
+    img = summary.daily_png(row(), "i", "中级", "0.27.0")
     w, h = img.size
-    check("单日图尺寸合理（宽 1000–1400）", 1000 <= w <= 1400 and 300 < h < 800)
+    plain = summary.daily_png(row(), "i", "中级", "0.27.0", with_mascot=False)
     m = summary._Sheet.MARGIN * summary.SCALE
+    gap = summary.MASCOT_GAP * summary.SCALE
+    # 贴纸比卡片高，所以图不只是变宽，也比"只有卡片"时更高
+    check("单日图：加贴纸后变宽、也变高（贴纸高出卡片顶部）",
+          w > plain.size[0] + gap + 600 and h > plain.size[1])
+    check("单日图：关掉贴纸回到卡片宽 + 两侧留边",
+          plain.size[0] == int((summary.D_W + 2 * summary._Sheet.MARGIN)
+                               * summary.SCALE))
     check("四角是底色（白卡片外留了一圈边）",
           img.getpixel((0, 0)) == _rgb(summary.PAGE_BG)
           and img.getpixel((w - 1, h - 1)) == _rgb(summary.PAGE_BG))
-    check("卡片内部是白底", img.getpixel((m + 20, m + 20)) == _rgb(summary.CARD_BG))
+    check("卡片内部是白底", img.getpixel((m + 20, h // 2)) == _rgb(summary.CARD_BG))
     check("字都在卡片里（边缘 2 px 内没有深色像素）",
           not _ink_near_edge(img, 3))
 
-    one = summary.today_png([("e", "高级", row())], "0.26.0")
+    # 贴纸：位置、大小、无缝
+    x0 = m + int(summary.D_W * summary.SCALE) + int(summary.MASCOT_GAP * summary.SCALE)
+    check("贴纸紧贴卡片右侧（间隔 = MASCOT_GAP）", x0 < w - m)
+    check("贴纸左上角与页底完全同色（白底被乘掉，不留方块）",
+          img.getpixel((x0 + 1, m + 1)) == _rgb(summary.PAGE_BG))
+    art, total = _block_stats(img, x0, m, w - m, h - m)
+    # 只查「有内容」和「四角仍是页底」：这一块被角色填掉七成是正常的，
+    # 真正要防的是整块变成一个白色方块（白底没被乘掉）。
+    check("贴纸区域真的有画（占 20%–90%）", 0.20 < art / float(total) < 0.90)
+    check("贴纸下沿与卡片下沿齐平（齐平那一行右侧有画）",
+          _row_has_ink(img, h - m - 2, x0, w - m))
+
+    one = summary.today_png([("e", "高级", row())], "0.27.0")
     three = summary.today_png([("b", "初级", row(games=7)),
                                ("i", "中级", row(games=9)),
-                               ("e", "高级", row())], "0.26.0")
+                               ("e", "高级", row())], "0.27.0")
     check("今日图：一个级别也能画", one is not None and one.size[0] > 800)
-    check("今日图：三个级别比一个级别高",
-          three.size[1] > one.size[1] and three.size[0] == one.size[0])
+    # 只有一级时改走单日卡版式（矩阵退化成一行，卡片太矮就成一条长带）
+    check("今日图：只有一个级别时套用单日卡版式",
+          one.size == summary.daily_png(row(), "e", "高级", "0.27.0").size)
+    # 贴纸高度到顶之后画布高度不再变，所以量的是**卡片**的白底高度
+    two = summary.today_png([("i", "中级", row(games=9)),
+                             ("e", "高级", row())], "0.27.0")
+    m2 = summary._Sheet.MARGIN * summary.SCALE
+    check("今日图：三个级别比两个级别的卡片高",
+          _card_height(three, m2 + 20) > _card_height(two, m2 + 20))
     check("今日图：没有级别时返回 None", summary.today_png([]) is None)
+    check("今日图：关掉贴纸回到卡片宽 + 两侧留边",
+          summary.today_png([("b", "初级", row(games=7)),
+                             ("i", "中级", row(games=9)),
+                             ("e", "高级", row())],
+                            with_mascot=False).size[0]
+          == int((summary.T_W + 2 * summary._Sheet.MARGIN) * summary.SCALE))
     check("图里不含时间戳之外的随机内容（同参数两次尺寸相同）",
-          summary.daily_png(row(), "i", "中级", "0.26.0").size
-          == summary.daily_png(row(), "i", "中级", "0.26.0").size)
+          summary.daily_png(row(), "i", "中级", "0.27.0").size
+          == summary.daily_png(row(), "i", "中级", "0.27.0").size)
+
+
+def test_mascot():
+    path = os.path.join(os.path.dirname(os.path.abspath(summary.__file__)),
+                        summary.MASCOT)
+    check("贴纸图随仓库带着（mascot.png）", os.path.isfile(path))
+    mk = summary.mascot(300)
+    check("按高度取到贴纸，宽高比不变（约 1.44）",
+          mk is not None and mk.height == 300
+          and 1.35 < mk.width / float(mk.height) < 1.55)
+    check("同一高度取第二次走缓存（同一个对象）", summary.mascot(300) is mk)
+
+    # 图丢了不能把整张卡片带崩：只是右边空着
+    old, cached = summary.MASCOT, dict(summary._MASCOT_CACHE)
+    summary.MASCOT = "no-such-mascot.png"
+    summary._MASCOT_CACHE.clear()
+    try:
+        img = summary.daily_png(row(), "i", "中级", "0.27.0")
+        check("贴纸缺失时照常出图，宽度回到无贴纸那样",
+              summary.mascot(300) is None
+              and img.size == summary.daily_png(row(), "i", "中级", "0.27.0",
+                                                with_mascot=False).size)
+    finally:
+        summary.MASCOT = old
+        summary._MASCOT_CACHE.clear()
+        summary._MASCOT_CACHE.update(cached)
+
+
+def _card_height(img, x):
+    """某一列上连续白卡片的高度（用来比较卡片本身有多高）。"""
+    px = img.load()
+    return sum(1 for y in range(img.height) if px[x, y] == _rgb(summary.CARD_BG))
+
+
+def _block_stats(img, x0, y0, x1, y1, step=3):
+    """统计区域里有多少像素不是页底色（用来判断「有没有画东西」）。"""
+    bg = _rgb(summary.PAGE_BG)
+    px = img.load()
+    art = total = 0
+    for x in range(x0, x1, step):
+        for y in range(y0, y1, step):
+            total += 1
+            if px[x, y] != bg:
+                art += 1
+    return art, total
+
+
+def _row_has_ink(img, y, x0, x1):
+    px = img.load()
+    return any(sum(px[x, y]) < 600 for x in range(x0 + 2, x1 - 2))
 
 
 def _rgb(hexcolor):
@@ -160,6 +242,7 @@ def main():
     test_text()
     test_span()
     test_png()
+    test_mascot()
     test_accent()
     test_none_hooks()
     test_clipboard()

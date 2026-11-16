@@ -60,6 +60,7 @@ echo 正在打包 %APP_EXE%.exe （v%APP_VER%）…第 %TRY% 次
   --icon "%~dp0icon.ico" ^
   --add-data "%~dp0icon.ico;." ^
   --add-data "%~dp0fonts;fonts" ^
+  --add-data "%~dp0mascot.png;." ^
   --add-data "%~dp0cacert.pem;." ^
   --hidden-import ms_toollib ^
   --collect-submodules ms_toollib ^
