@@ -26,8 +26,9 @@ def check(label, ok):
     print("%s %s" % ("OK  " if ok else "FAIL", label))
 
 
-def game(t0, t, bv, level="b", nf=True, path=None):
+def game(t0, t, bv, level="b", nf=True, path=None, stnb=None):
     return {"t0": t0, "t1": t0 + t, "time": t, "bv": bv, "bvs": bv / t,
+            "stnb": core.stnb_of(bv, t, level) if stnb is None else stnb,
             "level": level, "nf": nf, "path": path or "rec-%d" % t0,
             "date": core.day_text(t0)}
 
@@ -87,6 +88,13 @@ def test_daily_rows():
     check("3BV/s 的最高 / 平均 / 最低（2/2/2）",
           abs(day["bvs_max"] - 2.0) < 1e-9 and abs(day["bvs_min"] - 2.0) < 1e-9
           and abs(day["bvs_avg"] - 2.0) < 1e-9)
+    # stnb = C*bv/time^1.7，bv 越大、time 越小越高 → 三项必须与 time 反向
+    want = [core.stnb_of(20, 10, "b"), core.stnb_of(40, 20, "b"),
+            core.stnb_of(60, 30, "b")]
+    check("stnb 的最高 / 平均 / 最低（越大越好，与 time 反向）",
+          abs(day["stnb_max"] - max(want)) < 1e-9
+          and abs(day["stnb_min"] - min(want)) < 1e-9
+          and abs(day["stnb_avg"] - sum(want) / 3) < 1e-9)
     check("NF 局数只数 rce=0 的（2 局）", day["nf"] == 2)
     check("最快那局的路径能取到（给「播放最快」用）",
           day["best_path"].startswith("rec-"))

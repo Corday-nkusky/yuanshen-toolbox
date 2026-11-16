@@ -1529,8 +1529,9 @@ def daily_rows(games, level=None):
     完全不同，混着算的「平均时间」没有意义。
 
     返回的每行：date / games / t_from / t_till / span / best / avg / worst /
-    bvs_max / bvs_avg / bvs_min / nf / best_path。时间值都是秒（float），
-    t_from / t_till 是 epoch 秒，由界面格式化成 HH:MM:SS。
+    bvs_max / bvs_avg / bvs_min / stnb_max / stnb_avg / stnb_min / nf /
+    best_path。时间值都是秒（float），t_from / t_till 是 epoch 秒，
+    由界面格式化成 HH:MM:SS。stnb 越大越好（与 time 相反）。
     """
     days = {}
     for g in games:
@@ -1544,6 +1545,7 @@ def daily_rows(games, level=None):
             continue
         t = float(g.get("time") or 0.0)
         bvs = float(g.get("bvs") or 0.0)
+        stnb = float(g.get("stnb") or 0.0)
         t1 = g.get("t1") or (t0 + t)
         r = days.get(day)
         if r is None:
@@ -1552,6 +1554,7 @@ def daily_rows(games, level=None):
                 "t_from": t0, "t_till": t1,
                 "best": t, "worst": t, "t_sum": t,
                 "bvs_max": bvs, "bvs_min": bvs, "bvs_sum": bvs,
+                "stnb_max": stnb, "stnb_min": stnb, "stnb_sum": stnb,
                 "nf": 1 if g.get("nf") is True else 0,
                 "best_path": g.get("path") or "",
             }
@@ -1572,6 +1575,11 @@ def daily_rows(games, level=None):
         if bvs < r["bvs_min"]:
             r["bvs_min"] = bvs
         r["bvs_sum"] += bvs
+        if stnb > r["stnb_max"]:
+            r["stnb_max"] = stnb
+        if stnb < r["stnb_min"]:
+            r["stnb_min"] = stnb
+        r["stnb_sum"] += stnb
         if g.get("nf") is True:
             r["nf"] += 1
 
@@ -1590,6 +1598,9 @@ def daily_rows(games, level=None):
             "bvs_max": r["bvs_max"],
             "bvs_avg": r["bvs_sum"] / n,
             "bvs_min": r["bvs_min"],
+            "stnb_max": r["stnb_max"],
+            "stnb_avg": r["stnb_sum"] / n,
+            "stnb_min": r["stnb_min"],
             "nf": r["nf"],
             "best_path": r["best_path"],
         })

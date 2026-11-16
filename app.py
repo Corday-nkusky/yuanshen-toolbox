@@ -2,7 +2,8 @@
 
 兼容元扫雷（Metasweeper，.evf）与阿比特（Arbiter，.avf）的扫雷录像，直接显示：
   · 概览：三级别局数 / 三项最高
-  · 每日：按天看每天打了多少局、当天最快 / 平均 / 最慢
+  · 每日：按天看每天打了多少局、当天最快 / 平均 / 最慢（右键某天可复制
+    当天的总结，文本或图片）
   · PB 表：每个（级别 × BV）的最快完成局
   · 前端成绩：三级别 × time / bvs / stnb 的前五局
   · 上传：把本地完成局传到开源扫雷网（openms.top）
@@ -31,10 +32,11 @@ import journal
 import mslaunch
 import openms
 import paths
+import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.25.0"
+APP_VER = "0.26.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -689,13 +691,17 @@ class Table(ttk.Frame):
     """
 
     def __init__(self, master, columns, height=6, zebra=True, fit=True,
-                 selectmode="browse", iid_key=None, vbar=True, on_double=None):
+                 selectmode="browse", iid_key=None, vbar=True, on_double=None,
+                 on_menu=None):
         super().__init__(master, style="Card.TFrame")
         self.columns_def = columns
         self.zebra = zebra
         self.rows = []
         self.iid_key = iid_key          # 用某个字段当 iid，便于原地更新某一行
         self.on_double = on_double      # 自定义双击行为；None 时按后缀播放录像
+        # 右键菜单的自定义项：没有本地录像行的表（每日页）靠它挂自己的命令，
+        # 「播放 / 复制路径」那三项只对真有文件的行才有意义
+        self.on_menu = on_menu
         self._sort_key = None
         self._sort_rev = False
 
@@ -930,16 +936,23 @@ class Table(ttk.Frame):
         if not iid:
             return
         self.tv.selection_set(iid)
-        path = self._path_of(iid)
-        if not path:
-            return
-        top = self.winfo_toplevel()
         m = tk.Menu(self, tearoff=0)
-        if mslaunch.is_replay(path) and hasattr(top, "open_replay"):
-            m.add_command(label="用元扫雷播放",
-                          command=lambda p=path: top.open_replay(p))
-        m.add_command(label="复制路径", command=lambda p=path: self._copy_path_text(p))
-        m.add_command(label="打开所在文件夹", command=lambda p=path: self._reveal(p))
+        if self.on_menu is not None:
+            self.on_menu(iid, m)
+        path = self._path_of(iid)
+        if path:
+            top = self.winfo_toplevel()
+            if m.index("end") is not None:
+                m.add_separator()
+            if mslaunch.is_replay(path) and hasattr(top, "open_replay"):
+                m.add_command(label="用元扫雷播放",
+                              command=lambda p=path: top.open_replay(p))
+            m.add_command(label="复制路径",
+                          command=lambda p=path: self._copy_path_text(p))
+            m.add_command(label="打开所在文件夹",
+                          command=lambda p=path: self._reveal(p))
+        if m.index("end") is None:       # 两边都没东西可加，别弹一个空菜单
+            return
         try:
             m.tk_popup(event.x_root, event.y_root)
         finally:
@@ -2363,7 +2376,7 @@ class App(tk.Tk):
         self._scan_sig = None          # 上次扫描的 (文件数, 局数, 最新 mtime)，判断「真的变了吗」
         self._level = "b"
         self._pb_level = "b"
-        self._daily_level = "b"        # 每日页当前级别
+        self._daily_level = "e"        # 每日页当前级别：打开就看到高级（练习主场）
         self._daily_date = None        # 每日页选中的那一天
         self.daily_rows = []           # 每日页当前的行（测试与导出用）
         self._pb_style = "all"         # PB 榜：all=全PB / nf=NF PB
@@ -2988,6 +3001,10 @@ class App(tk.Tk):
                              "按时间倒序，取最近 100 局与近三天中较多者，"
                              "双击用元扫雷播放")
         head.pack(fill="x", pady=(sc(16), sc(6)))
+        # 今日总结：点一下选「文本 / 图片」，复制后直接粘到群里
+        self.btn_today = Pill(head, "今日总结", command=self._today_menu,
+                              accent=C_ACCENT2, padx=13, height=26)
+        self.btn_today.pack(side="right", padx=(sc(6), 0))
 
         cols = [
             ("level_cn", "级别", 72, "center", "str"),
@@ -3014,21 +3031,28 @@ class App(tk.Tk):
                                  padx=sc(18), pady=sc(8))
 
     # ---------- 每日 ----------
-    # 十列：日期 / 局数 / 起止 / 时间三项 / 3BV/s 三项。宽度合计约 840 px，
-    # 内容区约 1030 px，列会平摊多出来的宽度。这里的宽度只是初始值兼
-    # 组头定位的兜底（实际位置按 bbox 算，见 _draw_daily_groups）。
+    # 十三列：日期 / 局数 / 起止 / 时间三项 / 3BV/s 三项 / stnb 三项。
+    # 宽度是初始值兼组头定位的兜底（实际位置按 bbox 算，见 _draw_daily_groups）。
+    # 合计刻意压在 880 以内：窗口拉到最小（940）时列也不会被截掉右边 ——
+    # Tk 的 Treeview 只会平摊多出来的宽度，不够时**不会**自动缩列。
     DAILY_COLS = [
-        ("date", "日期", 104, "center", "str"),
-        ("games", "局数", 58, "e", "int"),
-        ("t_from", "起", 82, "center", "clock"),
-        ("t_till", "止", 82, "center", "clock"),
-        ("best", "最快", 86, "e", "f3"),
-        ("avg", "平均", 86, "e", "f3"),
-        ("worst", "最慢", 86, "e", "f3"),
-        ("bvs_max", "最高", 86, "e", "f3"),
-        ("bvs_avg", "平均", 86, "e", "f3"),
-        ("bvs_min", "最低", 86, "e", "f3"),
+        ("date", "日期", 94, "center", "str"),
+        ("games", "局数", 48, "e", "int"),
+        ("t_from", "起", 70, "center", "clock"),
+        ("t_till", "止", 70, "center", "clock"),
+        ("best", "最快", 70, "e", "f3"),
+        ("avg", "平均", 70, "e", "f3"),
+        ("worst", "最慢", 70, "e", "f3"),
+        ("bvs_max", "最高", 70, "e", "f3"),
+        ("bvs_avg", "平均", 70, "e", "f3"),
+        ("bvs_min", "最低", 70, "e", "f3"),
+        ("stnb_max", "最高", 58, "e", "f2"),
+        ("stnb_avg", "平均", 58, "e", "f2"),
+        ("stnb_min", "最低", 58, "e", "f2"),
     ]
+    DAILY_GROUPS = (("best", "worst", "时间（秒）"),
+                    ("bvs_max", "bvs_min", "3BV/s"),
+                    ("stnb_max", "stnb_min", "stnb"))
 
     def _build_daily(self):
         page = self.pages["daily"]
@@ -3070,8 +3094,9 @@ class App(tk.Tk):
             page, self.DAILY_COLS, height=8, iid_key="date",
             # 双击直接把这一行的日期传过去：Treeview 的选中变化事件是异步的，
             # 不能指望 _daily_date 在双击回调里已经更新（会打开上一天）
-            on_double=lambda iid: self._open_daily(iid))
-        # 十列合计比内容区窄，让它们平摊多出来的宽度：右边留一大块空白
+            on_double=lambda iid: self._open_daily(iid),
+            on_menu=self._daily_menu)
+        # 列合计比内容区窄，让它们平摊多出来的宽度：右边留一大块空白
         # 看着像表格没画完。组头的位置按实际列宽算（见 _draw_daily_groups）。
         for key in (c[0] for c in self.DAILY_COLS):
             self.tbl_daily.tv.column(key, stretch=True)
@@ -3079,9 +3104,12 @@ class App(tk.Tk):
         # 列宽随窗口变，组头的位置也跟着变：表格自己一换尺寸就重画
         self.tbl_daily.tv.bind("<Configure>", lambda _e: self._draw_daily_groups(),
                                add="+")
+        # 建完就把级别按钮点成默认那个（高级）。以前这里没调，页面默认画
+        # 初级但三个按钮全灰着 —— 用户看不出当前在看哪一级。
+        self.set_daily_level(self._daily_level)
 
     def _draw_daily_groups(self):
-        """在表头上方标出「时间」「3BV/s」两段。
+        """在表头上方标出「时间」「3BV/s」「stnb」三段。
 
         位置按 Treeview 的**实际**列宽算（bbox），不能用 DAILY_COLS 里的
         设计宽度 —— 列是 stretch 的，实际宽度取决于窗口。
@@ -3102,8 +3130,7 @@ class App(tk.Tk):
                     boxes[key] = (bb[0], bb[2])
         widths = [sc(c[2]) for c in self.DAILY_COLS]
         keys = [c[0] for c in self.DAILY_COLS]
-        for first, last, text in (("best", "worst", "时间（秒）"),
-                                  ("bvs_max", "bvs_min", "3BV/s")):
+        for first, last, text in self.DAILY_GROUPS:
             if first in boxes and last in boxes:
                 left = boxes[first][0] + 1
                 right = boxes[last][0] + boxes[last][1] + 1
@@ -3190,6 +3217,108 @@ class App(tk.Tk):
         if old is not None and old.winfo_exists():
             old.destroy()
         self._daily_dialog = DailyDialog(self, title, summary, out)
+
+    # ---------- 当日 / 今日总结 ----------
+    def _daily_menu(self, iid, menu):
+        """每日页的右键菜单：把这一天的记录抄成文本或图片。"""
+        row = self.tbl_daily._row_of(iid) if hasattr(self, "tbl_daily") else {}
+        day = row.get("date")
+        if not day:
+            return
+        menu.add_command(label="复制当日总结（文本）",
+                         command=lambda d=day: self._copy_daily("text", d))
+        menu.add_command(label="复制当日总结（图片）",
+                         command=lambda d=day: self._copy_daily("png", d))
+
+    def _daily_row(self, day=None):
+        """当天那一行（聚合后的）；day 为空就用当前选中的那天。"""
+        day = day or self._daily_date
+        if not day:
+            return None
+        for r in getattr(self, "daily_rows", []) or []:
+            if r["date"] == day:
+                return r
+        return None
+
+    def _copy_daily(self, kind, day=None):
+        row = self._daily_row(day)
+        if not row:
+            self.set_status("先在上面选一天", "dim")
+            return
+        cn = core.LEVEL_CN[self._daily_level]
+        if kind == "text":
+            text = summary.daily_text(row, cn, APP_VER)
+            try:
+                summary.copy_text(self, text)
+            except tk.TclError as e:
+                self.set_status("复制失败：%s" % e, "err")
+                return
+            self.set_status("已复制 %s %s 的总结（文本，%d 行）"
+                            % (row["date"], cn, text.count("\n") + 1), "ok")
+            return
+        try:
+            img = summary.daily_png(row, self._daily_level, cn, APP_VER)
+        except Exception as e:                  # noqa: BLE001
+            diag.log.exception("画当日总结图失败")
+            self.set_status("画图失败：%s" % e, "err")
+            return
+        if not summary.copy_image(img):
+            self.set_status("图片复制失败（剪贴板被别的程序占着？）", "err")
+            return
+        self.set_status("已复制 %s %s 的总结（图片 %d×%d）"
+                        % (row["date"], cn, img.size[0], img.size[1]), "ok")
+
+    def _today_rows(self):
+        """今天有完成局的级别：[(级别, 名称, 该天聚合行), ...]。"""
+        today = core.day_text(time.time())
+        out = []
+        for lv in core.LEVELS:
+            r = next((x for x in core.daily_rows(self.games, lv)
+                      if x["date"] == today), None)
+            if r:
+                out.append((lv, core.LEVEL_CN[lv], r))
+        return today, out
+
+    def _today_menu(self):
+        m = tk.Menu(self, tearoff=0)
+        m.add_command(label="复制今日总结（文本）",
+                      command=lambda: self._copy_today("text"))
+        m.add_command(label="复制今日总结（图片）",
+                      command=lambda: self._copy_today("png"))
+        b = self.btn_today
+        try:
+            m.tk_popup(b.winfo_rootx(),
+                       b.winfo_rooty() + b.winfo_height() + sc(2))
+        finally:
+            m.grab_release()
+
+    def _copy_today(self, kind):
+        """今天的总结：把有局的级别并在一张图 / 一段文字里。"""
+        today, items = self._today_rows()
+        if not items:
+            self.set_status("今天还没有完成局", "dim")
+            return
+        if kind == "text":
+            text = summary.today_text([(cn, r) for _lv, cn, r in items],
+                                      APP_VER, today)
+            try:
+                summary.copy_text(self, text)
+            except tk.TclError as e:
+                self.set_status("复制失败：%s" % e, "err")
+                return
+            self.set_status("已复制今日总结（文本，%d 个级别）" % len(items), "ok")
+            return
+        try:
+            img = summary.today_png(items, APP_VER, today)
+        except Exception as e:                  # noqa: BLE001
+            diag.log.exception("画今日总结图失败")
+            self.set_status("画图失败：%s" % e, "err")
+            return
+        if img is None or not summary.copy_image(img):
+            self.set_status("图片复制失败（剪贴板被别的程序占着？）", "err")
+            return
+        self.set_status("已复制今日总结（图片 %d×%d，%d 个级别）"
+                        % (img.size[0], img.size[1], len(items)), "ok")
 
     def _build_pb(self):
         page = self.pages["pb"]
@@ -5148,7 +5277,7 @@ class App(tk.Tk):
         self._recompute_pb()          # 顺带重画最近完成局（那列要给「距当前 PB」）
         self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
-        self.render_daily()             # 每日页跟着新数据重算（几百行，几毫秒）
+        self.set_daily_level(self._daily_level)   # 顺带把级别按钮点亮
         self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
 
         elapsed = info["elapsed"] * 1000
@@ -5695,9 +5824,23 @@ def main():
         # 判断产物有没有被安全软件当场拦掉（被拦时进程起不来，回执也不会出现）。
         try:
             out = os.path.join(os.environ.get("TEMP") or ".", "ytb-selftest.txt")
+            # 顺带画一张总结图：PIL / 字体 / 剪贴板这条路只有在打包后才可能
+            # 出问题（少打一个模块、少打一个字体），回执里必须能看出来
+            png = "summary_png=?"
+            try:
+                probe = {"date": "2026-11-17", "games": 1,
+                         "t_from": 0.0, "t_till": 60.0, "span": 60.0,
+                         "best": 1.0, "avg": 1.0, "worst": 1.0,
+                         "bvs_max": 1.0, "bvs_avg": 1.0, "bvs_min": 1.0,
+                         "stnb_max": 1.0, "stnb_avg": 1.0, "stnb_min": 1.0,
+                         "nf": 1}
+                img = summary.daily_png(probe, "e", "高级", APP_VER)
+                png = "summary_png=%dx%d" % img.size
+            except Exception as e:              # noqa: BLE001
+                png = "summary_png=ERR %r" % (e,)
             with open(out, "w", encoding="utf-8") as fh:
-                fh.write("version=%s\nfrozen=%s\n"
-                         % (APP_VER, bool(getattr(sys, "frozen", False))))
+                fh.write("version=%s\nfrozen=%s\n%s\n"
+                         % (APP_VER, bool(getattr(sys, "frozen", False)), png))
         except Exception:
             pass
         return

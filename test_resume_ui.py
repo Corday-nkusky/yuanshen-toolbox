@@ -310,6 +310,13 @@ def main():
         def add_command(self, label, command):
             self.items.append(label)
 
+        def add_separator(self):
+            self.items.append("-")
+
+        def index(self, what):
+            # 与 tk.Menu 一致：空菜单返回 None，否则返回最后一项的下标
+            return None if not self.items else len(self.items) - 1
+
         def tk_popup(self, x, y):
             pass
 

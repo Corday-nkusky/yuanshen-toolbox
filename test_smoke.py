@@ -6,6 +6,7 @@
 import os
 import sys
 import time
+import tkinter as tk
 
 import app as A
 from PIL import ImageGrab
@@ -67,6 +68,9 @@ def main():
         win.show_tab("daily")
         win.update()
         check("每日页有级别单选（三个）", set(win.daily_seg) == set(A.core.LEVELS))
+        check("默认看高级，且按钮已经点亮（不是三个全灰）",
+              win._daily_level == "e" and win.daily_seg["e"]._sel
+              and not win.daily_seg["b"]._sel)
         rows = win.daily_rows
         check("每日页列出有局的日子（%d 天）" % len(rows), bool(rows))
         lv_total = sum(1 for g in win.games if g["level"] == win._daily_level)
@@ -83,23 +87,19 @@ def main():
         # 组头必须压在各自那三列上方：列是 stretch 的，位置只能按实际列宽算，
         # 用设计宽度硬算会偏移（改过一次，所以钉在这里）
         kids = win.tbl_daily.tv.get_children()
-        boxes = {}
-        for key in ("best", "worst", "bvs_max", "bvs_min"):
-            bb = win.tbl_daily.tv.bbox(kids[0], key)
-            if bb:
-                boxes[key] = (bb[0], bb[0] + bb[2])
         labels = {win.daily_strip.itemcget(i, "text"): win.daily_strip.coords(i)[0]
                   for i in win.daily_strip.find_all()}
-        if len(boxes) == 4 and len(labels) == 2:
-            def centered(text, first, last):
-                mid = (boxes[first][0] + boxes[last][1]) / 2.0
-                return abs(labels[text] - mid) <= A.sc(24)
-            check("组头「时间（秒）」居中最快–最慢三列",
-                  centered("时间（秒）", "best", "worst"))
-            check("组头「3BV/s」居中最高–最低三列",
-                  centered("3BV/s", "bvs_max", "bvs_min"))
-        else:
-            print("跳过：组头位置没量到（表格还没布局）")
+        check("三组组头都在（时间 / 3BV/s / stnb）",
+              set(labels) == {g[2] for g in A.App.DAILY_GROUPS})
+        for first, last, name in A.App.DAILY_GROUPS:
+            a = win.tbl_daily.tv.bbox(kids[0], first)
+            b = win.tbl_daily.tv.bbox(kids[0], last)
+            if not a or not b or name not in labels:
+                print("跳过：组头 %s 没量到（表格还没布局）" % name)
+                continue
+            mid = (a[0] + b[0] + b[2]) / 2.0
+            check("组头「%s」居中自己那三列" % name,
+                  abs(labels[name] - mid) <= A.sc(6))
         # 抽一天手算：局数与算术平均都要对得上，否则口径就是错的
         r0 = rows[0]
         day_games = A.core.daily_games(win.games, r0["date"], win._daily_level)
@@ -113,7 +113,6 @@ def main():
         win._on_daily_pick()
         check("选中一天，明细条写出摘要",
               r0["date"] in win.lbl_daily_detail.cget("text"))
-        shot(win, "shot_daily.png")
         # 双击某天 → 当天明细对话框
         win._open_daily()
         dlg = win._daily_dialog
@@ -147,7 +146,42 @@ def main():
                   and len(win._daily_dialog.tab.rows) == want
                   and win._daily_dialog.tab.rows[0]["date"] == rows[0]["date"])
             win._daily_dialog.destroy()
+        # 右键某天：把当天记录抄成文本 / 图片
+        menu = tk.Menu(win, tearoff=0)
+        win._daily_menu(r0["date"], menu)
+        items = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)]
+        check("右键菜单有「文本 / 图片」两项",
+              items == ["复制当日总结（文本）", "复制当日总结（图片）"])
+        win._copy_daily("text", r0["date"])
+        got = win.clipboard_get()
+        check("当日总结（文本）进了剪贴板，首行带日期与级别",
+              got.splitlines()[0] == "%s · %s · %d 局"
+              % (r0["date"], A.core.LEVEL_CN[win._daily_level], r0["games"]))
+        check("文本里有 stnb 一行", "stnb：最高" in got)
+        win._copy_daily("png", r0["date"])
+        check("当日总结（图片）复制成功",
+              "图片" in win.lbl_status.cget("text"))
+        shot(win, "shot_daily.png")
+
+        # 概览页的「今日总结」按钮：今天的几个级别并在一张图 / 一段文字里
         win.show_tab("overview")
+        win.update()
+        check("概览页有「今日总结」按钮",
+              win.btn_today.winfo_exists() == 1)
+        today, titems = win._today_rows()
+        win._copy_today("text")
+        if titems:
+            text = win.clipboard_get()
+            check("今日总结（文本）首行是日期 + 总局数",
+                  text.splitlines()[0].startswith(today)
+                  and text.splitlines()[0].endswith(
+                      "共 %d 局" % sum(r["games"] for _k, _c, r in titems)))
+            win._copy_today("png")
+            check("今日总结（图片）复制成功",
+                  "图片" in win.lbl_status.cget("text"))
+        else:
+            check("今天没局时给提示，不弹空图",
+                  "还没有完成局" in win.lbl_status.cget("text"))
 
         # PB 页：级别单选 / 网格落位 / 搜索 / 指标 / 点格 / 双击播放
         win.show_tab("pb")
