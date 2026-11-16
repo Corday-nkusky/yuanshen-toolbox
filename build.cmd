@@ -5,7 +5,25 @@ cd /d "%~dp0"
 rem Needs a Python 3.8+ that includes tkinter, plus:
 rem   pip install pyinstaller ms-toollib
 rem If the default python is not the right one:  set PYTHON=<full path to python.exe>
+rem
+rem Otherwise pick the first venv below that can already import PyInstaller.
+rem This project has always been built with the one in %USERPROFILE%\venvs\ytb-build
+rem (Python 3.13 + pyinstaller + ms-toollib). It used to live in %TEMP%, which Windows
+rem clears; once it was gone nobody could find the right interpreter again. Keep both.
+if not defined PYTHON (
+  for %%P in (
+    "%~dp0.buildvenv\Scripts\python.exe"
+    "%USERPROFILE%\venvs\ytb-build\Scripts\python.exe"
+    "%TEMP%\ytb-build\Scripts\python.exe"
+  ) do (
+    if not defined PYTHON (
+      "%%~P" -c "import PyInstaller" >nul 2>&1
+      if not errorlevel 1 set "PYTHON=%%~P"
+    )
+  )
+)
 if not defined PYTHON set PYTHON=python
+echo 使用 Python：%PYTHON%
 
 echo 正在生成版本资源 …
 "%PYTHON%" "%~dp0make_version_info.py"

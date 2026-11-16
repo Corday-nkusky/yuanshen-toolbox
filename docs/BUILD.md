@@ -3,9 +3,19 @@
 ## 命令
 
 ```bat
-set PYTHON=<带 tkinter 的 python.exe>
 build.cmd
 ```
+
+不用先设解释器。`build.cmd` 按 `PYTHON` 环境变量 → 仓库内 `.buildvenv\` →
+`%USERPROFILE%\venvs\ytb-build\` → `%TEMP%\ytb-build\` → PATH 里的 `python` 顺序找，
+判据是**那个解释器能不能 `import PyInstaller`**（不是文件在不在），选中的会打印在第一行。
+
+本机实际在用的是 `%USERPROFILE%\venvs\ytb-build\`：Python 3.13.5 + PyInstaller 6.22.3 +
+ms-toollib 1.5.20（系统里的 anaconda / Python313 / uv 那几套都**没有** PyInstaller，
+装的就是这一个）。它原先放在 `%TEMP%\ytb-build\`，被 Windows 清理过一次，之后就
+反复出现「这台机器装不了包」的误判 —— 所以挪出来，**别再往 TEMP 里放**。
+
+只有要临时换解释器时才 `set PYTHON=<带 tkinter 的 python.exe>`。
 
 `build.cmd` 先调 `make_version_info.py` 从 `app.py` 的 `APP_VER` 生成
 `version_info.txt`，再调 PyInstaller 出单文件 exe，**启动自检通过后**才自动归档 + 部署。
