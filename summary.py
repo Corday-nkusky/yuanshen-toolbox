@@ -43,24 +43,17 @@ def _clock(t):
     return core.clock_text(t)
 
 
-def span_text(sec):
-    """2 小时 55 分 / 43 分 12 秒 / 18 秒。"""
-    sec = int(round(float(sec or 0)))
-    h, rest = divmod(sec, 3600)
-    m, s = divmod(rest, 60)
-    if h:
-        return "%d 小时 %d 分" % (h, m)
-    if m:
-        return "%d 分 %d 秒" % (m, s)
-    return "%d 秒" % s
+def _style_text(row):
+    """完成方式：FL（插旗）与 NF（无旗）各多少局。
 
-
-def _nf_text(row):
-    n = int(row.get("nf") or 0)
-    g = int(row.get("games") or 0)
-    if not g or not n:          # 一局 NF 都没有就别写一行「NF 0（0%）」
+    两者互斥，加起来不一定等于总局数 —— 录像里判不出模式的局（老阿比特
+    的 avf 没有元数据）两边都不算，这种日子若一局都判不出，整段不写。
+    """
+    fl = int(row.get("fl") or 0)
+    nf = int(row.get("nf") or 0)
+    if not fl and not nf:
         return ""
-    return "NF %d（%.0f%%）" % (n, 100.0 * n / g)
+    return "FL %d · NF %d" % (fl, nf)
 
 
 def _metric_lines(row):
@@ -85,12 +78,10 @@ def daily_text(row, level_cn, ver=""):
     if not row:
         return ""
     lines = ["%s · %s · %d 局" % (row["date"], level_cn, row["games"]),
-             "%s – %s（%s）"
-             % (_clock(row["t_from"]), _clock(row["t_till"]),
-                span_text(row.get("span")))]
-    nf = _nf_text(row)
-    if nf:
-        lines.append(nf)
+             "%s – %s" % (_clock(row["t_from"]), _clock(row["t_till"]))]
+    style = _style_text(row)
+    if style:
+        lines.append(style)
     lines.extend(_metric_lines(row))
     if ver:
         lines.append("—— YuanshenToolbox v%s" % ver)
@@ -108,8 +99,8 @@ def today_text(items, ver="", day=""):
     lines = [head, " · ".join("%s %d 局" % (cn, r["games"]) for cn, r in items)]
     for cn, r in items:
         lines.append("")
-        nf = _nf_text(r)
-        tail = " · " + nf if nf else ""
+        style = _style_text(r)
+        tail = " · " + style if style else ""
         lines.append("%s · %d 局%s · %s – %s"
                      % (cn, r["games"], tail, _clock(r["t_from"]),
                         _clock(r["t_till"])))
@@ -172,13 +163,13 @@ def _px(v):
     return int(round(v * SCALE))
 
 
-# ------------------------------------------------------------ 右边的贴纸
-# 卡片右边站一个角色，纯粹为了好看。它必须「无缝」：白底图直接贴上去会在
-# 浅粉页底上留一个白方块，所以贴纸预处理成底色=纯白，绘制时按乘性混合
-# （multiply）贴 —— 白的部分正好变成页底色，浅色的花瓣也不会被抠出毛边。
+# ---------------------------------------------------- 卡片下方的角色贴纸
+# 贴纸必须「无缝」：白底图直接贴会在浅粉页底上留一个白方块，所以素材入库时
+# 底色归一成纯白，绘制时按乘性混合（multiply）贴 —— 白的部分正好变成页底色，
+# 浅色花瓣也不会被抠出毛边。
 MASCOT = "mascot.png"
-MASCOT_GAP = 18            # 贴纸与卡片之间的空隙（逻辑像素）
-MASCOT_MAX = 490           # 上限：mascot.png 原生高度的一半（逻辑像素），再高就是放大，会糊
+MASCOT_GAP = 16            # 卡片与贴纸之间的空隙（逻辑像素）
+MASCOT_MAX = 490           # 上限：素材原生高度的一半（逻辑像素），再高就是放大，会糊
 _MASCOT_ASPECT = None          # 素材原生宽高比，第一次用到时从文件量
 _MASCOT_CACHE = {}
 
@@ -227,20 +218,16 @@ def _mascot_aspect():
     return _MASCOT_ASPECT
 
 
-def _mascot_h(card_h, card_w, ratio=1.0, target=None):
-    """贴纸高度（设备像素）。
+def _mascot_h(card_w):
+    """贴纸高度（设备像素）：宽度跟着卡片走。
 
-    贴纸的宽高比是固定的（`_mascot_aspect()`），所以整张图的宽高比只由
-    「卡片宽」和「贴纸高」两个数决定：比例 ≈ 贴纸宽高比 + (卡片宽 + 间隔) / 贴纸高。
-    只按卡片高度定倍数的话，局数少的「今日」卡（只有一级）会又矮又宽，
-    又变回长条，所以这里按**目标比例**反推高度，再夹在卡片高度倍数与
-    素材原生高度之间。素材只有 988 px 高，超过就是放大，会糊。
+    贴在卡片下方时，贴纸是一个「人物横幅」，宽度撑到卡片宽才不显得像个小
+    图标；但素材只有 988 px 高，超过原生高度就是放大，会糊，所以高度封顶，
+    这时贴纸会比卡片窄、居中站。
     """
-    want = card_h * ratio
-    if target:
-        want = max(want, (card_w + _px(MASCOT_GAP))
-                   / max(0.2, float(target) - _mascot_aspect()))
-    return int(min(max(want, card_h * 0.9), _px(MASCOT_MAX)))
+    aspect = _mascot_aspect()
+    h = min(card_w / float(aspect), _px(MASCOT_MAX))
+    return int(max(1, round(h)))
 
 
 class _Sheet:
@@ -248,6 +235,10 @@ class _Sheet:
 
     ImageDraw 的圆角矩形与中文都靠 FreeType，字号必须是像素值，所以所有
     坐标在这里乘 SCALE —— 画图代码里就不必到处写 * 2。
+
+    版式是**竖的**：白卡片在上、角色贴纸在下方居中。做成横图（贴纸站右侧）
+    时整张 2.5:1，发到手机竖屏上只占中间一条，字得点开放大才看得清；竖图
+    的宽度就等于卡片宽，1080 宽的屏上一比一显示，字号才是画出来的那么大。
 
     排版坐标是相对「白卡片」的，外圈留 MARGIN 的底色：发到群里时白卡片
     自带一圈边，贴在深色背景上也不会糊成一整块。
@@ -272,33 +263,26 @@ class _Sheet:
     def text_w(self, s, size, bold=False):
         return _font(size, bold).getlength(s) / float(SCALE)
 
-    def render(self, height, mascot_ratio=None, target=None):
+    def render(self, height):
         from PIL import Image, ImageChops, ImageDraw
-        m = self.MARGIN
-        left = _px(m)
+        m = _px(self.MARGIN)
         card_w = _px(self.W)
         card_h = _px(height)
-        # 贴纸可以比卡片高：高出来的部分向上出图，卡片在整个内容里**竖直居中**。
-        # 试过让卡片贴底、贴纸只向上冒头，结果卡片上方留一条空粉底，重心明显偏下。
-        ratio = 1.0 if mascot_ratio is None else mascot_ratio
-        mk = None
-        if self.with_mascot:
-            mk = mascot(_mascot_h(card_h, card_w, ratio, target))
-        mk_h = mk.height if mk is not None else 0
-        span = max(card_h, mk_h)
-        card_top = _px(m) + (span - card_h) // 2
-        card_bottom = card_top + card_h
-        width = left + card_w + (_px(MASCOT_GAP) + mk.width if mk else 0) + left
-        img = Image.new("RGB", (width, _px(m) + span + _px(m)), PAGE_BG)
+        mk = mascot(_mascot_h(card_w)) if self.with_mascot else None
+        # 贴纸底边直接贴住图片下沿：人物是从画面底下冒出来的，底边再留一圈
+        # 粉底会像一张被裁掉脚的立牌，越看越别扭。没有贴纸时照常四面留边。
+        tail = (_px(MASCOT_GAP) + mk.height) if mk is not None else m
+        width = m + card_w + m
+        img = Image.new("RGB", (width, m + card_h + tail), PAGE_BG)
         if mk is not None:
-            # 贴纸底边压在同一条线上：图里的人是齐胸口切的，飘着会像悬空
+            # 乘性混合：贴纸的纯白底乘上页底色还是页底色，等于白底被「去掉」
             page = Image.new("RGB", mk.size, PAGE_BG)
             img.paste(ImageChops.multiply(mk, page),
-                      (left + card_w + _px(MASCOT_GAP), _px(m) + span - mk_h))
+                      (m + (card_w - mk.width) // 2, m + card_h + _px(MASCOT_GAP)))
         d = ImageDraw.Draw(img)
-        d.rounded_rectangle((left - 1, card_top - 1, left + card_w, card_bottom),
-                            radius=_px(16), fill=CARD_BG, outline=C_LINE, width=1)
-        off = card_top          # 所有排版坐标都是相对卡片左上角的
+        d.rounded_rectangle((m - 1, m - 1, m + card_w, m + card_h),
+                            radius=_px(18), fill=CARD_BG, outline=C_LINE, width=1)
+        off = m                 # 所有排版坐标都是相对卡片左上角的
         for op in self.ops:
             if op[0] == "t":
                 _k, x, y, s, f, color, anchor = op
@@ -315,6 +299,7 @@ class _Sheet:
                 d.line((_px(x1), _px(y1) + off, _px(x2), _px(y2) + off),
                        fill=color, width=max(1, _px(width)))
         return img
+
 
 
 def _chip(sh, x, y, text, accent, size=12, padh=9, h=22):
@@ -336,148 +321,125 @@ def _footer(sh, y, ver, now=None):
 PAD = 30
 
 # 版式尺寸集中在这里，改比例只动这几行。
-# 卡片是横表，宽度只由列数决定；想把整张图从「细长条」拉回协调，杠杆只有
-# 两个：收窄列宽、让贴纸比卡片高 —— 贴纸宽高比 1.44，与卡片等高时它自己就
-# 添了 1.44 倍高度那么宽，整张图必然还是 3.5:1。
+# 版式是竖的：白卡片在上、角色贴纸在下面居中。卡片宽度就是图片宽度，所以
+# 这个数直接决定手机上的缩放比 —— 1080 宽的屏，卡片做到 540（2 倍渲染 →
+# 1136 px）正好一比一，字号是画出来的那么大；做成横图（贴纸站右侧）整张
+# 2.5:1，在竖屏上只占中间一条，字全被缩小了。
 # 卡片宽度**算出来**，不要手写：数字是右对齐在每列右边界 -8 处，手写宽度
-# 一旦与列宽脱节，最右那一列就会顶出卡片（今天就顶出去过一次）。
-D_LAB_W, D_COL_W, D_ROW_H = 96, 128, 46
+# 一旦与列宽脱节，最右那一列就会顶出卡片。
+D_LAB_W, D_COL_W, D_ROW_H = 96, 128, 50
 D_W = PAD * 2 + D_LAB_W + D_COL_W * 3
-D_MASCOT_RATIO = 1.25       # 贴纸高度 = 卡片高度 × 它；略高一点，图才不扁
-D_TARGET = 2.62             # 整张图的目标宽高比（2.0 以下就得让角色大过卡片，不划算）
-T_LAB_W, T_GAMES_W, T_COL_W, T_ROW_H = 70, 50, 64, 46
-T_W = PAD * 2 + T_LAB_W + T_GAMES_W + T_COL_W * 9
-T_MASCOT_RATIO = 1.4        # 这张卡片更宽，贴纸也得更高，两侧才不失衡
-T_TARGET = 2.85
 
 
 def daily_png(row, level_key, level_cn, ver="", now=None, with_mascot=True,
-              mascot_ratio=None, tag=""):
-    """一天的卡片：标题 + 起止/NF + 三行指标表，右边站个角色。"""
+              tag=""):
+    """一天的卡片：标题 + 起止/FL·NF + 三行指标表，下面站个角色。"""
     accent = LEVEL_ACCENT.get(level_key, (C_INK, CARD_BG))[0]
     W = D_W
     sh = _Sheet(W, with_mascot=with_mascot)
     y = 32
     title = row["date"] + tag
-    sh.text(PAD, y, title, 24, C_INK, bold=True)
-    tw = sh.text_w(title, 24, True)
-    _chip(sh, PAD + tw + 12, y + 4, level_cn, accent, size=13, padh=10, h=24)
-    sh.text(W - PAD, y + 4, "%d 局" % row["games"], 16, C_INK, True, anchor="rt")
+    sh.text(PAD, y, title, 26, C_INK, bold=True)
+    tw = sh.text_w(title, 26, True)
+    _chip(sh, PAD + tw + 12, y + 5, level_cn, accent, size=13, padh=10, h=24)
+    sh.text(W - PAD, y + 5, "%d 局" % row["games"], 18, C_INK, True, anchor="rt")
 
-    meta = "%s – %s · %s" % (_clock(row["t_from"]), _clock(row["t_till"]),
-                             span_text(row.get("span")))
-    nf = _nf_text(row)
-    if nf:
-        meta += " · " + nf
-    sh.text(PAD, y + 50, meta, 13, C_DIM)
+    # 起止是「这一天从几点打到几点」，不再顺手算一句「历时 12 小时 48 分」：
+    # 手机上看的人要的是区间本身，不是我们再帮他做的一位数减法。
+    meta = "%s – %s" % (_clock(row["t_from"]), _clock(row["t_till"]))
+    style = _style_text(row)
+    if style:
+        meta += " · " + style
+    sh.text(PAD, y + 54, meta, 14, C_DIM)
 
     # 指标表：指标名 + 三列数字（最好 / 平均 / 最差）。三行指标的「好」
     # 方向不同（时间越小越好、3BV/s 与 stnb 越大越好），所以表头只能
     # 用「最好 / 平均 / 最差」这种与方向无关的说法。
-    top = y + 50 + 40
+    top = y + 54 + 40
     lab_w, col_w = D_LAB_W, D_COL_W
     x0 = PAD + lab_w
     heads = ("最好", "平均", "最差")
     for i, h in enumerate(heads):
-        sh.text(x0 + col_w * (i + 1) - 8, top, h, 12, C_DIM, anchor="rt")
-    sh.line(PAD, top + 24, W - PAD, top + 24, C_LINE)
+        sh.text(x0 + col_w * (i + 1) - 8, top, h, 13, C_DIM, anchor="rt")
+    sh.line(PAD, top + 26, W - PAD, top + 26, C_LINE)
 
     rows = (("时间（秒）", (row["best"], row["avg"], row["worst"]), 3),
             ("3BV/s", (row["bvs_max"], row["bvs_avg"], row["bvs_min"]), 3),
-            ("stnb", (row["stnb_max"], row["stnb_avg"], row["stnb_min"]), 3))
+            ("stnb", (row["stnb_max"], row["stnb_avg"], row["stnb_min"]), 2))
     row_h = D_ROW_H
     for j, (label, vals, prec) in enumerate(rows):
-        ry = top + 36 + row_h * j
-        sh.text(PAD, ry, label, 15, C_INK)
+        ry = top + 38 + row_h * j
+        sh.text(PAD, ry, label, 16, C_INK)
         for i, v in enumerate(vals):
-            sh.text(x0 + col_w * (i + 1) - 8, ry, "%.*f" % (prec, v), 16,
+            sh.text(x0 + col_w * (i + 1) - 8, ry, "%.*f" % (prec, v), 18,
                     C_INK, True, anchor="rt")
         if j < len(rows) - 1:
-            sh.line(PAD, ry + row_h - 13, W - PAD, ry + row_h - 13, C_RULE)
-    bottom = top + 36 + row_h * len(rows) - 13
+            sh.line(PAD, ry + row_h - 14, W - PAD, ry + row_h - 14, C_RULE)
+    bottom = top + 38 + row_h * len(rows) - 14
 
-    fy = bottom + 26
+    fy = bottom + 28
     _footer(sh, fy, ver, now)
-    return sh.render(fy + 28, mascot_ratio if mascot_ratio is not None
-                     else D_MASCOT_RATIO, D_TARGET)
+    return sh.render(fy + 30)
 
 
-def today_png(items, ver="", day="", now=None, with_mascot=True,
-              mascot_ratio=None):
-    """今天三个级别并排：级别 / 局数 / 时间三项 / 3BV/s 三项 / stnb 三项。
+def today_png(items, ver="", day="", now=None, with_mascot=True):
+    """今天有局的几个级别，一个级别一块往下排。
 
+    以前是「级别 × 九列」的横表，一行一个级别：那种表只有横屏才看得下去，
+    竖屏手机上字缩到看不清。三个块上下排，列还是那三列（最好 / 平均 / 最差），
+    只是每块自带级别标题，竖着读就行。
     不出一行「合计」：三个级别的 BV 分布不同，把它们的平均时间再平均一次
     没有任何意义（合计局数放在标题右边就够了）。
     """
-    from PIL import Image
     items = [(k, cn, r) for k, cn, r in items if r]
     if not items:
         return None
     day = day or items[0][2]["date"]
     if len(items) == 1:
-        # 只有一级时矩阵退化成一行，卡片又矮又宽，图必然拉成长条。这一级
-        # 的「今日」本来就是一张单日卡，直接用它：还能多给出起止与 NF。
+        # 只有一级时矩阵退化成一行，直接套单日卡版式：还能多给出起止与 FL/NF。
         k, cn, r = items[0]
-        return daily_png(r, k, cn, ver, now, with_mascot, mascot_ratio,
+        return daily_png(r, k, cn, ver, now, with_mascot,
                          tag=_today_tag(day))
     total = sum(r["games"] for _k, _cn, r in items)
-    W = T_W
+    W = D_W
     sh = _Sheet(W, with_mascot=with_mascot)
     y = 32
-    sh.text(PAD, y, "%s%s" % (day, _today_tag(day)), 24, C_INK, bold=True)
-    sh.text(W - PAD, y + 4, "共 %d 局" % total, 16, C_INK, True, anchor="rt")
+    sh.text(PAD, y, "%s%s" % (day, _today_tag(day)), 26, C_INK, bold=True)
+    sh.text(W - PAD, y + 5, "共 %d 局" % total, 18, C_INK, True, anchor="rt")
 
-    # 每个级别一个小标签 + 局数，横向铺开
-    x = PAD
-    for k, cn, r in items:
-        w = _chip(sh, x, y + 46, "%s %d 局" % (cn, r["games"]),
-                  LEVEL_ACCENT.get(k, (C_INK, CARD_BG))[0], size=12, padh=10, h=23)
-        x += w + 8
+    # 列标题只写一次，三个块共用同一组列坐标（数字右对齐到同一批 x）
+    top = y + 54
+    lab_w, col_w = D_LAB_W, D_COL_W
+    x0 = PAD + lab_w
+    for i, h in enumerate(("最好", "平均", "最差")):
+        sh.text(x0 + col_w * (i + 1) - 8, top, h, 13, C_DIM, anchor="rt")
+    sh.line(PAD, top + 26, W - PAD, top + 26, C_LINE)
 
-    top = y + 46 + 23 + 28
-    lab_w, games_w, col_w = T_LAB_W, T_GAMES_W, T_COL_W
-    x_lv = PAD
-    x_games = x_lv + lab_w
-    x_first = x_games + games_w
-    groups = (("时间（秒）", 0), ("3BV/s", 1), ("stnb", 2))
-    sub_w = sh.text_w("平均", 11.5)
-    for name, gi in groups:
-        # 分组标题压在中间那一列的**文字**上：子表头是右对齐的，按列的
-        # 方框居中会整体偏左十几像素，看着像压在最差那列上。
-        mid_right = x_first + col_w * (3 * gi + 2) - 8
-        sh.text(mid_right - sub_w / 2.0, top, name, 12, C_DIM, anchor="mt")
-    sh.text(x_lv, top, "级别", 12, C_DIM)
-    sh.text(x_games + games_w - 8, top, "局数", 12, C_DIM, anchor="rt")
-    # 表头两行：分组名在上，「最好/平均/最差」在下，中间不画线 —— 第三组
-    # 的右边已经到卡片边，再画线会顶出画面
-    sub = top + 24
-    for _name, gi in groups:
-        for i, h in enumerate(("最好", "平均", "最差")):
-            right = x_first + col_w * (3 * gi + i + 1) - 8
-            sh.text(right, sub, h, 11.5, C_DIM, anchor="rt")
-    sh.line(PAD, sub + 24, W - PAD, sub + 24, C_LINE)
-
-    row_h = T_ROW_H
+    row_h = D_ROW_H
+    by = top + 26 + 18
     for j, (k, cn, r) in enumerate(items):
-        ry = sub + 34 + row_h * j
-        sh.text(x_lv, ry, cn, 15, C_INK)
-        sh.text(x_games + games_w - 8, ry, "%d" % r["games"], 15, C_INK, True,
-                anchor="rt")
-        for gi, vals in enumerate(((r["best"], r["avg"], r["worst"]),
-                                   (r["bvs_max"], r["bvs_avg"], r["bvs_min"]),
-                                   (r["stnb_max"], r["stnb_avg"], r["stnb_min"]))):
+        accent = LEVEL_ACCENT.get(k, (C_INK, CARD_BG))[0]
+        w = _chip(sh, PAD, by, cn, accent, size=13, padh=10, h=24)
+        sh.text(PAD + w + 10, by + 4, "%d 局" % r["games"], 14, C_DIM)
+        ry = by + 34
+        for label, vals, prec in (
+                ("时间（秒）", (r["best"], r["avg"], r["worst"]), 3),
+                ("3BV/s", (r["bvs_max"], r["bvs_avg"], r["bvs_min"]), 3),
+                ("stnb", (r["stnb_max"], r["stnb_avg"], r["stnb_min"]), 2)):
+            sh.text(PAD, ry, label, 16, C_INK)
             for i, v in enumerate(vals):
-                right = x_first + col_w * (3 * gi + i + 1) - 8
-                sh.text(right, ry, "%.3f" % v if gi < 2 else "%.2f" % v, 15,
+                sh.text(x0 + col_w * (i + 1) - 8, ry, "%.*f" % (prec, v), 18,
                         C_INK, i == 1, anchor="rt")
+            ry += row_h
+        by = ry + 2
         if j < len(items) - 1:
-            sh.line(PAD, ry + row_h - 13, W - PAD, ry + row_h - 13, C_RULE)
+            sh.line(PAD, by, W - PAD, by, C_RULE)
+            by += 18
 
-    bottom = sub + 34 + row_h * len(items) - 13
-    fy = bottom + 26
+    fy = by + 12
     _footer(sh, fy, ver, now)
-    return sh.render(fy + 28, mascot_ratio if mascot_ratio is not None
-                     else T_MASCOT_RATIO, T_TARGET)
+    return sh.render(fy + 30)
+
 
 
 # --------------------------------------------------------------- 剪贴板

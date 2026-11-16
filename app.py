@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.27.0"
+APP_VER = "0.28.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -5834,12 +5834,12 @@ def main():
                          "best": 1.0, "avg": 1.0, "worst": 1.0,
                          "bvs_max": 1.0, "bvs_avg": 1.0, "bvs_min": 1.0,
                          "stnb_max": 1.0, "stnb_avg": 1.0, "stnb_min": 1.0,
-                         "nf": 1}
+                         "nf": 1, "fl": 1}
                 img = summary.daily_png(probe, "e", "高级", APP_VER)
                 png = "summary_png=%dx%d" % img.size
             except Exception as e:              # noqa: BLE001
                 png = "summary_png=ERR %r" % (e,)
-            # 贴纸是后加的 --add-data，漏打时图照样能出（只是右边空着），
+            # 贴纸是后加的 --add-data，漏打时图照样能出（只是下面空着一块），
             # 所以必须单独报一行，否则「图能画」会被当成「一切都对」
             try:
                 img2 = summary.mascot(120 * summary.SCALE)

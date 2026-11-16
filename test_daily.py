@@ -49,6 +49,9 @@ def test_wall_epoch():
 
 def test_samples():
     """真实样本：日期写死成字面量。这是防「+8 小时」回归的那颗钉子。"""
+    if core.MSLIB is None:
+        print("跳过：本机没装 ms-toollib，录像读不出来（pip install ms-toollib）")
+        return
     if os.path.isfile(AVF):
         v = core.read_video(AVF)
         got = core.day_text(v["t0"]) if v else ""
@@ -96,6 +99,12 @@ def test_daily_rows():
           and abs(day["stnb_min"] - min(want)) < 1e-9
           and abs(day["stnb_avg"] - sum(want) / 3) < 1e-9)
     check("NF 局数只数 rce=0 的（2 局）", day["nf"] == 2)
+    check("FL 局数是 NF 的对立面（1 局），两者互斥", day["fl"] == 1)
+    check("判不出模式的局单独计数（这里没有）", day["style_unknown"] == 0)
+    check("nf + fl 不一定等于总局数（没判出来的两边都不算）",
+          core.daily_rows([game(d1, 10, 20, nf=None)], "b")[0]["style_unknown"] == 1
+          and core.daily_rows([game(d1, 10, 20, nf=None)], "b")[0]["nf"] == 0
+          and core.daily_rows([game(d1, 10, 20, nf=None)], "b")[0]["fl"] == 0)
     check("最快那局的路径能取到（给「播放最快」用）",
           day["best_path"].startswith("rec-"))
     check("跨午夜的局归开始那天，不会拆成两天",

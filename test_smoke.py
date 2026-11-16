@@ -86,6 +86,10 @@ def main():
         check("表格行数 = 天数", len(win.tbl_daily.rows) == len(rows))
         # 组头必须压在各自那三列上方：列是 stretch 的，位置只能按实际列宽算，
         # 用设计宽度硬算会偏移（改过一次，所以钉在这里）
+        # 先让布局落定再重画一次：组头是 <Configure> 里画的，窗口在测试中途
+        # 变过尺寸时，画的那一次和量尺寸的这一次不是同一套列宽（会随机红）。
+        win.update_idletasks()
+        win._draw_daily_groups()
         kids = win.tbl_daily.tv.get_children()
         labels = {win.daily_strip.itemcget(i, "text"): win.daily_strip.coords(i)[0]
                   for i in win.daily_strip.find_all()}
