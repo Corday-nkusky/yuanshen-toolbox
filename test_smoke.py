@@ -91,9 +91,24 @@ def main():
               set(cells) == set(idx)
               and all(i * 10 + c + grid._row_start == bv
                       for bv, (i, c) in cells.items()))
-        lo = (min(idx) // 10) * 10
-        check("第一行标签是 %d–%d" % (lo, lo + 9),
+        # 网格的起止：下限固定在级别起点，上限跟着已有最大 BV 走
+        floor = A.PB_BV_FLOOR["b"]
+        lo = (floor // 10) * 10
+        check("第一行从初级起点 %d–%d 开始" % (lo, lo + 9),
               grid._rowlab[0].cget("text") == "%d–%d" % (lo, lo + 9))
+        check("初级 BV 0 / 1 两格留空",
+              all(grid._bv_of.get(grid._cells[0][c]) is None
+                  for c in range(floor)))
+        hi = (max(idx) // 10) * 10
+        last = (hi - lo) // 10
+        check("最后一行是 %d–%d（网格到最大 BV 那一段为止）" % (hi, hi + 9),
+              grid._rowlab[last].cget("text") == "%d–%d" % (hi, hi + 9))
+        # 下限是死数，低于起点的成绩会被网格遮掉 —— 真出现就是丢数据
+        for lv in A.core.LEVELS:
+            got = {int(r["bv"]) for r in win.pb_rows if r["level"] == lv}
+            check("%s 最低 BV %d 不低于网格起点 %d"
+                  % (A.core.LEVEL_CN[lv], min(got), A.PB_BV_FLOOR[lv]),
+                  all(bv >= A.PB_BV_FLOOR[lv] for bv in got))
 
         # 搜索：只给命中格子描边，不把别的格子藏掉（藏了会造出假断层）
         bv0 = max(idx)
@@ -109,6 +124,8 @@ def main():
         check("页面上写出搜到几格", "搜到 1 个" in win.pb_detail.cget("text"))
         win.var_q.set("")
         win.render_pb()
+        check("详情条不再报「几个位置」",
+              "个位置" not in win.pb_detail.cget("text"))
 
         # 指标只换数字：格子位置、颜色都不该跟着动
         row0 = idx[bv0]

@@ -33,7 +33,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.24.0"
+APP_VER = "0.24.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -964,6 +964,9 @@ PB_TONE = {
 }
 PB_EMPTY_BG = "#f7f1f6"
 PB_GATE = {"b": 10, "i": 30, "e": 100}       # 官方门槛，低于它的格子描一圈
+# 网格从哪开始画：下限固定，上限跟着已有成绩走（最大 BV 所在的那一段）。
+# 初级 0–9 那行里 0、1 两个位置留空 —— BV 从 2 起，空着比画出来好看。
+PB_BV_FLOOR = {"b": 2, "i": 30, "e": 100}
 FONT_PB = (FAM_MONO, 9)
 
 
@@ -1112,8 +1115,12 @@ class PBGrid(tk.Frame):
             return 0, 0
 
         self.empty_lbl.grid_remove()
-        lo = (bvs[0] // 10) * 10
-        hi = (bvs[-1] // 10) * 10
+        # 下限固定到级别起点（初级从 0–9 段开始画，段内 0、1 两格留空），
+        # 上限跟着本机已有的最大 BV 走 —— 没成绩的十位段整行留着，
+        # 「哪一段一格没有」才看得见。
+        floor = PB_BV_FLOOR.get(level, 1)
+        lo = (floor // 10) * 10
+        hi = max(lo, (bvs[-1] // 10) * 10)
         n = (hi - lo) // 10 + 1
         self._row_start = lo
         self._ensure_rows(n)
@@ -1127,7 +1134,8 @@ class PBGrid(tk.Frame):
         self._need_h = sc(24) + n * (sc(self.ROW_H) + sc(2))
         self._apply_height()
         self.cv.yview_moveto(0)
-        return len(bvs), n * self.COLS - (1 if lo < 1 else 0)
+        return len(bvs), n * self.COLS - sum(
+            1 for bv in range(lo, lo + n * self.COLS) if bv < floor)
 
     def set_hits(self, hits):
         self.hits = set(hits or ())
@@ -1193,13 +1201,14 @@ class PBGrid(tk.Frame):
     def _paint(self):
         tones = PB_TONE.get(self.level, PB_TONE["b"])
         gate = PB_GATE.get(self.level, 0)
+        floor = PB_BV_FLOOR.get(self.level, 1)
         tiers = self._tiers() if self.mode == "self" else {}
         for i, row in enumerate(self._cells):
             start = self._row_start + i * self.COLS
             self._rowlab[i].config(text="%d–%d" % (start, start + 9))
             for c, cell in enumerate(row):
                 bv = start + c
-                if bv < 1:                    # BV 从 1 起，第 0 列那个 0 不是格子
+                if bv < floor:                # 级别起点之前的格子留空
                     cell.config(text="", bg=C_BG, highlightbackground=C_BG,
                                 cursor="")
                     self._bv_of[cell] = None
@@ -5099,7 +5108,7 @@ class App(tk.Tk):
         self._pb_index = rows
         grid = self.pb_grid
         grid.set_counts(self.pb_counts)
-        n, cells = grid.bind_data(lv, self._pb_metric, rows, cat)
+        n, _cells = grid.bind_data(lv, self._pb_metric, rows, cat)
 
         hits = set()
         if q:
@@ -5117,14 +5126,13 @@ class App(tk.Tk):
         self.lbl_pb_hint.config(
             text=("颜色按全国名次" if grid.mode == "rank" else "颜色按本级快慢")
             if n else "")
-        if n:
-            text = "%s %d / %d 个位置有成绩" % (core.LEVEL_CN[lv], n, cells)
-            if q:
-                text += "，搜到 %d 个" % len(hits)
-            self.pb_detail.config(text=text, fg=C_TEXT)
-        else:
+        if not n:
             self.pb_detail.config(
                 text="%s还没有成绩" % core.LEVEL_CN[lv], fg=C_DIM)
+        elif q:
+            self.pb_detail.config(text="搜到 %d 个" % len(hits), fg=C_TEXT)
+        else:
+            self.pb_detail.config(text="", fg=C_TEXT)
 
         bits = []
         if self.site_pb:
