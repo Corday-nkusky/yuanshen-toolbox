@@ -23,7 +23,7 @@ import hashlib
 import heapq
 import math
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import cache as _cache
 
@@ -118,6 +118,59 @@ def looks_like_video(path, src=None):
     return src != "ms" or head[2] == 0x40
 
 
+def _wall_epoch(us, src):
+    """录像内时间戳（微秒）→ 本机时区的真 epoch 秒；取不到返回 None。
+
+    两种格式的语义**不一样**，这是全模块最容易静默出错的地方：
+
+    · ``.evf``（元扫雷）存的是真 UTC，``fromtimestamp`` 直接得到本地墙钟；
+    · ``.avf``（阿比特）存的是**当时的本地墙钟被当成 UTC 编码**。
+
+    对 .avf 若直接用 ``fromtimestamp``，会整整偏 +8 小时（东八区）：21 点以后
+    打的局被算到第二天、0–8 点打的局被算到前一天，而界面上看不出任何异常，
+    只是「某天局数多了一倍、某天少了一半」。所以 .avf 先按 UTC 读回 naive
+    墙钟，再让本机时区把它解释成真 epoch —— 上层从此只用
+    ``datetime.fromtimestamp(t0)``，不必知道录像是什么格式。
+
+    实测 23532 个样本（23183 avf + 349 evf）全部合法，与文件 mtime 的差
+    中位数 avf 0.03 s、evf 0.07 s。
+    """
+    try:
+        us = float(us)
+    except (TypeError, ValueError):
+        return None
+    if us <= 0:
+        return None
+    try:
+        if src == "arb":
+            dt = datetime.fromtimestamp(us / 1e6, timezone.utc).replace(tzinfo=None)
+        else:
+            dt = datetime.fromtimestamp(us / 1e6)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return dt.timestamp()
+
+
+def day_text(t0):
+    """epoch 秒 → 本地日期 ``YYYY-MM-DD``（一天 = 本地 00:00–24:00）。"""
+    if not t0 or float(t0) <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(t0)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
+def clock_text(t0):
+    """epoch 秒 → ``HH:MM:SS``。"""
+    if not t0 or float(t0) <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(t0)).strftime("%H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
 def read_video(path):
     """用 ms-toollib 重演一局录像，返回权威指标；失败返回 None。
 
@@ -154,6 +207,10 @@ def read_video(path):
             mode = int(v.mode)
         except BaseException:                  # noqa: BLE001
             mode = -1
+        # 录制时刻：t0 是开始、t1 是结束（真本地 epoch 秒）。读不到给 None，
+        # 由 scan() 退回文件时间，不让一个坏录像带崩整个扫描。
+        t0 = _wall_epoch(getattr(v, "start_time", None), src)
+        t1 = _wall_epoch(getattr(v, "end_time", None), src)
         return {
             "rce": int(kp.rce),
             "left": int(kp.left),
@@ -168,6 +225,8 @@ def read_video(path):
             "ident": ident,
             "valid": valid,
             "src": src,
+            "t0": t0,
+            "t1": t1,
         }
     except BaseException:                 # noqa: BLE001  (rust panic 也是 BaseException)
         return None
@@ -452,6 +511,8 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
         "duplicates": 0,
         "dup_removed": 0,
         "rce_failed": 0,
+        "retimed": 0,
+        "refilled": 0,
         "tampered": [],
         "level_conflict": [],
         "non_std": 0,
@@ -506,10 +567,18 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                 vid = None
                 if deep:
                     vid = _cache.get(path, mt_ns, size)
+                    stale = vid is not None and "t0" not in vid
+                    if stale:
+                        # 这一版以前的缓存里没有录像内时间（那时「日期」其实来自
+                        # 文件 mtime）。就地重解析一次写回，之后永不复发：
+                        # 2 万局热盘约 40 秒，只在第一次升级时付这笔钱。
+                        vid = None
                     if vid is None:
                         vid = read_video(path)
                         if vid is not None:
                             _cache.put(path, mt_ns, size, vid)
+                            if stale:
+                                info["refilled"] += 1
 
                 if src == "ms":
                     if fn[:2].lower() == CUSTOM_PREFIX:
@@ -574,15 +643,16 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     continue
 
                 seen_paths.add(path)
-                # 日期只算一次，算完跟着缓存一起存下来：缓存键是 (路径, mtime)，
-                # 文件不变日期就不会变。2 万局省 0.09 s。
-                dtxt = vid.get("date") if vid is not None else None
-                if not dtxt:
-                    dtxt = datetime.fromtimestamp(mt).strftime("%Y-%m-%d") if mt else ""
-                    if vid is not None:      # 老缓存没有 date 字段，补一次并写回
-                        vid = dict(vid)
-                        vid["date"] = dtxt
-                        _cache.put(path, mt_ns, size, vid)
+                # 录制时刻以录像内的时间戳为准（见 _wall_epoch）；读不到才退回
+                # 文件 mtime，并在 info["retimed"] 里记账。日期跟着缓存走：
+                # 缓存键是 (路径, mtime)，文件不变日期就不会变。
+                # 变量名别叫 t0/t1：外层那个 t0 是 scan() 的计时起点。
+                rec_t0 = (vid or {}).get("t0")
+                if not rec_t0:
+                    rec_t0 = float(mt) if mt else 0.0
+                    info["retimed"] += 1
+                rec_t1 = (vid or {}).get("t1") or (rec_t0 + float(rec["time"]))
+                dtxt = day_text(rec_t0)
                 rec.update(
                     file=fn,
                     path=path,
@@ -591,6 +661,8 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     mtime_ns=mt_ns,
                     size=size,
                     date=dtxt,
+                    t0=rec_t0,
+                    t1=rec_t1,
                     bvs=rec["bv"] / rec["time"] if rec["time"] > 0 else 0.0,
                     stnb=stnb_of(rec["bv"], rec["time"], rec["level"]),
                 )
@@ -1437,6 +1509,111 @@ def summary(games, style=None):
             "nf": sum(1 for g in sub if g.get("nf") is True),
             "fl": sum(1 for g in sub if g.get("nf") is False),
         }
+    return out
+
+
+def daily_rows(games, level=None):
+    """按「打的那一天」聚合，返回按日期倒序的行。
+
+    口径（写死，别处不要另算一遍）：
+      · 一天 = 本地时区 00:00–24:00，按**开始时刻**归日。跨午夜的局算在开始
+        那天（本机去重后 22723 局里只有 15 局跨午夜，占 0.07%）。
+      · 起 = 当天最早一局的开始；止 = 当天最晚一局的**结束**。
+      · 平均是**算术平均**，不是中位数 —— 与 Arbiter 的 Daily Review 同口径，
+        否则同一批录像两边算出的数对不上，看的人只会觉得这边算错了。
+      · 不按 3BV 门槛过滤：小盘刷出来的最好成绩照样进「最快 / 最高」，
+        那才是「当天真实发生了什么」。
+      · 只聚合传进来的 games（scan() 已滤掉非完成局、非标准玩法），这里不再筛。
+
+    level=None 时三级混在一起；一般每次都只给一个级别 —— 三级的 BV 分布
+    完全不同，混着算的「平均时间」没有意义。
+
+    返回的每行：date / games / t_from / t_till / span / best / avg / worst /
+    bvs_max / bvs_avg / bvs_min / nf / best_path。时间值都是秒（float），
+    t_from / t_till 是 epoch 秒，由界面格式化成 HH:MM:SS。
+    """
+    days = {}
+    for g in games:
+        if level is not None and g.get("level") != level:
+            continue
+        t0 = g.get("t0") or g.get("mtime") or 0.0
+        if t0 <= 0:
+            continue
+        day = day_text(t0)
+        if not day:
+            continue
+        t = float(g.get("time") or 0.0)
+        bvs = float(g.get("bvs") or 0.0)
+        t1 = g.get("t1") or (t0 + t)
+        r = days.get(day)
+        if r is None:
+            days[day] = {
+                "date": day, "games": 1,
+                "t_from": t0, "t_till": t1,
+                "best": t, "worst": t, "t_sum": t,
+                "bvs_max": bvs, "bvs_min": bvs, "bvs_sum": bvs,
+                "nf": 1 if g.get("nf") is True else 0,
+                "best_path": g.get("path") or "",
+            }
+            continue
+        r["games"] += 1
+        if t0 < r["t_from"]:
+            r["t_from"] = t0
+        if t1 > r["t_till"]:
+            r["t_till"] = t1
+        if t < r["best"]:
+            r["best"] = t
+            r["best_path"] = g.get("path") or ""
+        if t > r["worst"]:
+            r["worst"] = t
+        r["t_sum"] += t
+        if bvs > r["bvs_max"]:
+            r["bvs_max"] = bvs
+        if bvs < r["bvs_min"]:
+            r["bvs_min"] = bvs
+        r["bvs_sum"] += bvs
+        if g.get("nf") is True:
+            r["nf"] += 1
+
+    rows = []
+    for r in days.values():
+        n = r["games"]
+        rows.append({
+            "date": r["date"],
+            "games": n,
+            "t_from": r["t_from"],
+            "t_till": r["t_till"],
+            "span": max(0.0, r["t_till"] - r["t_from"]),
+            "best": r["best"],
+            "avg": r["t_sum"] / n,
+            "worst": r["worst"],
+            "bvs_max": r["bvs_max"],
+            "bvs_avg": r["bvs_sum"] / n,
+            "bvs_min": r["bvs_min"],
+            "nf": r["nf"],
+            "best_path": r["best_path"],
+        })
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    return rows
+
+
+def daily_games(games, day, level=None):
+    """某一天（YYYY-MM-DD）的局，按开始时刻倒序 —— 给当天明细用。
+
+    归日规则与 daily_rows 完全一致（按开始时刻），所以两处列出的局数必然相等。
+    """
+    out = []
+    for g in games:
+        if level is not None and g.get("level") != level:
+            continue
+        t0 = g.get("t0") or g.get("mtime") or 0.0
+        if not t0 or day_text(t0) != day:
+            continue
+        item = dict(g)
+        item["clock"] = clock_text(t0)
+        item["t0"] = t0
+        out.append(item)
+    out.sort(key=lambda r: r["t0"], reverse=True)
     return out
 
 

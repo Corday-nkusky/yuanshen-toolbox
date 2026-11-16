@@ -2,6 +2,7 @@
 
 兼容元扫雷（Metasweeper，.evf）与阿比特（Arbiter，.avf）的扫雷录像，直接显示：
   · 概览：三级别局数 / 三项最高
+  · 每日：按天看每天打了多少局、当天最快 / 平均 / 最慢
   · PB 表：每个（级别 × BV）的最快完成局
   · 前端成绩：三级别 × time / bvs / stnb 的前五局
   · 上传：把本地完成局传到开源扫雷网（openms.top）
@@ -33,7 +34,7 @@ import paths
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.24.1"
+APP_VER = "0.25.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -251,6 +252,17 @@ def fmt_bvs(v):
 
 def fmt_stnb(v):
     return f"{v:.2f}"
+
+
+def fmt_span(sec):
+    """秒 → 「2 小时 56 分」。不足 1 分钟只写秒（一天里连着两局刷盘时会出现）。"""
+    sec = int(round(float(sec or 0)))
+    if sec < 60:
+        return "%d 秒" % sec
+    h, m = sec // 3600, (sec % 3600) // 60
+    if h:
+        return "%d 小时 %d 分" % (h, m)
+    return "%d 分" % m
 
 
 def enable_dpi():
@@ -677,12 +689,13 @@ class Table(ttk.Frame):
     """
 
     def __init__(self, master, columns, height=6, zebra=True, fit=True,
-                 selectmode="browse", iid_key=None, vbar=True):
+                 selectmode="browse", iid_key=None, vbar=True, on_double=None):
         super().__init__(master, style="Card.TFrame")
         self.columns_def = columns
         self.zebra = zebra
         self.rows = []
         self.iid_key = iid_key          # 用某个字段当 iid，便于原地更新某一行
+        self.on_double = on_double      # 自定义双击行为；None 时按后缀播放录像
         self._sort_key = None
         self._sort_rev = False
 
@@ -778,6 +791,9 @@ class Table(ttk.Frame):
                 v = f"{v:.3f}"
             elif kind == "f2" and isinstance(v, (int, float)):
                 v = f"{v:.2f}"
+            elif kind == "clock" and isinstance(v, (int, float)):
+                # epoch 秒 → HH:MM:SS；定宽字符串，字典序就是时间序
+                v = core.clock_text(v)
             elif kind == "int" and isinstance(v, (int, float)):
                 v = f"{int(v)}"
             elif kind == "delta" and isinstance(v, (int, float)):
@@ -893,6 +909,9 @@ class Table(ttk.Frame):
             sel = self.tv.selection()
             iid = sel[0] if sel else None
         if not iid:
+            return
+        if self.on_double is not None:
+            self.on_double(iid)
             return
         path = self._path_of(iid)
         if not path:
@@ -1440,6 +1459,87 @@ class LsfDetailDialog(tk.Toplevel):
         if len(out) < core.LSF_TOP:
             title += "　%d 局" % len(out)
         self.lbl_games.config(text=title)
+
+
+# ------------------------------------------------------------------ 当天明细
+class DailyDialog(tk.Toplevel):
+    """某一天的全部完成局（每日页双击某天，或点「当天明细」）。
+
+    一天最多几百局，所以不做分页也不加搜索：一屏滚下来就是当天从晚到早
+    的完整记录。双击某局直接用元扫雷播放 —— 与 PB 页、概览页同一个动作。
+    """
+
+    COLS = [
+        ("clock", "时刻", 92, "center", "str"),
+        ("time", "time", 92, "e", "f3"),
+        ("bv", "BV", 58, "e", "int"),
+        ("bvs", "3BV/s", 88, "e", "f3"),
+        ("stnb", "stnb", 80, "e", "f2"),
+        ("style_cn", "风格", 60, "center", "str"),
+        ("vs_pb", "距当前 PB", 120, "e", "delta"),
+    ]
+
+    def __init__(self, master, title, summary, rows):
+        super().__init__(master)
+        self.app = master
+        self.title("当天明细")
+        self.configure(bg=C_BG)
+        self.transient(master)
+        self.minsize(sc(680), sc(260))
+
+        wrap = tk.Frame(self, bg=C_BG)
+        wrap.pack(fill="both", expand=True, padx=sc(20), pady=sc(16))
+
+        # 底边先占住：窗口拉高时多出来的空白落在表格里，按钮不会被顶走
+        foot = tk.Frame(wrap, bg=C_BG)
+        foot.pack(side="bottom", fill="x", pady=(sc(10), 0))
+        Pill(foot, "关闭", command=self.destroy, accent=C_DIM,
+             padx=18, height=30).pack(side="right")
+        best = min(rows, key=lambda r: r["time"]) if rows else None
+        if best and best.get("path"):
+            Pill(foot, "播放最快", command=lambda p=best["path"]: self.open_replay(p),
+                 accent=C_ACCENT, padx=16, height=30).pack(side="right",
+                                                          padx=(0, sc(8)))
+        tk.Label(foot, text="双击某一局，用元扫雷播放", bg=C_BG, fg=C_DIM,
+                 font=FONT_SMALL).pack(side="left")
+
+        tk.Label(wrap, text=title, bg=C_BG, fg=C_TEXT, font=FONT_SECTION,
+                 anchor="w").pack(fill="x")
+        tk.Label(wrap, text=summary, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
+                 anchor="w").pack(fill="x", pady=(sc(2), sc(10)))
+
+        holder = tk.Frame(wrap, bg=C_LINE)
+        holder.pack(fill="x")
+        # 行数跟着当天局数走：只打了 1 局就别弹出一个半屏空白的框；
+        # 上限 14 行，再多的当天滚动看（单日最多见过 578 局）。
+        self.tab = Table(holder, self.COLS, height=min(max(3, len(rows)), 14),
+                         fit=False)
+        self.tab.pack(fill="both", expand=True, padx=1, pady=1)
+        self.tab.set_rows(rows)
+        # 表格按行数定高，窗口再多出来的空间留在下面（背景色），
+        # 不能让 holder 拉长 —— 那会在表格下沿拖出一块白底
+        tk.Frame(wrap, bg=C_BG).pack(fill="both", expand=True)
+        self._fit_on_screen()
+
+    # 表格的双击按后缀找 open_replay，而 winfo_toplevel() 是本对话框：
+    # 转发给主窗口，动作和别处一模一样；set_status 同理。
+    def open_replay(self, path):
+        self.app.open_replay(path)
+
+    def set_status(self, text, kind="dim"):
+        self.app.set_status(text, kind)
+
+    def _fit_on_screen(self):
+        self.update_idletasks()
+        wa = work_area()
+        if not wa:
+            return
+        wx, wy, ww, wh = wa
+        w = min(self.winfo_reqwidth(), ww - sc(40))
+        h = min(self.winfo_reqheight(), wh - sc(48))
+        x = wx + max(0, (ww - w) // 2)
+        y = wy + max(0, (wh - h) // 2)
+        self.geometry("%dx%d+%d+%d" % (w, h, x, y))
 
 
 # ------------------------------------------------------------------ 登录窗
@@ -2263,6 +2363,9 @@ class App(tk.Tk):
         self._scan_sig = None          # 上次扫描的 (文件数, 局数, 最新 mtime)，判断「真的变了吗」
         self._level = "b"
         self._pb_level = "b"
+        self._daily_level = "b"        # 每日页当前级别
+        self._daily_date = None        # 每日页选中的那一天
+        self.daily_rows = []           # 每日页当前的行（测试与导出用）
         self._pb_style = "all"         # PB 榜：all=全PB / nf=NF PB
         self._pb_metric = "time"       # 格子里显示的数字：time / bvs / stnb / rank
         self._pb_index = {}            # 当前网格里 BV -> 行
@@ -2491,7 +2594,8 @@ class App(tk.Tk):
         nav = tk.Frame(self, bg=C_BG)
         nav.pack(fill="x", padx=sc(20), pady=(sc(12), sc(2)))
         self.tab_pills = {}
-        for key, label in (("overview", "概览"), ("pb", "PB 表"),
+        for key, label in (("overview", "概览"), ("daily", "每日"),
+                           ("pb", "PB 表"),
                            ("top", "lsf"), ("upload", "上传"),
                            ("auto", "自动上传")):
             p = Pill(nav, label, command=lambda k=key: self.show_tab(k),
@@ -2527,6 +2631,7 @@ class App(tk.Tk):
         body.pack(fill="both", expand=True, padx=sc(20), pady=(sc(2), 0))
         self.pages = {
             "overview": tk.Frame(body, bg=C_BG),
+            "daily": tk.Frame(body, bg=C_BG),
             "pb": tk.Frame(body, bg=C_BG),
             "top": tk.Frame(body, bg=C_BG),
             "upload": tk.Frame(body, bg=C_BG),
@@ -2538,6 +2643,7 @@ class App(tk.Tk):
         # 表格又算出更多行……形成正反馈，窗口一路涨到超出屏幕。
         body.pack_propagate(False)
         self._build_overview()
+        self._build_daily()
         self._build_pb()
         self._build_top()
         self._build_upload()
@@ -2906,6 +3012,184 @@ class App(tk.Tk):
         self.lbl_boot = tk.Label(page, text="正在读取录像…\n初始化要逐局重演录像，会比较慢，请耐心等待",
                                  bg=C_BG, fg=C_DIM, font=FONT_SECTION, justify="center",
                                  padx=sc(18), pady=sc(8))
+
+    # ---------- 每日 ----------
+    # 十列：日期 / 局数 / 起止 / 时间三项 / 3BV/s 三项。宽度合计约 840 px，
+    # 内容区约 1030 px，列会平摊多出来的宽度。这里的宽度只是初始值兼
+    # 组头定位的兜底（实际位置按 bbox 算，见 _draw_daily_groups）。
+    DAILY_COLS = [
+        ("date", "日期", 104, "center", "str"),
+        ("games", "局数", 58, "e", "int"),
+        ("t_from", "起", 82, "center", "clock"),
+        ("t_till", "止", 82, "center", "clock"),
+        ("best", "最快", 86, "e", "f3"),
+        ("avg", "平均", 86, "e", "f3"),
+        ("worst", "最慢", 86, "e", "f3"),
+        ("bvs_max", "最高", 86, "e", "f3"),
+        ("bvs_avg", "平均", 86, "e", "f3"),
+        ("bvs_min", "最低", 86, "e", "f3"),
+    ]
+
+    def _build_daily(self):
+        page = self.pages["daily"]
+        top = tk.Frame(page, bg=C_BG)
+        top.pack(fill="x", pady=(sc(10), sc(6)))
+        # 级别单选：三级的 BV 分布完全不同，「三级混在一起的平均时间」没有意义
+        self.daily_seg = {}
+        for lv in core.LEVELS:
+            p = Pill(top, core.LEVEL_CN[lv],
+                     command=lambda k=lv: self.set_daily_level(k),
+                     accent=LEVEL_ACCENT[lv][0], padx=16)
+            p.pack(side="left", padx=(0, sc(6)))
+            self.daily_seg[lv] = p
+        self.lbl_daily_count = tk.Label(top, text="", bg=C_BG, fg=C_DIM,
+                                        font=FONT_SMALL)
+        self.lbl_daily_count.pack(side="right")
+
+        # 表头上方那一条：把六列数字分成「时间」和「3BV/s」两组。
+        # 三对「最快/平均/最慢」「最高/平均/最低」光看表头分不清哪三列是哪个指标。
+        self.daily_strip = tk.Canvas(page, height=sc(18), bg=C_BG,
+                                     highlightthickness=0, bd=0)
+        self.daily_strip.pack(fill="x")
+        self.daily_strip.bind("<Configure>", lambda _e: self._draw_daily_groups())
+
+        # 明细条先 pack 到底边：内容区拉高时多出来的高度全给表格，不给这一条
+        holder = tk.Frame(page, bg=C_LINE)
+        holder.pack(side="bottom", fill="x", pady=(sc(8), 0))
+        bar = tk.Frame(holder, bg=C_PANEL)
+        bar.pack(fill="x", padx=1, pady=1)
+        self.btn_daily_open = Pill(bar, "当天明细", command=self._open_daily,
+                                   accent=C_ACCENT, padx=12, height=24)
+        self.btn_daily_open.pack(side="right", padx=(sc(6), sc(10)), pady=sc(5))
+        self.lbl_daily_detail = tk.Label(bar, text="", bg=C_PANEL, fg=C_DIM,
+                                         font=FONT_UI, anchor="w")
+        self.lbl_daily_detail.pack(side="left", fill="x", expand=True,
+                                   padx=(sc(12), 0), pady=sc(7))
+
+        _, self.tbl_daily = self._table(
+            page, self.DAILY_COLS, height=8, iid_key="date",
+            # 双击直接把这一行的日期传过去：Treeview 的选中变化事件是异步的，
+            # 不能指望 _daily_date 在双击回调里已经更新（会打开上一天）
+            on_double=lambda iid: self._open_daily(iid))
+        # 十列合计比内容区窄，让它们平摊多出来的宽度：右边留一大块空白
+        # 看着像表格没画完。组头的位置按实际列宽算（见 _draw_daily_groups）。
+        for key in (c[0] for c in self.DAILY_COLS):
+            self.tbl_daily.tv.column(key, stretch=True)
+        self.tbl_daily.tv.bind("<<TreeviewSelect>>", self._on_daily_pick)
+        # 列宽随窗口变，组头的位置也跟着变：表格自己一换尺寸就重画
+        self.tbl_daily.tv.bind("<Configure>", lambda _e: self._draw_daily_groups(),
+                               add="+")
+
+    def _draw_daily_groups(self):
+        """在表头上方标出「时间」「3BV/s」两段。
+
+        位置按 Treeview 的**实际**列宽算（bbox），不能用 DAILY_COLS 里的
+        设计宽度 —— 列是 stretch 的，实际宽度取决于窗口。
+        """
+        cv = self.daily_strip
+        cv.delete("all")
+        kids = self.tbl_daily.tv.get_children() if hasattr(self, "tbl_daily") else ()
+        boxes = {}
+        anchor = None
+        for kid in kids:                 # 第一行可能滚出视口，取第一个看得见
+            if self.tbl_daily.tv.bbox(kid):
+                anchor = kid
+                break
+        if anchor:
+            for key, _t, _w, _a, _k in self.DAILY_COLS:
+                bb = self.tbl_daily.tv.bbox(anchor, key)
+                if bb:
+                    boxes[key] = (bb[0], bb[2])
+        widths = [sc(c[2]) for c in self.DAILY_COLS]
+        keys = [c[0] for c in self.DAILY_COLS]
+        for first, last, text in (("best", "worst", "时间（秒）"),
+                                  ("bvs_max", "bvs_min", "3BV/s")):
+            if first in boxes and last in boxes:
+                left = boxes[first][0] + 1
+                right = boxes[last][0] + boxes[last][1] + 1
+            else:
+                i = keys.index(first)
+                left = sum(widths[:i]) + 1
+                right = left + sum(widths[i:keys.index(last) + 1])
+            cv.create_text((left + right) / 2.0, sc(9), text=text, fill=C_DIM,
+                           font=FONT_SMALL)
+
+    def set_daily_level(self, key):
+        self._daily_level = key
+        for k, p in self.daily_seg.items():
+            p.set_selected(k == key)
+        self.render_daily()
+
+    def render_daily(self):
+        """按天聚合，一天一行。
+
+        不做「近 30 天 / 近 90 天」这类范围筛选：有局的天数最多也就几百，
+        一屏之外滚动就够，而「我从哪天开始练、总共练了多少天」本来是最该
+        一眼看见的信息。（实测 23183 局：聚合一整个级别 1.2–7.1 ms。）
+        """
+        if not hasattr(self, "tbl_daily"):
+            return
+        rows = core.daily_rows(self.games, self._daily_level)
+        self.daily_rows = rows
+        self.tbl_daily.set_rows(rows)
+        self.lbl_daily_count.config(
+            text="%d 天 · %d 局" % (len(rows), sum(r["games"] for r in rows)))
+        self._daily_date = None
+        self.lbl_daily_detail.config(
+            text="双击某一天看当天每一局" if rows else "这个级别还没有完成局",
+            fg=C_DIM)
+        self.btn_daily_open.set_enabled(False)
+        self._draw_daily_groups()       # 行变了，组头按新的列宽重画
+
+    def _on_daily_pick(self, _e=None):
+        sel = self.tbl_daily.tv.selection()
+        row = self.tbl_daily._row_of(sel[0]) if sel else {}
+        if not row:
+            self._daily_date = None
+            self.btn_daily_open.set_enabled(False)
+            return
+        self._daily_date = row["date"]
+        self.btn_daily_open.set_enabled(True)
+        self.lbl_daily_detail.config(
+            text="%s · %d 局 · 最快 %.3f s · 最慢 %.3f s · 跨度 %s · NF %d 局"
+                 % (row["date"], row["games"], row["best"], row["worst"],
+                    fmt_span(row["span"]), row.get("nf") or 0),
+            fg=C_TEXT)
+
+    def _open_daily(self, day=None):
+        """当天明细：弹出这一天的每一局，双击某局直接播。
+
+        day 由双击传入（那一行的日期）；按钮走默认值，用选中的那一行。
+        """
+        day = day or self._daily_date
+        if not day:
+            self.set_status("先在上面选一天", "dim")
+            return
+        rows = core.daily_games(self.games, day, self._daily_level)
+        if not rows:
+            self.set_status("%s 这个级别没有完成局" % day, "dim")
+            return
+        pb = {(r.get("category") or "all", r.get("level"), r.get("bv")): r
+              for r in (self.pb_rows or [])}
+        out = []
+        for g in rows:
+            item = dict(g)
+            item["style_cn"] = core.STYLE_CN.get(g.get("style"), "?")
+            item["vs_pb"] = self._gap_to_pb(g, pb)
+            out.append(item)
+        t_first = min(g["t0"] for g in rows)
+        t_last = max(g.get("t1") or (g["t0"] + g["time"]) for g in rows)
+        best = min(rows, key=lambda g: g["time"])
+        nf = sum(1 for g in rows if g.get("nf") is True)
+        title = "%s · %s · %d 局" % (day, core.LEVEL_CN[self._daily_level], len(rows))
+        summary = ("%s – %s · 跨度 %s · 最快 %.3f s @BV%d · NF %d 局 · FL %d 局"
+                   % (core.clock_text(t_first), core.clock_text(t_last),
+                      fmt_span(t_last - t_first), best["time"], best["bv"],
+                      nf, len(rows) - nf))
+        old = getattr(self, "_daily_dialog", None)
+        if old is not None and old.winfo_exists():
+            old.destroy()
+        self._daily_dialog = DailyDialog(self, title, summary, out)
 
     def _build_pb(self):
         page = self.pages["pb"]
@@ -4864,6 +5148,7 @@ class App(tk.Tk):
         self._recompute_pb()          # 顺带重画最近完成局（那列要给「距当前 PB」）
         self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
+        self.render_daily()             # 每日页跟着新数据重算（几百行，几毫秒）
         self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
 
         elapsed = info["elapsed"] * 1000
@@ -4886,6 +5171,11 @@ class App(tk.Tk):
             extra.append(f"文件名与录像不符 {len(info['tampered'])}")
         if info.get("level_conflict"):
             extra.append(f"级别不符 {len(info['level_conflict'])}")
+        if info.get("refilled"):
+            # 一次性迁移：老缓存里没有录像内时间，这一轮就地补上了
+            extra.append(f"补齐 {info['refilled']} 局录像时间")
+        if info.get("retimed"):
+            extra.append(f"{info['retimed']} 局读不出录制时间，按文件时间归日")
         n_arb = (info.get("by_src") or {}).get("arb") or 0
         if n_arb:
             extra.append(f"其中阿比特 {n_arb}")
@@ -4987,10 +5277,12 @@ class App(tk.Tk):
         不保留「当时破 PB」的情形 —— 同一局今天显示 +0.532，等 PB 提上去之后会
         变成 +0.900。这是这一版的定义，不是算错了。
         """
-        rows = sorted(self.games, key=lambda g: g.get("mtime") or 0, reverse=True)
+        rows = sorted(self.games, key=lambda g: g.get("t0") or g.get("mtime") or 0,
+                      reverse=True)
         cut = time.time() - self.RECENT_DAYS * 86400
         n = min(self.RECENT_MIN, len(rows))
-        while n < len(rows) and (rows[n].get("mtime") or 0) >= cut:
+        while n < len(rows) and (rows[n].get("t0")
+                                 or rows[n].get("mtime") or 0) >= cut:
             n += 1
         if n > self.RECENT_MAX:
             # 只有「把别人的存档包整个解压进来」才会走到这里：解压出来的文件
@@ -5007,10 +5299,8 @@ class App(tk.Tk):
             item = dict(g)
             item["level_cn"] = core.LEVEL_CN[g["level"]]
             item["style_cn"] = core.STYLE_CN.get(g.get("style"), "?")
-            try:
-                item["clock"] = datetime.fromtimestamp(g["mtime"]).strftime("%H:%M:%S")
-            except Exception:
-                item["clock"] = ""
+            # 时间列与日期列同源：都用录像内的录制时刻，不用文件 mtime
+            item["clock"] = core.clock_text(g.get("t0") or g.get("mtime") or 0)
             item["vs_pb"] = self._gap_to_pb(g, pb)
             item["gain"] = gains.get(g.get("path") or "")
             out.append(item)

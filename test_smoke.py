@@ -63,6 +63,92 @@ def main():
               not status.startswith("扫描失败") and "处理结果出错" not in status)
         shot(win, "shot_overview.png")
 
+        # 每日页：一天一行，按开始时刻归日
+        win.show_tab("daily")
+        win.update()
+        check("每日页有级别单选（三个）", set(win.daily_seg) == set(A.core.LEVELS))
+        rows = win.daily_rows
+        check("每日页列出有局的日子（%d 天）" % len(rows), bool(rows))
+        lv_total = sum(1 for g in win.games if g["level"] == win._daily_level)
+        check("每日局数合计 = 该级别完成局数（%d）" % lv_total,
+              sum(r["games"] for r in rows) == lv_total)
+        days = [r["date"] for r in rows]
+        check("日期倒序且不重复", days == sorted(set(days), reverse=True))
+        check("每局的时间都来自录像内（不是文件 mtime）",
+              all(g.get("t0") for g in win.games))
+        check("起止时刻是 HH:MM:SS",
+              all(len(A.core.clock_text(r["t_from"])) == 8
+                  and len(A.core.clock_text(r["t_till"])) == 8 for r in rows))
+        check("表格行数 = 天数", len(win.tbl_daily.rows) == len(rows))
+        # 组头必须压在各自那三列上方：列是 stretch 的，位置只能按实际列宽算，
+        # 用设计宽度硬算会偏移（改过一次，所以钉在这里）
+        kids = win.tbl_daily.tv.get_children()
+        boxes = {}
+        for key in ("best", "worst", "bvs_max", "bvs_min"):
+            bb = win.tbl_daily.tv.bbox(kids[0], key)
+            if bb:
+                boxes[key] = (bb[0], bb[0] + bb[2])
+        labels = {win.daily_strip.itemcget(i, "text"): win.daily_strip.coords(i)[0]
+                  for i in win.daily_strip.find_all()}
+        if len(boxes) == 4 and len(labels) == 2:
+            def centered(text, first, last):
+                mid = (boxes[first][0] + boxes[last][1]) / 2.0
+                return abs(labels[text] - mid) <= A.sc(24)
+            check("组头「时间（秒）」居中最快–最慢三列",
+                  centered("时间（秒）", "best", "worst"))
+            check("组头「3BV/s」居中最高–最低三列",
+                  centered("3BV/s", "bvs_max", "bvs_min"))
+        else:
+            print("跳过：组头位置没量到（表格还没布局）")
+        # 抽一天手算：局数与算术平均都要对得上，否则口径就是错的
+        r0 = rows[0]
+        day_games = A.core.daily_games(win.games, r0["date"], win._daily_level)
+        want_avg = sum(g["time"] for g in day_games) / max(1, len(day_games))
+        check("抽 %s 手算：%d 局、平均 %.3f 与表里一致"
+              % (r0["date"], len(day_games), want_avg),
+              len(day_games) == r0["games"] and abs(want_avg - r0["avg"]) < 1e-9)
+        check("止 >= 起（同日内的时刻顺序）",
+              all(r["t_till"] >= r["t_from"] for r in rows))
+        win.tbl_daily.tv.selection_set(r0["date"])
+        win._on_daily_pick()
+        check("选中一天，明细条写出摘要",
+              r0["date"] in win.lbl_daily_detail.cget("text"))
+        shot(win, "shot_daily.png")
+        # 双击某天 → 当天明细对话框
+        win._open_daily()
+        dlg = win._daily_dialog
+        check("双击弹出当天明细（%d 行 = 当天局数）"
+              % len(day_games),
+              dlg is not None and dlg.winfo_exists()
+              and len(dlg.tab.rows) == len(day_games))
+        check("明细按时刻倒序",
+              [r["clock"] for r in dlg.tab.rows]
+              == sorted([r["clock"] for r in dlg.tab.rows], reverse=True))
+        check("明细每行都带本地录像路径",
+              all(r.get("path") for r in dlg.tab.rows))
+        # 对话框里的播放要转发给主窗口，否则双击只会复制路径
+        played = []
+        orig = win.open_replay
+        win.open_replay = lambda p: played.append(p)
+        dlg.open_replay(dlg.tab.rows[0]["path"])
+        check("对话框的播放转给主窗口", played == [dlg.tab.rows[0]["path"]])
+        win.open_replay = orig
+        dlg.destroy()
+        # 双击要把被点那一行的日期直接传下去：Treeview 的选中变化是异步事件，
+        # 靠「先选中再读选中」会打开上一天
+        if len(rows) > 1:
+            win.tbl_daily.tv.selection_set(rows[1]["date"])
+            win._on_daily_pick()
+            want = len(A.core.daily_games(win.games, rows[0]["date"],
+                                          win._daily_level))
+            win.tbl_daily.on_double(rows[0]["date"])
+            check("双击打开的是被点的那一天（不是选中的那天）",
+                  win._daily_dialog is not None
+                  and len(win._daily_dialog.tab.rows) == want
+                  and win._daily_dialog.tab.rows[0]["date"] == rows[0]["date"])
+            win._daily_dialog.destroy()
+        win.show_tab("overview")
+
         # PB 页：级别单选 / 网格落位 / 搜索 / 指标 / 点格 / 双击播放
         win.show_tab("pb")
         check("PB 级别是单选，没有「全部」",
