@@ -150,27 +150,23 @@ def main():
                   and len(win._daily_dialog.tab.rows) == want
                   and win._daily_dialog.tab.rows[0]["date"] == rows[0]["date"])
             win._daily_dialog.destroy()
-        # 右键某天：把当天记录抄成文本 / 图片
+        # 右键某天：总结 / 详细总结，各自再分这一级与全部级别
         menu = tk.Menu(win, tearoff=0)
         win._daily_menu(r0["date"], menu)
         items = [menu.entrycget(i, "label")             # 分隔符没有 -label 选项
                  for i in range(menu.index("end") + 1)
                  if menu.type(i) != "separator"]
         cn0 = A.core.LEVEL_CN[win._daily_level]
-        check("右键菜单：本级两项 + 当天全部级别两项",
-              items == ["复制当日总结 · %s（文本）" % cn0,
-                        "复制当日总结 · %s（图片）" % cn0,
-                        "复制当日总结 · 全部级别（文本）",
-                        "复制当日总结 · 全部级别（图片）"])
-        win._copy_daily("text", r0["date"])
-        got = win.clipboard_get()
-        check("当日总结（文本）进了剪贴板，首行带日期与级别",
-              got.splitlines()[0] == "%s · %s · %d 局"
-              % (r0["date"], A.core.LEVEL_CN[win._daily_level], r0["games"]))
-        check("文本里有 stnb 一行", "stnb：最高" in got)
-        win._copy_daily("png", r0["date"])
-        check("当日总结（图片）复制成功",
-              "图片" in win.lbl_status.cget("text"))
+        check("右键菜单：本级总结/详细 + 全部级别总结/详细（没有文本）",
+              items == ["复制总结 · %s" % cn0,
+                        "复制详细总结 · %s" % cn0,
+                        "复制总结 · 全部级别",
+                        "复制详细总结 · 全部级别"])
+        win._copy_level(r0["date"], False)
+        check("当日总结复制成功", "图片" in win.lbl_status.cget("text"))
+        win._copy_level(r0["date"], True)
+        hist = win.lbl_status.cget("text")
+        check("当日详细总结复制成功", "详细总结" in hist and "图片" in hist)
 
         # 当天全部级别：任意一天都能出（不必等到今天）
         lv_items = win._day_level_rows(r0["date"])
@@ -180,18 +176,12 @@ def main():
               and [lv for lv, _c, _r in lv_items]
               == [lv for lv in A.core.LEVELS
                   if lv in [x for x, _c, _r in lv_items]])
-        win._copy_levels(r0["date"], "text")
-        got = win.clipboard_get()
-        want = A.summary.levels_text([(c, r) for _lv, c, r in lv_items],
-                                     A.APP_VER, r0["date"])
-        check("当天全部级别（文本）与合并逻辑逐字一致", got == want)
-        check("当天全部级别（文本）首行写日期与总局数",
-              got.splitlines()[0].startswith(r0["date"])
-              and got.splitlines()[0].endswith(
-                  "共 %d 局" % sum(r["games"] for _lv, _c, r in lv_items)))
-        win._copy_levels(r0["date"], "png")
-        check("当天全部级别（图片）复制成功",
+        win._copy_levels(r0["date"], False)
+        check("当天全部级别（总结）复制成功",
               "图片" in win.lbl_status.cget("text"))
+        win._copy_levels(r0["date"], True)
+        check("当天全部级别（详细总结）复制成功",
+              "详细总结" in win.lbl_status.cget("text"))
         shot(win, "shot_daily.png")
 
         # 概览页的「今日总结」按钮：今天的几个级别并在一张图 / 一段文字里
@@ -200,16 +190,13 @@ def main():
         check("概览页有「今日总结」按钮",
               win.btn_today.winfo_exists() == 1)
         today, titems = win._today_rows()
-        win._copy_today("text")
+        win._copy_today(False)
         if titems:
-            text = win.clipboard_get()
-            check("今日总结（文本）首行是日期 + 总局数",
-                  text.splitlines()[0].startswith(today)
-                  and text.splitlines()[0].endswith(
-                      "共 %d 局" % sum(r["games"] for _k, _c, r in titems)))
-            win._copy_today("png")
-            check("今日总结（图片）复制成功",
+            check("今日总结复制成功（%d 个级别）" % len(titems),
                   "图片" in win.lbl_status.cget("text"))
+            win._copy_today(True)
+            check("今日详细总结复制成功",
+                  "详细总结" in win.lbl_status.cget("text"))
         else:
             check("今天没局时给提示，不弹空图",
                   "还没有完成局" in win.lbl_status.cget("text"))

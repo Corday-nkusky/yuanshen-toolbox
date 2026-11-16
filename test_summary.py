@@ -1,10 +1,10 @@
-"""总结（文本 / 图片 / 剪贴板）的回归。
+"""总结图（总结 / 详细总结 / 剪贴板）的回归。
 
-分三层：
-  1. 文字：数字、顺序、口径必须与每日页表格一致；
-  2. 图片：尺寸、白卡片位置、没有字溢到卡片外（按像素查，不看图）；
-  3. 剪贴板：文本与图片各写一次再读回来，CF_DIB 那条路最容易在 64 位下
-     悄悄截断句柄。剪贴板被别的程序占着时跳过，不算失败。
+分两层：
+  1. 图片：尺寸、白卡片位置、没有字溢到卡片外（按像素查，不看图）；
+     详细版还要保证「比总结高、宽不变」，否则手机上又得放大；
+  2. 剪贴板：图写一次再读回来，CF_DIB 那条路最容易在 64 位下悄悄截断
+     句柄。剪贴板被别的程序占着时跳过，不算失败。
 """
 import os
 import sys
@@ -34,46 +34,6 @@ def row(games=3, **kw):
     base["span"] = base["t_till"] - base["t_from"]
     base.update(kw)
     return base
-
-
-def test_text():
-    r = row()
-    t = summary.daily_text(r, "高级", "0.28.0")
-    lines = t.splitlines()
-    print("-" * 60)
-    print(t)
-    print("-" * 60)
-    check("首行 = 日期 · 级别 · 局数",
-          lines[0] == "2026-11-15 · 高级 · 3 局")
-    check("第二行只有起止，不再算「历时几小时几分」",
-          lines[1] == "21:02:11 – 23:58:03")
-    check("第三行是 FL / NF 的局数，不写百分比", lines[2] == "FL 2 · NF 1")
-    check("时间行用「最快/平均/最慢」，三位小数",
-          "时间（秒）：最快 16.741 / 平均 19.482 / 最慢 24.120" in lines)
-    check("3BV/s 行用「最高/平均/最低」",
-          "3BV/s：最高 3.383 / 平均 2.981 / 最低 2.412" in lines)
-    check("stnb 行同样给三项",
-          "stnb：最高 35.392 / 平均 23.392 / 最低 10.908" in lines)
-    check("末尾署名带版本", lines[-1] == "—— YuanshenToolbox v0.28.0")
-    check("一局都判不出模式时不写这一行",
-          not any(s.startswith("FL ") for s in
-                  summary.daily_text(row(nf=0, fl=0, style_unknown=3),
-                                     "高级").splitlines()))
-    check("空行返回空串", summary.daily_text(None, "高级") == "")
-
-    a = summary.levels_text([("高级", r), ("中级", row(games=9))], "0.28.0")
-    print(a)
-    check("今日首行汇总局数（3+9=12）", a.splitlines()[0].endswith("共 12 局"))
-    check("今日逐个级别成段", "高级 · 3 局" in a and "中级 · 9 局" in a)
-    check("今日段里同样写 FL / NF", "· FL 2 · NF 1 ·" in a)
-    check("今日为空返回空串", summary.levels_text([], "0.28.0") == "")
-
-    # 同一套函数给「往日」用：标题不带「今日」后缀，级别与指标照旧
-    yesterday = row(date="2026-11-14")
-    b = summary.levels_text([("高级", yesterday)], "0.28.0", "2026-11-14")
-    check("往日合并文本不带「今日」后缀", b.splitlines()[0] == "2026-11-14 · 共 3 局")
-    check("往日合并文本仍逐级给三项", "stnb：最高" in b and "高级 · 3 局" in b)
-    check("往日文本整段没有「今日」二字", "今日" not in b)
 
 
 def test_png():
@@ -241,14 +201,53 @@ def test_clipboard():
                   back is not None and tuple(back.size) == img.size)
         except Exception as e:                   # noqa: BLE001
             print("跳过剪贴板回读：%s" % e)
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        summary.copy_text(root, "扫雷 12.345")
-        check("文本进剪贴板再读回来", root.clipboard_get() == "扫雷 12.345")
-        root.destroy()
-    except tk.TclError as e:
-        print("跳过剪贴板文本：%s" % e)
+def _games(n=12, base=18.0, step=0.8):
+    """造 n 局（time / bv / style 三个字段就够详细版画图）。"""
+    out = []
+    for i in range(n):
+        out.append({"time": base + step * i, "bv": 20 + 3 * i,
+                    "style": "nf" if i % 3 else "fl",
+                    "t0": 1763200000.0 + i * 60})
+    return out
+
+
+def test_detail():
+    k, cn = "e", "高级"
+    r = row(games=12)
+    games = {k: _games(12)}
+    img = summary.levels_detail_png([(k, cn, r)], games, "0.28.0", "2026-11-15")
+    plain = summary.levels_png([(k, cn, r)], "0.28.0", "2026-11-15")
+    check("详细版能出图", img is not None)
+    check("详细版与总结卡同宽（手机上缩放比一致）",
+          img.size[0] == plain.size[0] ==
+          int((summary.D_W + 2 * summary._Sheet.MARGIN) * summary.SCALE))
+    check("详细版比总结卡高（多了分布与极值两块）",
+          img.size[1] > plain.size[1] + 300)
+    m = summary._Sheet.MARGIN * summary.SCALE
+    check("详细版四角仍是页底色", img.getpixel((0, 0)) == _rgb(summary.PAGE_BG)
+          and img.getpixel((img.size[0] - 1, img.size[1] - 1))
+          == _rgb(summary.PAGE_BG))
+    check("详细版卡片边缘没有字溢出去", not _ink_near_edge(img, 3))
+
+    three = summary.levels_detail_png(
+        [("b", cn, row(games=5)), (k, cn, row(games=12))],
+        {"b": _games(5), k: _games(12)}, "0.28.0", "2026-11-15")
+    check("两级详细版比单级高（每级一块）", three.size[1] > img.size[1])
+
+    one = summary.levels_detail_png([(k, cn, row(games=1))],
+                                    {k: _games(1)}, "0.28.0", "2026-11-15")
+    check("只有一局时照样出图（不画分布、不列两栏极值）",
+          one is not None and one.size[1] >= 900
+          and one.size[1] < img.size[1])
+    check("没有级别时返回 None", summary.levels_detail_png([], {}) is None)
+
+
+def test_span_text():
+    check("跨度 2 小时 55 分", summary._span_text(10512) == "2 小时 55 分")
+    check("跨度 43 分 12 秒", summary._span_text(2592) == "43 分 12 秒")
+    check("跨度 18 秒", summary._span_text(18) == "18 秒")
+    check("中位数取中间两个的平均", abs(summary._median([1, 2, 3, 10]) - 2.5) < 1e-9)
+    check("空列表的中位数是 0", summary._median([]) == 0.0)
 
 
 def test_none_hooks():
@@ -256,8 +255,9 @@ def test_none_hooks():
 
 
 def main():
-    test_text()
     test_png()
+    test_detail()
+    test_span_text()
     test_mascot()
     test_accent()
     test_none_hooks()

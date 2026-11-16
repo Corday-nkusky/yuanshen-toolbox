@@ -3,7 +3,7 @@
 兼容元扫雷（Metasweeper，.evf）与阿比特（Arbiter，.avf）的扫雷录像，直接显示：
   · 概览：三级别局数 / 三项最高
   · 每日：按天看每天打了多少局、当天最快 / 平均 / 最慢（右键某天可复制
-    当天的总结，文本或图片）
+    当天的总结图，或详细版总结图）
   · PB 表：每个（级别 × BV）的最快完成局
   · 前端成绩：三级别 × time / bvs / stnb 的前五局
   · 上传：把本地完成局传到开源扫雷网（openms.top）
@@ -3001,7 +3001,7 @@ class App(tk.Tk):
                              "按时间倒序，取最近 100 局与近三天中较多者，"
                              "双击用元扫雷播放")
         head.pack(fill="x", pady=(sc(16), sc(6)))
-        # 今日总结：点一下选「文本 / 图片」，复制后直接粘到群里
+        # 今日总结：点一下选「总结 / 详细总结」，图进剪贴板，直接粘到群里
         self.btn_today = Pill(head, "今日总结", command=self._today_menu,
                               accent=C_ACCENT2, padx=13, height=26)
         self.btn_today.pack(side="right", padx=(sc(6), 0))
@@ -3225,26 +3225,25 @@ class App(tk.Tk):
 
     # ---------- 当日 / 今日总结 ----------
     def _daily_menu(self, iid, menu):
-        """每日页的右键菜单。
+        """每日页的右键菜单：总结 / 详细总结 × 这一级 / 当天全部级别。
 
-        两组：正在看的这一级、当天全部级别（那天有局的几级并在一张卡片里，
-        与概览页的「今日总结」同一套版式）。当天只有这一级时两组输出一样，
-        但照样都给 —— 少一项会让人以为功能没做。
+        只有图片，没有文本 —— 文本那版没人用，两个入口都只出图，所以标签里
+        不再写「图片」二字。详细版多给「用时分布」与「最快 / 最慢 5 局」。
         """
         row = self.tbl_daily._row_of(iid) if hasattr(self, "tbl_daily") else {}
         day = row.get("date")
         if not day:
             return
         cn = core.LEVEL_CN[self._daily_level]
-        menu.add_command(label="复制当日总结 · %s（文本）" % cn,
-                         command=lambda d=day: self._copy_daily("text", d))
-        menu.add_command(label="复制当日总结 · %s（图片）" % cn,
-                         command=lambda d=day: self._copy_daily("png", d))
+        menu.add_command(label="复制总结 · %s" % cn,
+                         command=lambda d=day: self._copy_level(d, False))
+        menu.add_command(label="复制详细总结 · %s" % cn,
+                         command=lambda d=day: self._copy_level(d, True))
         menu.add_separator()
-        menu.add_command(label="复制当日总结 · 全部级别（文本）",
-                         command=lambda d=day: self._copy_levels(d, "text"))
-        menu.add_command(label="复制当日总结 · 全部级别（图片）",
-                         command=lambda d=day: self._copy_levels(d, "png"))
+        menu.add_command(label="复制总结 · 全部级别",
+                         command=lambda d=day: self._copy_levels(d, False))
+        menu.add_command(label="复制详细总结 · 全部级别",
+                         command=lambda d=day: self._copy_levels(d, True))
 
     def _daily_row(self, day=None):
         """当天那一行（聚合后的）；day 为空就用当前选中的那天。"""
@@ -3256,33 +3255,35 @@ class App(tk.Tk):
                 return r
         return None
 
-    def _copy_daily(self, kind, day=None):
+    def _copy_level(self, day=None, detail=False):
+        """当天、正在看的那一级：总结或详细总结。"""
         row = self._daily_row(day)
         if not row:
             self.set_status("先在上面选一天", "dim")
             return
         cn = core.LEVEL_CN[self._daily_level]
-        if kind == "text":
-            text = summary.daily_text(row, cn, APP_VER)
-            try:
-                summary.copy_text(self, text)
-            except tk.TclError as e:
-                self.set_status("复制失败：%s" % e, "err")
-                return
-            self.set_status("已复制 %s %s 的总结（文本，%d 行）"
-                            % (row["date"], cn, text.count("\n") + 1), "ok")
-            return
+        lv = self._daily_level
         try:
-            img = summary.daily_png(row, self._daily_level, cn, APP_VER)
+            if detail:
+                games = core.daily_games(self.games, row["date"], lv)
+                img = summary.levels_detail_png(
+                    [(lv, cn, row)], {lv: games}, APP_VER, row["date"])
+            else:
+                img = summary.daily_png(row, lv, cn, APP_VER)
         except Exception as e:                  # noqa: BLE001
-            diag.log.exception("画当日总结图失败")
+            diag.log.exception("画当日%s图失败" % ("详细总结" if detail else "总结"))
             self.set_status("画图失败：%s" % e, "err")
             return
-        if not summary.copy_image(img):
+        self._put_summary(img, "%s · %s %s" % (row["date"], cn,
+                                               "详细总结" if detail else "总结"))
+
+    def _put_summary(self, img, what):
+        """把画好的图放进剪贴板，状态栏报一句人话。三处入口共用。"""
+        if img is None or not summary.copy_image(img):
             self.set_status("图片复制失败（剪贴板被别的程序占着？）", "err")
             return
-        self.set_status("已复制 %s %s 的总结（图片 %d×%d）"
-                        % (row["date"], cn, img.size[0], img.size[1]), "ok")
+        self.set_status("已复制 %s（图片 %d×%d）"
+                        % (what, img.size[0], img.size[1]), "ok")
 
     def _today_rows(self):
         """今天有完成局的级别：[(级别, 名称, 该天聚合行), ...]。"""
@@ -3307,10 +3308,10 @@ class App(tk.Tk):
 
     def _today_menu(self):
         m = tk.Menu(self, tearoff=0)
-        m.add_command(label="复制今日总结（文本）",
-                      command=lambda: self._copy_today("text"))
-        m.add_command(label="复制今日总结（图片）",
-                      command=lambda: self._copy_today("png"))
+        m.add_command(label="复制今日总结",
+                      command=lambda: self._copy_today(False))
+        m.add_command(label="复制今日详细总结",
+                      command=lambda: self._copy_today(True))
         b = self.btn_today
         try:
             m.tk_popup(b.winfo_rootx(),
@@ -3318,15 +3319,15 @@ class App(tk.Tk):
         finally:
             m.grab_release()
 
-    def _copy_today(self, kind):
-        """今天的总结：把有局的级别并在一张图 / 一段文字里。"""
-        self._copy_levels(core.day_text(time.time()), kind)
+    def _copy_today(self, detail=False):
+        """今天的总结：把有局的级别并在一张图里。"""
+        self._copy_levels(core.day_text(time.time()), detail)
 
-    def _copy_levels(self, day, kind):
-        """某一天全部级别的总结。今天用就是「今日总结」，往日就是「当日总结」。
+    def _copy_levels(self, day, detail=False):
+        """某一天全部级别的总结 / 详细总结。
 
         与概览页那个按钮共用一套版式：日子不同只影响标题里的「今日」后缀，
-        所以每日页任意一天都能直接出三级别卡片，不必先等到今天。
+        所以每日页任意一天都能直接出多级别卡片，不必先等到今天。
         """
         items = self._day_level_rows(day)
         is_today = day == core.day_text(time.time())
@@ -3335,28 +3336,21 @@ class App(tk.Tk):
             self.set_status("今天还没有完成局" if is_today
                             else "%s 没有完成局" % day, "dim")
             return
-        if kind == "text":
-            text = summary.levels_text([(cn, r) for _lv, cn, r in items],
-                                       APP_VER, day)
-            try:
-                summary.copy_text(self, text)
-            except tk.TclError as e:
-                self.set_status("复制失败：%s" % e, "err")
-                return
-            self.set_status("已复制 %s %s总结（文本，%d 个级别）"
-                            % (day, word, len(items)), "ok")
-            return
         try:
-            img = summary.levels_png(items, APP_VER, day)
+            if detail:
+                gbl = {lv: core.daily_games(self.games, day, lv)
+                       for lv, _cn, _r in items}
+                img = summary.levels_detail_png(items, gbl, APP_VER, day)
+            else:
+                img = summary.levels_png(items, APP_VER, day)
         except Exception as e:                  # noqa: BLE001
-            diag.log.exception("画 %s 总结图失败" % word)
+            diag.log.exception("画 %s%s图失败"
+                               % (word, "详细总结" if detail else "总结"))
             self.set_status("画图失败：%s" % e, "err")
             return
-        if img is None or not summary.copy_image(img):
-            self.set_status("图片复制失败（剪贴板被别的程序占着？）", "err")
-            return
-        self.set_status("已复制 %s %s总结（图片 %d×%d，%d 个级别）"
-                        % (day, word, img.size[0], img.size[1], len(items)), "ok")
+        what = "%s · %s · %d 个级别" % (day, word + ("详细总结" if detail
+                                                     else "总结"), len(items))
+        self._put_summary(img, what)
 
     def _build_pb(self):
         page = self.pages["pb"]
@@ -5894,10 +5888,20 @@ def main():
                 lvl = "levels_png=%dx%d" % img3.size
             except Exception as e:              # noqa: BLE001
                 lvl = "levels_png=ERR %r" % (e,)
+            # 详细版（每日页右键「详细总结」）多画分布与极值两块，打包后同样要能跑
+            det = "detail_png=?"
+            try:
+                g6 = [{"time": 10.0 + i, "bv": 30 + i, "style": "nf"}
+                      for i in range(6)]
+                img4 = summary.levels_detail_png(
+                    [("e", "高级", probe)], {"e": g6}, APP_VER, "2026-11-17")
+                det = "detail_png=%dx%d" % img4.size
+            except Exception as e:              # noqa: BLE001
+                det = "detail_png=ERR %r" % (e,)
             with open(out, "w", encoding="utf-8") as fh:
-                fh.write("version=%s\nfrozen=%s\n%s\n%s\n%s\n"
+                fh.write("version=%s\nfrozen=%s\n%s\n%s\n%s\n%s\n"
                          % (APP_VER, bool(getattr(sys, "frozen", False)), png, mk,
-                            lvl))
+                            lvl, det))
         except Exception:
             pass
         return

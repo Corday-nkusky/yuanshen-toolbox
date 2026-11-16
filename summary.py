@@ -1,8 +1,7 @@
-"""把一天（或今天）的记录整理成可以直接发出去的文字 / 图片。
+"""把一天（或今天）的记录画成可以直接发出去的图。
 
 为什么单独一个文件：这段逻辑「每日」页的右键菜单和「概览」页的今日总结
-按钮都要用，而且文字与图片必须来自同一份数字 —— 两处各写一遍，迟早出现
-图上是 37 局、文字里是 36 局这种事。
+按钮都要用，两处各写一遍出图，迟早出现一张卡是 37 局、另一张是 36 局这种事。
 
 口径全部来自 core.daily_rows()：一天 = 本地 00:00–24:00，按开始时刻归日；
 平均是算术平均。这里只排版，不再做任何统计。
@@ -38,7 +37,7 @@ C_RULE = "#f6ecf3"
 SCALE = 2          # 2 倍像素渲染：发到手机上放大也不糊
 
 
-# --------------------------------------------------------------- 文字部分
+# ------------------------------------------------- 时间与完成方式的小工具
 def _clock(t):
     return core.clock_text(t)
 
@@ -56,63 +55,9 @@ def _style_text(row):
     return "FL %d · NF %d" % (fl, nf)
 
 
-def _metric_lines(row):
-    """三行指标。标签用表里同名的那三个词，不另造（最快 != 最高）。"""
-    return [
-        "时间（秒）：最快 %.3f / 平均 %.3f / 最慢 %.3f"
-        % (row["best"], row["avg"], row["worst"]),
-        "3BV/s：最高 %.3f / 平均 %.3f / 最低 %.3f"
-        % (row["bvs_max"], row["bvs_avg"], row["bvs_min"]),
-        "stnb：最高 %.3f / 平均 %.3f / 最低 %.3f"
-        % (row["stnb_max"], row["stnb_avg"], row["stnb_min"]),
-    ]
-
-
 def _today_tag(day):
     """真是今天才写「今日」；拿别的日子作图时别硬叫今日。"""
     return " 今日" if day == datetime.now().strftime("%Y-%m-%d") else ""
-
-
-def daily_text(row, level_cn, ver=""):
-    """某一天、某一个级别的总结。"""
-    if not row:
-        return ""
-    lines = ["%s · %s · %d 局" % (row["date"], level_cn, row["games"]),
-             "%s – %s" % (_clock(row["t_from"]), _clock(row["t_till"]))]
-    style = _style_text(row)
-    if style:
-        lines.append(style)
-    lines.extend(_metric_lines(row))
-    if ver:
-        lines.append("—— YuanshenToolbox v%s" % ver)
-    return "\n".join(lines)
-
-
-def levels_text(items, ver="", day=""):
-    """某一天有局的几个级别合在一起。items = [(级别名, 行), ...]
-
-    当天用就是「今日总结」，往日用就是「当日总结」—— 差别只在标题后缀，
-    由 _today_tag 判断，函数本身不认识「今天」。
-    """
-    items = [(cn, r) for cn, r in items if r]
-    if not items:
-        return ""
-    day = day or items[0][1]["date"]
-    total = sum(r["games"] for _cn, r in items)
-    head = "%s%s · 共 %d 局" % (day, _today_tag(day), total)
-    lines = [head, " · ".join("%s %d 局" % (cn, r["games"]) for cn, r in items)]
-    for cn, r in items:
-        lines.append("")
-        style = _style_text(r)
-        tail = " · " + style if style else ""
-        lines.append("%s · %d 局%s · %s – %s"
-                     % (cn, r["games"], tail, _clock(r["t_from"]),
-                        _clock(r["t_till"])))
-        lines.extend("  " + s for s in _metric_lines(r))
-    if ver:
-        lines.append("")
-        lines.append("—— YuanshenToolbox v%s" % ver)
-    return "\n".join(lines)
 
 
 # --------------------------------------------------------------- 图片部分
@@ -446,14 +391,185 @@ def levels_png(items, ver="", day="", now=None, with_mascot=True):
 
 
 
-# --------------------------------------------------------------- 剪贴板
-def copy_text(widget, text):
-    """文本进剪贴板。widget 任意（用它的 clipboard 方法即可，全进程共用）。"""
-    widget.clipboard_clear()
-    widget.clipboard_append(text)
+def _span_text(sec):
+    """4 小时 5 分 / 43 分 12 秒 / 18 秒。总结卡不写这个，详细版才写。"""
+    sec = int(round(float(sec or 0)))
+    h, rest = divmod(sec, 3600)
+    m, s = divmod(rest, 60)
+    if h:
+        return "%d 小时 %d 分" % (h, m)
+    if m:
+        return "%d 分 %d 秒" % (m, s)
+    return "%d 秒" % s
+
+
+def _median(vals):
+    vals = sorted(v for v in vals if v)
+    n = len(vals)
+    if not n:
+        return 0.0
+    if n % 2:
+        return vals[n // 2]
+    return (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+
+
+def _hist_bars(sh, x, y, w, h, times, accent, n=8):
+    """每局用时的分布：等宽分桶的竖柱，柱顶写局数。
+
+    不足 4 局或全部用时差不多时不画 —— 那种情况画出来就是一根柱子，
+    读不出任何信息，不如省下这块地方。
+    """
+    times = [float(t) for t in times if t]
+    if len(times) < 4:
+        return False
+    lo, hi = min(times), max(times)
+    if hi - lo < 0.5:
+        return False
+    step = (hi - lo) / float(n)
+    counts = [0] * n
+    for t in times:
+        counts[min(n - 1, int((t - lo) / step))] += 1
+    top = max(counts)
+    gap = 6
+    bw = (w - gap * (n - 1)) / float(n)
+    for i, c in enumerate(counts):
+        bx = x + i * (bw + gap)
+        if not c:
+            continue
+        bh = max(2.0, h * c / float(top))
+        sh.rect(bx, y + h - bh, bw, bh, accent, radius=3)
+        sh.text(bx + bw / 2.0, y + h - bh - 5, "%d" % c, 10, C_DIM, anchor="mb")
+    sh.line(x, y + h, x + w, y + h, C_LINE)
+    sh.text(x, y + h + 6, "%.1f s" % lo, 10, C_DIM)
+    sh.text(x + w, y + h + 6, "%.1f s" % hi, 10, C_DIM, anchor="rt")
     return True
 
 
+def _extreme(sh, x, y, w, games, slowest, accent, n=5):
+    """最快 / 最慢各 5 局：用时 · 3BV · 完成方式。返回写了几行。"""
+    games = [g for g in games if g.get("time")]
+    pick = sorted(games, key=lambda g: g["time"], reverse=slowest)[:n]
+    for i, g in enumerate(pick):
+        ry = y + i * 21
+        sh.text(x, ry, "%.3f" % g["time"], 12, C_INK, True)
+        sh.text(x + 62, ry + 1, "%d BV" % int(g.get("bv") or 0), 11, C_DIM)
+        st = core.STYLE_CN.get(g.get("style"))
+        if st:
+            sh.text(x + w, ry + 1, st, 11, accent, True, anchor="rt")
+    return len(pick)
+
+
+def levels_detail_png(items, games_by_level, ver="", day="", now=None,
+                      with_mascot=True):
+    """详细版的总结：在总结卡的基础上多给「用时分布」与「最快 / 最慢 5 局」。
+
+    总结卡回答「这一天打得怎么样」（最好 / 平均 / 最差），详细版回答「这些数
+    是怎么来的」。分布柱看手感波动 —— 一把 16 秒、其余 20 秒，和均匀 19 秒
+    平均起来差不多，是两种日子；极值表看极端局是多大盘、什么完成方式。
+
+    items = [(级别键, 级别名, 该天聚合行)]；games_by_level = {级别键: [该天每局]}。
+    每局只取 time / bv / style 三个字段，其余不画。
+    """
+    items = [(k, cn, r) for k, cn, r in items if r]
+    if not items:
+        return None
+    day = day or items[0][2]["date"]
+    only = len(items) == 1
+    W = D_W
+    sh = _Sheet(W, with_mascot=with_mascot)
+    total = sum(r["games"] for _k, _cn, r in items)
+    t_from = min(r["t_from"] for _k, _c, r in items)
+    t_till = max(r["t_till"] for _k, _c, r in items)
+    fl = sum(int(r.get("fl") or 0) for _k, _c, r in items)
+    nf = sum(int(r.get("nf") or 0) for _k, _c, r in items)
+
+    y = 30
+    title = day + _today_tag(day)
+    sh.text(PAD, y, title, 26, C_INK, bold=True)
+    if only:
+        k, cn, _r = items[0]
+        tw = sh.text_w(title, 26, True)
+        _chip(sh, PAD + tw + 12, y + 5, cn,
+              LEVEL_ACCENT.get(k, (C_INK, CARD_BG))[0], size=13, padh=10, h=24)
+    sh.text(W - PAD, y + 5, "共 %d 局" % total, 18, C_INK, True, anchor="rt")
+
+    meta = "%s – %s · 跨度 %s" % (_clock(t_from), _clock(t_till),
+                                  _span_text(t_till - t_from))
+    if fl or nf:
+        meta += " · FL %d · NF %d" % (fl, nf)
+    sh.text(PAD, y + 40, meta, 13, C_DIM)
+    y += 40 + 28
+    sh.line(PAD, y, W - PAD, y, C_LINE)
+    y += 18
+
+    x0 = PAD + D_LAB_W
+    for j, (k, cn, r) in enumerate(items):
+        accent = LEVEL_ACCENT.get(k, (C_INK, CARD_BG))[0]
+        # 只有一个级别时，级别名与局数在标题里已经写过，不再重复一行
+        if not only:
+            cw = _chip(sh, PAD, y, cn, accent, size=12, padh=9, h=22)
+            sh.text(PAD + cw + 8, y + 3, "%d 局" % r["games"], 12, C_DIM)
+            sh.text(W - PAD, y + 3, "%s – %s"
+                    % (_clock(r["t_from"])[:5], _clock(r["t_till"])[:5]),
+                    12, C_DIM, anchor="rt")
+            y += 30
+
+        # 每块自带「最好 / 平均 / 最差」：块之间隔着图和表，共用一次表头会让人
+        # 对不上列（总结卡是紧挨着的矩阵，那种才适合共用）。
+        for i, h in enumerate(("最好", "平均", "最差")):
+            sh.text(x0 + D_COL_W * (i + 1) - 8, y, h, 11, C_DIM, anchor="rt")
+        y += 20
+        for label, vals, prec in (
+                ("时间（秒）", (r["best"], r["avg"], r["worst"]), 3),
+                ("3BV/s", (r["bvs_max"], r["bvs_avg"], r["bvs_min"]), 3),
+                ("stnb", (r["stnb_max"], r["stnb_avg"], r["stnb_min"]), 2)):
+            sh.text(PAD, y, label, 14, C_INK)
+            for i, v in enumerate(vals):
+                sh.text(x0 + D_COL_W * (i + 1) - 8, y, "%.*f" % (prec, v), 16,
+                        C_INK, i == 1, anchor="rt")
+            y += 38
+
+        games = games_by_level.get(k) or []
+        times = [g.get("time") for g in games if g.get("time")]
+        y += 8
+        sh.text(PAD, y, "用时分布", 12, C_DIM)
+        if times:
+            sh.text(W - PAD, y + 1, "中位 %.2f s" % _median(times),
+                    10, C_DIM, anchor="rt")
+        y += 22
+        if _hist_bars(sh, PAD, y, W - PAD * 2, 52, times, accent):
+            y += 52 + 20
+        else:
+            sh.text(PAD, y + 14, "不足 4 局或用时几乎相同，画不出分布",
+                    11, C_DIM, anchor="lm")
+            y += 40
+
+        y += 8
+        if len(games) < 3:
+            # 一局两局的日子，「最快 5」和「最慢 5」是同一批局，两栏只会重复
+            sh.text(PAD, y, "全部 %d 局" % len(games), 12, C_DIM)
+            y += 20
+            rows = _extreme(sh, PAD, y, 210, games, False, accent)
+            y += max(1, rows) * 21 + 10
+        else:
+            sh.text(PAD, y, "最快 5 局", 12, C_DIM)
+            sh.text(PAD + 240, y, "最慢 5 局", 12, C_DIM)
+            y += 20
+            rows = _extreme(sh, PAD, y, 210, games, False, accent)
+            _extreme(sh, PAD + 240, y, 210, games, True, accent)
+            y += max(1, rows) * 21 + 10
+
+        if j < len(items) - 1:
+            y += 4
+            sh.line(PAD, y, W - PAD, y, C_LINE)
+            y += 18
+
+    fy = y + 10
+    _footer(sh, fy, ver, now)
+    return sh.render(fy + 30)
+
+
+# --------------------------------------------------------------- 剪贴板
 def copy_image(img):
     """把 PIL 图放进剪贴板，用 CF_DIB（Windows 原生，无需 pywin32）。
 
