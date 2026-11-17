@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.29.0"
+APP_VER = "0.29.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -807,8 +807,10 @@ class Table(ttk.Frame):
                 # 原样显示 —— 它们不是数字，硬格式化只会多出个 0.000。
                 v = f"+{v:.3f}" if v else "0.000"
             elif kind == "delta2" and isinstance(v, (int, float)):
-                # 3BV/s / stnb 的差距：这两个量本来就只读两位小数。
-                v = f"+{v:.2f}" if v else "0.00"
+                # 3BV/s / stnb 的差距：这两个量本来就只读两位小数。越大越好，
+                # 所以负数就是「比 PB 低」，正数才补 + 号；四位后归零的
+                # （−0.001）写成 0.00，不要冒出个 "−0.00"。
+                v = f"{v:+.2f}" if abs(v) >= 0.005 else "0.00"
             elif kind == "gain":
                 # 涨分：不涨就留空。一行里没有这个数是有意义的信息，
                 # 写成 "0.0" 只会把 96% 的行铺满噪声。
@@ -854,12 +856,18 @@ class Table(ttk.Frame):
 
         def keyf(r):
             v = r.get(key)
-            if kind in ("delta", "delta2"):
+            if kind == "delta":
                 # 差距列：数字越小越好。"PB"（同一局，差距 0）排最前，
                 # "—"（没有基准可比）永远垫底，不能按字符串比较。
                 if isinstance(v, (int, float)):
                     return float(v)
                 return -1.0 if v == "PB" else float("inf")
+            if kind == "delta2":
+                # 同样是差距列，但 3BV/s / stnb 越大越好、负数才是不如 PB，
+                # 取相反数，升序仍然是「最接近 PB 的排最前」。
+                if isinstance(v, (int, float)):
+                    return -float(v)
+                return float("-inf") if v == "PB" else float("inf")
             if kind == "gain":
                 # 涨分列有一半是空的（没涨），空要能参与比较，而且不能被
                 # 当成字符串 —— "+12.3" 按字典序会排在 "+2.8" 前面。
@@ -5614,10 +5622,10 @@ class App(tk.Tk):
     def _gaps_to_pb(g, pb):
         """这局离当前 PB 差多少：时间、3BV/s、stnb 三项一起算。
 
-        三项统一成「还差多少」：正数 = 不如 PB，0/接近 0 = 追平。时间用
-        「本局 − PB」（越慢差得越多），3BV/s 和 stnb 用「PB − 本局」（越低
-        差得越多），这样三列的读法一致，都是"正数还得补"。同局返回 "PB"，
-        没基准返回 "—"，与 _gap_to_pb 单列版同口径。
+        三列都写「本局 − PB」的真实差值，正负号自己表达方向：时间是
+        「+4.782」＝慢了这么多（越大越差），3BV/s 和 stnb 是「−0.94」
+        ＝比 PB 低这么多（越大越好）。同局返回 "PB"，没基准或指标缺失
+        返回 "—"，与 _gap_to_pb 单列版同口径。
         """
         cat = "nf" if g.get("style") == "nf" else "all"
         p = pb.get((cat, g.get("level"), g.get("bv")))
@@ -5638,10 +5646,15 @@ class App(tk.Tk):
             except (TypeError, ValueError):
                 return 0.0
 
+        def diff(key):
+            # 任一边缺这个指标就不报差，免得把 0 当成真实值算出一串假差距
+            a, b = num(g, key), num(p, key)
+            return (a - b) if a > 0 and b > 0 else "—"
+
         return {
             "time": max(0, ms_of(g) - ms_of(p)) / 1000.0,
-            "bvs": max(0.0, num(p, "bvs") - num(g, "bvs")),
-            "stnb": max(0.0, num(p, "stnb") - num(g, "stnb")),
+            "bvs": diff("bvs"),
+            "stnb": diff("stnb"),
         }
 
     @staticmethod
