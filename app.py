@@ -807,10 +807,11 @@ class Table(ttk.Frame):
                 # 原样显示 —— 它们不是数字，硬格式化只会多出个 0.000。
                 v = f"+{v:.3f}" if v else "0.000"
             elif kind == "delta2" and isinstance(v, (int, float)):
-                # 3BV/s / stnb 的差距：这两个量本来就只读两位小数。越大越好，
-                # 所以负数就是「比 PB 低」，正数才补 + 号；四位后归零的
-                # （−0.001）写成 0.00，不要冒出个 "−0.00"。
-                v = f"{v:+.2f}" if abs(v) >= 0.005 else "0.00"
+                # 3BV/s（= bv/time）、stnb（= C·bv/time^1.7）在同一 BV 下都只随
+                # 用时单调递减，而 PB 就是该 BV 最快的局 —— 这两项本局恒不高于
+                # PB，差值只会是负数，负号就是「比 PB 低多少」。四舍五入归零
+                # 的写 0.00，不冒出 "−0.00"。
+                v = f"{0.0 if abs(v) < 0.005 else v:.2f}"
             elif kind == "gain":
                 # 涨分：不涨就留空。一行里没有这个数是有意义的信息，
                 # 写成 "0.0" 只会把 96% 的行铺满噪声。
@@ -863,8 +864,8 @@ class Table(ttk.Frame):
                     return float(v)
                 return -1.0 if v == "PB" else float("inf")
             if kind == "delta2":
-                # 同样是差距列，但 3BV/s / stnb 越大越好、负数才是不如 PB，
-                # 取相反数，升序仍然是「最接近 PB 的排最前」。
+                # 同样是差距列，但这两项越大越好、差值恒为负，取相反数，
+                # 升序仍然是「最接近 PB 的排最前」。
                 if isinstance(v, (int, float)):
                     return -float(v)
                 return float("-inf") if v == "PB" else float("inf")
@@ -5622,10 +5623,10 @@ class App(tk.Tk):
     def _gaps_to_pb(g, pb):
         """这局离当前 PB 差多少：时间、3BV/s、stnb 三项一起算。
 
-        三列都写「本局 − PB」的真实差值，正负号自己表达方向：时间是
-        「+4.782」＝慢了这么多（越大越差），3BV/s 和 stnb 是「−0.94」
-        ＝比 PB 低这么多（越大越好）。同局返回 "PB"，没基准或指标缺失
-        返回 "—"，与 _gap_to_pb 单列版同口径。
+        三列都写「本局 − PB」，正负号就是方向。时间越大越差，所以是正数
+        （+4.782 秒）；3BV/s 和 stnb 在同一 BV 下都只随用时单调递减，PB 又是
+        该 BV 最快的局，所以这两项恒不高于 PB、差值恒为负数（−0.94 就是比
+        PB 低 0.94）。同局返回 "PB"，没基准或指标缺失返回 "—"。
         """
         cat = "nf" if g.get("style") == "nf" else "all"
         p = pb.get((cat, g.get("level"), g.get("bv")))
@@ -5647,7 +5648,7 @@ class App(tk.Tk):
                 return 0.0
 
         def diff(key):
-            # 任一边缺这个指标就不报差，免得把 0 当成真实值算出一串假差距
+            # 缺指标（值为 0）就不报差，否则会拿 0 算出一个"差满"的假数
             a, b = num(g, key), num(p, key)
             return (a - b) if a > 0 and b > 0 else "—"
 
