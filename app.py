@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.29.2"
+APP_VER = "0.29.4"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -681,6 +681,19 @@ class LsfCard(tk.Frame):
 
 
 # ------------------------------------------------------------------ 通用表格
+def _delta_text(v, nd=3):
+    """差值文本：正负号本身就是方向，不再另加箭头。
+
+    「距当前 PB」是「本局 − PB」（时间越长越差 → 正数），3BV/s / stnb 也是
+    「本局 − 参照」（越高越好 → 负数表示不如参照）。PB 那一行拿旧 PB 做参照，
+    时间就成了负数（快了这么多），跟旁边几列读法完全一致。
+
+    四舍五入后归零的写 0.000 / 0.00，不冒出 "-0.00" 这种自相矛盾的符号。
+    """
+    return (f"{v:+.{nd}f}" if abs(v) >= 0.5 * 10 ** -nd
+            else f"{0:.{nd}f}")
+
+
 class Table(ttk.Frame):
     """带排序的 Treeview 封装。columns: (key, 标题, 宽度, 对齐, 类型)
 
@@ -803,15 +816,14 @@ class Table(ttk.Frame):
             elif kind == "int" and isinstance(v, (int, float)):
                 v = f"{int(v)}"
             elif kind == "delta" and isinstance(v, (int, float)):
-                # 与基准的差距：正数带 + 号（数越小越好）。非数值（"PB" / "—"）
-                # 原样显示 —— 它们不是数字，硬格式化只会多出个 0.000。
-                v = f"+{v:.3f}" if v else "0.000"
+                # 与基准的差距：正负号就是方向（+ 慢了多少，− 快了多少）。
+                # 非数值（"PB" / "—"）原样显示 —— 它们不是数字。
+                v = _delta_text(v, 3)
             elif kind == "delta2" and isinstance(v, (int, float)):
                 # 3BV/s（= bv/time）、stnb（= C·bv/time^1.7）在同一 BV 下都只随
                 # 用时单调递减，而 PB 就是该 BV 最快的局 —— 这两项本局恒不高于
-                # PB，差值只会是负数，负号就是「比 PB 低多少」。四舍五入归零
-                # 的写 0.00，不冒出 "−0.00"。
-                v = f"{0.0 if abs(v) < 0.005 else v:.2f}"
+                # PB，所以相对当前 PB 只会是负数（比 PB 低多少）。
+                v = _delta_text(v, 2)
             elif kind == "gain":
                 # 涨分：不涨就留空。一行里没有这个数是有意义的信息，
                 # 写成 "0.0" 只会把 96% 的行铺满噪声。
@@ -858,18 +870,18 @@ class Table(ttk.Frame):
         def keyf(r):
             v = r.get(key)
             if kind == "delta":
-                # 差距列：数字越小越好。「PB↑x」（同一局，差距 0）排最前，
-                # "—"（没有基准可比）永远垫底，不能按字符串比较。
+                # 差距列：数字越小越好。「PB −2.111」（同一局，与旧 PB 比）
+                # 排最前，"—"（没有基准可比）永远垫底，不能按字符串比较。
                 if isinstance(v, (int, float)):
                     return float(v)
                 return -1.0 if str(v).startswith("PB") else float("inf")
             if kind == "delta2":
-                # 同样是差距列，但这两项越大越好、差值恒为负，取相反数，
-                # 升序仍然是「最接近 PB 的排最前」。PB 行的「↑提升」同理。
+                # 同样是差距列，但这两项越大越好，取相反数，升序仍然是
+                # 「最接近 PB 的排最前」。PB 行要么是提升值（数字，取反后最小），
+                # 要么是首个 PB 那行的 "PB" 字样，都得排最前；"—" 垫底。
                 if isinstance(v, (int, float)):
                     return -float(v)
-                return float("-inf") if str(v).startswith(("PB", "↑")) \
-                    else float("inf")
+                return float("-inf") if str(v).startswith("PB") else float("inf")
             if kind == "gain":
                 # 涨分列有一半是空的（没涨），空要能参与比较，而且不能被
                 # 当成字符串 —— "+12.3" 按字典序会排在 "+2.8" 前面。
@@ -5558,9 +5570,10 @@ class App(tk.Tk):
         每行给出「距当前 PB」还差多少。PB 会变，所以这里每次都按当前 PB 现算：
         同一局今天显示 +0.532，等 PB 提上去之后会变成 +0.900。
 
-        破 PB 的那一局按「相对它替掉的那个旧 PB」显示提升（PB ↑0.132），
-        旧 PB 取同（榜, 级别, 3BV）下更早完成的最快一局，本地没有就用网站
-        上的成绩；首个 PB 没有旧值可比，仍旧只写 PB。
+        破 PB 的那一局拿它替掉的旧 PB 做参照，跟其余行同一个式子（本局 −
+        参照）：时间快了多少写成负数（PB −2.111，跟旁边的 +4.782 读法一致），
+        bvs/stnb 高了多少写成正数。旧 PB 取同（榜, 级别, 3BV）下更早完成的最快
+        一局，本地没有就用网站上的成绩；首个 PB 没有旧值可比，仍旧只写 PB。
         """
         rows = sorted(self.games, key=lambda g: g.get("t0") or g.get("mtime") or 0,
                       reverse=True)
@@ -5593,12 +5606,13 @@ class App(tk.Tk):
             item["vs_pb_stnb"] = gap["stnb"]
             old = prevs.get(g.get("path")) if gap["time"] == "PB" else None
             if old is not None:
-                # 破 PB 的那一局不只写个 PB：把它比旧 PB 好多少写出来，
-                # 正数就是提升（时间快了 / bvs、stnb 高了）。
+                # 破 PB 的那一局拿旧 PB 做参照，跟上面几列同一个式子
+                # （本局 − 参照）：时间快了多少就是负数，bvs/stnb 高了多少
+                # 就是正数。「PB」前缀只用来标明这一行就是当前 PB。
                 d_t, d_b, d_s = self._improve_over(g, old)
-                item["vs_pb"] = "PB ↑%.3f" % d_t
-                item["vs_pb_bvs"] = "↑%.2f" % d_b
-                item["vs_pb_stnb"] = "↑%.2f" % d_s
+                item["vs_pb"] = "PB " + _delta_text(-d_t, 3)
+                item["vs_pb_bvs"] = _delta_text(d_b, 2)
+                item["vs_pb_stnb"] = _delta_text(d_s, 2)
             item["gain"] = gains.get(g.get("path") or "")
             out.append(item)
         self.tbl_recent.set_rows(out)
