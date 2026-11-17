@@ -3,28 +3,38 @@
 跑法：python test_retry.py  —— 全部通过退出码 0，否则 1。
 覆盖：503/429/5xx 重试、403/402/实名/封禁的 fatal 标记、可重试错误重试耗尽后
       标 transient、collision 当成功、500 单条失败、断网抛 OmsError。
+
+upload() 只把文件字节 POST 给假站点，不解析录像内容。没有真实 .evf 样本时
+用临时目录里的合成占位文件跑完整用例，不再整份跳过。
 """
 
 import http.server
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 
 import openms
 
 REPLAY = os.path.join(os.environ.get("APPDATA", ""), "Metasweeper3.3.4", "replay")
+TMPDIR = None
 
 
 def pick_evf():
-    if not os.path.isdir(REPLAY):
-        print("跳过：找不到录像目录 %s" % REPLAY)
-        sys.exit(0)
-    for name in os.listdir(REPLAY):
-        if name.lower().endswith(".evf"):
-            return os.path.join(REPLAY, name)
-    print("跳过：录像目录里没有 .evf")
-    sys.exit(0)
+    global TMPDIR
+    if os.path.isdir(REPLAY):
+        for name in os.listdir(REPLAY):
+            if name.lower().endswith(".evf"):
+                return os.path.join(REPLAY, name)
+    TMPDIR = tempfile.mkdtemp(prefix="ytb-retry-")
+    path = os.path.join(TMPDIR, "b_0_1.774_9_5.073_synthetic.evf")
+    with open(path, "wb") as fh:
+        fh.write(b"\0" * 64)
+    print("提示：没找到真实 .evf 样本（%s），本轮用合成占位文件跑假站点回归"
+          % REPLAY)
+    return path
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -107,6 +117,8 @@ def main():
         print("OK   断网抛 OmsError（%.1fs）" % (time.perf_counter() - t))
 
     srv.shutdown()
+    if TMPDIR:
+        shutil.rmtree(TMPDIR, ignore_errors=True)
     print("== %s ==" % ("全部通过" if not bad else "%d 项失败" % bad))
     return 1 if bad else 0
 

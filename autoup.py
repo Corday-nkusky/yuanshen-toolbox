@@ -7,11 +7,13 @@
 NF 榜独立）。本模块只做三件事：
 
   1. ``Tracker``：认出「这次扫描新出现的、并且已经写稳的」录像；
-  2. ``judge()``：把新录像过滤成「值得传」的（范围 ∩ 未传 ∩ 预检通过）；
+  2. ``judge()``：取新录像与上传范围的交集（预检和去重由 App 负责）；
   3. ``explain()``：给每条写一句人能看懂的理由，供「最近自动上传」那张表用。
 
 筛选只认 ``scope_paths``，``explain`` 只负责解释。两者分开的原因是：
 理由算不出来时退回范围标签，绝不能因为解释不出来就漏传。
+额外的 ``all`` 范围走 ``scope_paths(..., "all")``：只放行扫描层已确认的标准
+完成局，不做任何 PB / Top5 对照，理由固定为「新增完成局」。
 
 为什么理由要单独算：用户得知道这功能到底干了什么。
 「涨分 · 3BV/s 6.53（网站第五 6.12）」比「已上传」有用得多。
@@ -23,9 +25,11 @@ import time
 import core
 import openms
 
-# 自动上传能选的范围。故意不含 'all'（全部完成局）：那不是「符合要求」，
-# 是备份，量级完全不同（几万局 vs 账号录像额度）。
+# 三项偏好与独立的全量开关分别保存。
 AUTO_SCOPES = ("top", "top_nf", "pb", "pb_nf")
+
+ALL_SCOPE = "all"
+ALL_WHY = "新增完成局"
 
 # 界面上的三个开关 -> 范围集合。涨分局 = 前端 std + 前端 NF，两项绑在一起：
 # 用户口径里它们是同一件事（排行榜上的显示值变好）。
@@ -40,6 +44,7 @@ SCOPE_CN = {
     "top_nf": "涨分·NF",
     "pb": "全PB",
     "pb_nf": "NF PB",
+    "all": ALL_WHY,
 }
 
 METRIC_CN = {"time": "time", "bvs": "3BV/s", "stnb": "stnb"}
@@ -56,10 +61,18 @@ def scopes_of(flags):
 
 
 def flags_of(scopes):
-    """范围元组 -> 三个开关的布尔值（读配置用）。"""
+    """范围元组 -> 三项偏好，不包含独立的全量开关。"""
     have = set(scopes or ())
     return {key: all(s in have for s in sc) if sc else False
             for key, sc, _label in GROUPS}
+
+
+def normalize_scopes(scopes):
+    """全量优先；未知范围忽略，避免进入 scope_paths() 的全量兜底。"""
+    have = set(scopes or ())
+    if ALL_SCOPE in have:
+        return (ALL_SCOPE,)
+    return tuple(s for s in AUTO_SCOPES if s in have)
 
 
 def pool(games, include_arb=True):
@@ -73,13 +86,18 @@ def pool(games, include_arb=True):
 
 
 def ready(scopes, site_pb=None, site_top=None):
-    """判定需要的网站数据齐了没有。
+    """判定需要的**范围成绩数据**齐了没有；账号 / 录像列表不归这里管。
 
     涨分局缺网站 Top5 就**不能**判：``top_beats`` 在没有阈值时一律返回 True，
     会把「本地前五」全当成「新上榜」一口气传一堆。PB 两榜缺网站 PB 只是可能
     传了比网站慢的，但既然读 PB 只要一个请求，就一并要求，省额度。
+
+    全量范围不对照 PB / Top5，这两个接口失败、空榜或还在加载都不该挡它，
+    所以恒为 true；账号与网站录像列表的门控在 ``App._auto_ready_reason()``。
     """
-    scopes = set(scopes or ())
+    scopes = set(normalize_scopes(scopes))
+    if ALL_SCOPE in scopes:
+        return True
     if scopes & {"top", "top_nf"} and not site_top:
         return False
     if scopes & {"pb", "pb_nf"} and not site_pb:
@@ -128,10 +146,18 @@ def judge(games, scopes, new_paths, site_pb=None, site_top=None):
 
     new_paths: ``Tracker`` 放行的路径集合（已确认写稳的新局）。
     返回 ``[{"path", "game", "why": [str]}]``；不在返回里的就是不传。
+    ``games`` 必须是 ``core.scan()`` 的输出：模式 / 完成状态的过滤在扫描层，
+    判定层不重新实现一套文件名或录像内容检查。
     """
-    scopes = tuple(s for s in AUTO_SCOPES if s in set(scopes or ()))
+    scopes = normalize_scopes(scopes)
     if not scopes or not new_paths:
         return []
+
+    if scopes == (ALL_SCOPE,):
+        # 全量不计算排名；预检与去重仍由 App 负责。
+        want = openms.scope_paths(games, ALL_SCOPE)
+        return [{"path": g["path"], "game": g, "why": [ALL_WHY]}
+                for g in games if g["path"] in new_paths and g["path"] in want]
 
     want = set()
     for s in scopes:
@@ -160,6 +186,8 @@ def judge(games, scopes, new_paths, site_pb=None, site_top=None):
 
 def explain(game, games, scopes, best=None, cut=None):
     """这条局为什么值得传。返回中文短句列表，空表示解释不出来。"""
+    if ALL_SCOPE in (scopes or ()):
+        return [ALL_WHY]
     best = best if best is not None else {}
     cut = cut if cut is not None else {}
     lv = game.get("level")

@@ -5,8 +5,14 @@
   2. 传完之后把「正在扫描…已读 22400 / 22555（99%）」当常态还原，状态栏卡在假进度；
   3. 自动上传成功后不重读网站，前端成绩 / 网站 PB 停在旧数据。
 另外覆盖：垃圾 .evf 不能送进 ms-toollib（它会直接把进程带下去）。
+范围切换与配置恢复由 test_auto_all_new.py 覆盖。
 
-不联网、不碰真实数据：配置目录与录像目录都是临时目录，录像用真实文件的一份副本。
+不联网、不碰真实数据：配置目录与录像目录都是临时目录。有真实 .evf 样本时
+复制一份；没有时用合成占位文件跑完整主流程（占位文件头部全 0，扫描层会在
+送进 ms-toollib 之前挡下），只把「头部正常的录像照常解析」这一条标为跳过。
+
+「不联网」不只是约定：启动期的会话恢复 / 全站锚点 / 任务栏轮询都不跑，HTTP
+出口 Client.request 换成记录器，跑完断言一次请求都没发。
 跑法：python test_auto_flow.py    全部通过退出码 0，否则 1
 """
 
@@ -29,11 +35,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import app as A          # noqa: E402
 import autoup            # noqa: E402
 import core              # noqa: E402
+import openms            # noqa: E402
 
 A.messagebox.showinfo = lambda *x, **k: None
 A.messagebox.showwarning = lambda *x, **k: None
 A.messagebox.showerror = lambda *x, **k: None
 A.messagebox.askyesno = lambda *x, **k: False
+
+# 站点的所有 HTTP 都走 Client.request，这里换成记录器：真发出去时抛
+# AssertionError（工作线程会吞掉），路径留在 _net_calls 里，末尾统一断言。
+_net_calls = []
+
+
+def _no_net(self, path, *a, **k):
+    _net_calls.append(path)
+    raise AssertionError("测试期间不应发起网络请求：%s" % path)
+
+
+openms.Client.request = _no_net
+
+# 启动期的网站任务与本测试无关，全部屏蔽：
+#   _lsf_start      开机 900ms 后取 /api/speedranking/top/anchors，公开接口，
+#                   不等登录就会真的打到站点 —— 之前就是它漏了网络。
+#   _restore_session 读保存的会话，有 Cookie 就会走整条网站刷新。
+#   _poll_ms        任务栏进程轮询，为一份纯逻辑回归白跑定时器。
+A.App._restore_session = lambda self: None
+A.App._lsf_start = lambda self: None
+A.App._poll_ms = lambda self: None
 
 checks = []
 
@@ -55,10 +83,17 @@ def pump(win, cond, timeout=8.0):
 
 def main():
     sample = sorted(glob.glob(os.path.join(SRC_REPLAY, "b_*.evf")))[:1]
-    if not sample:
-        print("跳过：找不到一条可用的 .evf 样本（%s）" % SRC_REPLAY)
-        return 0
-    shutil.copy2(sample[0], REPLAY)
+    synthetic = not sample
+    if synthetic:
+        # 头部全 0：core.looks_like_video() 会挡住它，绝不会把垃圾送进
+        # ms-toollib；文件名仍按标准模式解析，扫描层仍算一局完成局。
+        with open(os.path.join(REPLAY, "b_0_1.774_9_5.073_synthetic.evf"),
+                  "wb") as fh:
+            fh.write(b"\0" * 64)
+        print("提示：没找到真实 .evf 样本（%s），本轮用合成占位文件跑主流程；"
+              "「头部正常的录像照常解析」单独跳过" % SRC_REPLAY)
+    else:
+        shutil.copy2(sample[0], REPLAY)
 
     win = A.App(REPLAY)
     win.withdraw()
@@ -141,9 +176,18 @@ def main():
         fh.write(b"\0" * 64)
     check("垃圾 .evf 在送进 ms_toollib 之前就被挡下",
           core.read_video(bad) is None)
-    check("头部正常的录像仍然照常解析",
-          core.read_video(os.path.join(REPLAY, os.path.basename(sample[0]))) is not None)
+    if synthetic:
+        print("跳过：头部正常的录像仍然照常解析（缺真实 .evf 样本）")
+    else:
+        check("头部正常的录像仍然照常解析",
+              core.read_video(os.path.join(
+                  REPLAY, os.path.basename(sample[0]))) is not None)
     os.remove(bad)
+
+    # ---- 5. 全程没有对外请求 ----
+    check("全程没有发起网络请求", not _net_calls)
+    if _net_calls:
+        print("  实际请求：%r" % (_net_calls,))
 
     win.destroy()
     print()

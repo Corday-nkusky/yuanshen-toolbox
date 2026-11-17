@@ -2,10 +2,12 @@
 
 跑法：python test_autoup.py —— 全部通过退出码 0，否则 1。
 
-覆盖：三个开关与范围的互转、网站数据未就绪时拒绝判定、
+覆盖：三个开关与范围的互转、all 范围白名单与归一化、网站数据未就绪时拒绝判定、
+      全量范围（独立理由 / 不依赖排名数据 / 混合输入 / 未知范围忽略）、
       新局识别（基线 / 水位 / 两次一致 / 文件还在写 / 已处理不再提）、
       PB 榜（更快 / 更慢 / 首次 / NF 独立）、前端榜（第五名阈值 / 同值 / 前五之外）、
       预检（不合法 / 标识不符 / 标识未读到）、站点去重键。
+      模式与完成状态的扫描口径由 test_mode.py 另经 core.scan() 验证。
 """
 
 import os
@@ -72,6 +74,10 @@ check("只传全PB 缺网站 PB -> 拒绝判定",
       autoup.ready(("pb",), site_pb=[], site_top={}) is False)
 check("只传全PB 有网站 PB -> 可以判定",
       autoup.ready(("pb",), site_pb=[site_pb("i", 34, 5310)]))
+check("全量不需要网站 PB / Top5",
+      autoup.ready((autoup.ALL_SCOPE,), site_pb=[], site_top={}) is True)
+check("全量与涨分混合时仍不受网站数据阻塞",
+      autoup.ready((autoup.ALL_SCOPE, "top"), site_pb=[], site_top={}) is True)
 
 # ---------------------------------------------------------------- 新局识别
 g_old = game("i", 34, 5500)
@@ -229,6 +235,56 @@ check("不勾时阿比特录像不进候选池",
       [g["path"] for g in autoup.pool([ms, arb], False)] == [ms["path"]])
 check("老录像没有 src 字段时按元扫雷算",
       [g["path"] for g in autoup.pool([ms], False)] == [ms["path"]])
+
+# ------------------------------------------------------- 全量判定与独立理由
+# 纯逻辑测试直接给 judge() 已过滤的记录；模式 / 完成状态由 test_mode.py
+# 另经 core.scan() 验证，不在这里塞一个 mode 字段冒充扫描规则测试。
+slow_plain = game("i", 34, 5400)
+low_bv = game("b", 3, 1200)          # BV 低于前端 Top5 的官方门槛
+quicker = [game("i", 34 + i, 4000 + 100 * i) for i in range(6)]
+spb_fast = [site_pb("i", 34, 5000)]
+board_fast = site_top("std:it", [4000, 4100, 4200, 4300, 4400])
+
+got = autoup.judge([slow_plain], (autoup.ALL_SCOPE,), {slow_plain["path"]},
+                   site_pb=[], site_top={})
+check("全量：普通完成局不破纪录也入队",
+      [x["path"] for x in got] == [slow_plain["path"]])
+check("全量理由固定为「新增完成局」", got and got[0]["why"] == ["新增完成局"])
+check("explain 对全量也只给独立理由",
+      autoup.explain(slow_plain, [slow_plain], (autoup.ALL_SCOPE,))
+      == ["新增完成局"])
+
+check("全量：慢于网站 PB 的局也入队",
+      [x["path"] for x in autoup.judge(
+          [slow_plain], (autoup.ALL_SCOPE,), {slow_plain["path"]},
+          site_pb=spb_fast)] == [slow_plain["path"]])
+check("对照：同样这局在 PB 范围里被排除",
+      autoup.judge([slow_plain], ("pb",), {slow_plain["path"]},
+                   site_pb=spb_fast) == [])
+check("全量：低于 Top5 BV 门槛的完成局也入队",
+      [x["path"] for x in autoup.judge(
+          [low_bv], (autoup.ALL_SCOPE,), {low_bv["path"]})] == [low_bv["path"]])
+check("对照：低于门槛的局进不了涨分范围",
+      autoup.judge([low_bv], ("top",), {low_bv["path"]},
+                   site_top=board_fast) == [])
+check("全量：进不了本地前五的局也入队",
+      [x["path"] for x in autoup.judge(
+          quicker + [slow_plain], (autoup.ALL_SCOPE,),
+          {slow_plain["path"]})] == [slow_plain["path"]])
+check("对照：同一批里这局进不了涨分范围",
+      autoup.judge(quicker + [slow_plain], ("top",), {slow_plain["path"]},
+                   site_top=board_fast) == [])
+
+mixed = autoup.judge(quicker + [slow_plain],
+                     ("all", "top", "pb", "top_nf", "pb_nf"),
+                     {slow_plain["path"]}, site_pb=spb_fast, site_top=board_fast)
+check("全量与 PB/Top5 混合输入不重复产生候选",
+      [x["path"] for x in mixed] == [slow_plain["path"]])
+check("混合输入仍用全量理由", mixed and mixed[0]["why"] == ["新增完成局"])
+check("未知范围输入被忽略，不退化为全量上传",
+      autoup.judge([slow_plain], ("wat",), {slow_plain["path"]}) == [])
+check("全量范围里只有新局才进候选",
+      autoup.judge([slow_plain], (autoup.ALL_SCOPE,), set()) == [])
 
 bad = [c for c in checks if not c[1]]
 print("\n%d 项检查，%d 项失败" % (len(checks), len(bad)))

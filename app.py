@@ -106,6 +106,19 @@ def save_config(**kw):
         pass
 
 
+def config_auto_scopes(cfg):
+    """缺失或类型异常时用默认范围，保留用户主动保存的空数组。"""
+    raw = (cfg or {}).get("auto_scopes")
+    if isinstance(raw, list) and all(isinstance(s, str) for s in raw):
+        return raw
+    return ["top", "top_nf", "pb"]
+
+
+def config_auto_all_new(cfg):
+    """全量上传只接受 JSON 布尔 true，避免异常配置意外开启。"""
+    return (cfg or {}).get("auto_all_new") is True
+
+
 def lsf_anchor_path():
     return os.path.join(paths.data_dir(), "lsf-anchors.json")
 
@@ -2399,6 +2412,9 @@ class App(tk.Tk):
         # 账号已确认、但「我的录像 / 标识」还没拉回来。为 True 时界面不能把
         # oms_videos 当权威数据用（那会儿它是空的）。
         self.oms_loaded = False
+        # 最近一次「完整账号事件」属于哪一代网站请求。全量范围要拿它判断
+        # 当前账号的录像列表是否已经到齐，退出 / 换号 / 刷新期间旧结果不算数。
+        self._auto_acct_seq = -1
         self._last_failed = set()   # 上一批失败的路径（表格会被网站数据重建，得单独记）
         self._arb_rows = 0          # 本地发现多少个阿比特录像（不受「含阿比特」影响）
         self.up_rows = []
@@ -2420,8 +2436,9 @@ class App(tk.Tk):
 
         # 自动上传：玩的时候盯新录像。判定逻辑全在 autoup，这里只负责门控与落盘。
         _cfg = load_config()
-        self.auto_flags = autoup.flags_of(
-            _cfg.get("auto_scopes") or ["top", "top_nf", "pb"])
+        self.auto_flags = autoup.flags_of(config_auto_scopes(_cfg))
+        # 独立的全量开关：不写进 auto_scopes，也不用 flags_of(("all",)) 覆盖三项偏好。
+        self._auto_all_new = config_auto_all_new(_cfg)
         # 「打开工具箱就自动开始上传」是页面上一个显式选项。老配置里只有
         # auto_upload（上次退出时是开是关），按它迁一次就够。
         self._auto_start = bool(_cfg.get("auto_start",
@@ -3645,28 +3662,38 @@ class App(tk.Tk):
                                       font=FONT_SMALL)
         self.lbl_auto_acct.pack(side="left", padx=(sc(14), 0))
 
-        # 四个开关横着排一行：左边三个管「传什么」，最右边那个管「什么时候开始」，
-        # 靠一段空档分开，不另起一行占高度。
+        # 范围与启动选项分两行，避免文字挤压。
+        chk_kw = dict(bg=C_BG, fg=C_TEXT, activebackground=C_BG,
+                      activeforeground=C_TEXT, selectcolor=C_PANEL,
+                      font=FONT_UI, bd=0, highlightthickness=0, anchor="w")
+
         row = tk.Frame(page, bg=C_BG)
-        row.pack(fill="x", pady=(0, sc(10)))
+        row.pack(fill="x", pady=(0, sc(6)))
+        self.var_auto_all_new = tk.BooleanVar(value=bool(self._auto_all_new))
+        self.chk_auto_all_new = tk.Checkbutton(
+            row, text="全部新增完成局", variable=self.var_auto_all_new,
+            command=self.toggle_auto_all_new, **chk_kw)
+        self.chk_auto_all_new.pack(side="left", padx=(0, sc(26)))
+
         self.auto_vars = {}
+        self.auto_checks = {}
         for key, _scopes, label in autoup.GROUPS:
             var = tk.BooleanVar(value=bool(self.auto_flags.get(key)))
             self.auto_vars[key] = var
-            tk.Checkbutton(
+            cb = tk.Checkbutton(
                 row, text=label, variable=var,
-                command=lambda k=key: self.toggle_auto_scope(k),
-                bg=C_BG, fg=C_TEXT, activebackground=C_BG, activeforeground=C_TEXT,
-                selectcolor=C_PANEL, font=FONT_UI, bd=0, highlightthickness=0,
-                anchor="w").pack(side="left", padx=(0, sc(26)))
+                command=self.toggle_auto_scope, disabledforeground=C_DIM, **chk_kw)
+            cb.pack(side="left", padx=(0, sc(26)))
+            self.auto_checks[key] = cb
 
+        row2 = tk.Frame(page, bg=C_BG)
+        row2.pack(fill="x")
         self.var_auto_start = tk.BooleanVar(value=bool(self._auto_start))
-        tk.Checkbutton(
-            row, text="每次打开工具箱都自动开始上传",
+        self.chk_auto_start = tk.Checkbutton(
+            row2, text="每次打开工具箱都自动开始上传",
             variable=self.var_auto_start, command=self.toggle_auto_start,
-            bg=C_BG, fg=C_TEXT, activebackground=C_BG, activeforeground=C_TEXT,
-            selectcolor=C_PANEL, font=FONT_UI, bd=0, highlightthickness=0,
-            anchor="w").pack(side="left", padx=(sc(36), 0))
+            **chk_kw)
+        self.chk_auto_start.pack(side="left")
 
         self.lbl_auto_status = tk.Label(page, text="", bg=C_BG, fg=C_DIM,
                                         font=FONT_SMALL, anchor="w", justify="left")
@@ -3698,7 +3725,16 @@ class App(tk.Tk):
         self._refresh_auto_view()
 
     def _auto_scopes(self):
+        """全量覆盖三项偏好，但不修改其保存值。"""
+        if self._auto_all_new:
+            return (autoup.ALL_SCOPE,)
         return autoup.scopes_of(self.auto_flags)
+
+    def _sync_auto_scope_controls(self):
+        """只禁用三项范围偏好，保留勾选标记。"""
+        state = "disabled" if self._auto_all_new else "normal"
+        for cb in self.auto_checks.values():
+            cb.config(state=state)
 
     def toggle_auto_upload(self):
         self.set_auto_upload(not self._auto_on)
@@ -3730,31 +3766,57 @@ class App(tk.Tk):
                 self._auto_tracker.prime(self.games)
             diag.log.info("自动上传：开启（水位 %s，范围 %s）",
                           self._auto_watermark,
-                          "、".join(self._auto_scopes()) or "未选择")
+                          "、".join(autoup.SCOPE_CN.get(s, s)
+                                   for s in self._auto_scopes()) or "未选择")
             self.after(150, self._auto_tick)
         else:
             diag.log.info("自动上传：关闭")
         self._refresh_auto_view()
 
-    def toggle_auto_scope(self, _key=None):
+    def toggle_auto_all_new(self):
+        """「全部新增完成局」自己：只存 auto_all_new，不碰三项偏好。"""
+        self._auto_all_new = bool(self.var_auto_all_new.get())
+        save_config(auto_all_new=self._auto_all_new)
+        diag.log.info("自动上传：全部新增完成局 = %s（有效范围 %s）",
+                      self._auto_all_new,
+                      "、".join(autoup.SCOPE_CN.get(s, s)
+                               for s in self._auto_scopes()) or "未选择")
+        self._refresh_auto_view()
+        # 不重建 Tracker：已等着的候选按新范围再判一次，已 commit 的不追溯补传。
+        # 也不会把暂停状态改成开始，不改「启动时自动开始」。
+        self.after(150, self._auto_tick)
+
+    def toggle_auto_scope(self):
+        if self._auto_all_new:
+            # 程序调用回调时也保留原偏好。
+            for k, v in self.auto_vars.items():
+                v.set(bool(self.auto_flags.get(k)))
+            self._refresh_auto_view()
+            return
         self.auto_flags = {k: bool(v.get()) for k, v in self.auto_vars.items()}
-        scopes = [s for k, ss, _l in autoup.GROUPS for s in ss
-                  if self.auto_flags.get(k)]
-        save_config(auto_scopes=scopes)
+        scopes = list(autoup.scopes_of(self.auto_flags))
+        save_config(auto_scopes=scopes)   # 只存三项偏好，不动 auto_all_new
         diag.log.info("自动上传范围：%s", "、".join(scopes) or "未选择")
         self._refresh_auto_view()
+        self.after(150, self._auto_tick)
 
     def _auto_ready_reason(self):
         """现在能不能传（用户视角的原因），空字符串表示可以。"""
         if not self._auto_on:
             return "自动上传已关闭"
-        if not self._auto_scopes():
+        scopes = self._auto_scopes()
+        if not scopes:
             return "还没勾选要传什么"
         if not self._watch_enabled:
             return "自动刷新关着，看不到新录像"
         if not self.oms_user:
             return "还没登录 openms.top"
-        if not autoup.ready(self._auto_scopes(), self.site_pb, self.site_top):
+        if scopes == (autoup.ALL_SCOPE,):
+            # 等当前请求的完整录像列表到齐；成功加载的空列表也算就绪。
+            if (self._auto_acct_seq != self._site_seq
+                    or not (self.oms_loaded and self.oms_synced)):
+                return "正在读取网站录像记录…"
+        elif not autoup.ready(scopes, self.site_pb, self.site_top):
             return "还没读到你在网站上的成绩"
         if not self.games:
             return "还没找到录像，先确认一下路径"
@@ -3763,6 +3825,7 @@ class App(tk.Tk):
     def _refresh_auto_status(self):
         if not hasattr(self, "lbl_auto_status"):
             return
+        self._sync_auto_scope_controls()
         self.btn_auto.set_text("暂停自动上传" if self._auto_on else "开始自动上传")
         self.btn_auto.set_selected(self._auto_on)
         name = (self.oms_user or {}).get("username") or ""
@@ -4212,6 +4275,9 @@ class App(tk.Tk):
         self._refresh_acct_label()
         if not partial:
             self._mark_up_dirty()
+            # 全量范围由录像列表就绪唤醒，不依赖 PB/Top5 回调。
+            self._auto_acct_seq = seq
+            self.after(200, self._auto_tick)
         # Top5 通常比账号信息先到，顶部提示要等登录态落定后重画一次，
         # 否则会一直停在「未登录，仅显示本地成绩」
         self.render_top()
