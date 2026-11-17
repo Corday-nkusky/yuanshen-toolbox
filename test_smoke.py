@@ -184,6 +184,80 @@ def main():
               "详细总结" in win.lbl_status.cget("text"))
         shot(win, "shot_daily.png")
 
+        # 切级别要共用「天」：三级行数不同，按百分比保留滚动位置会跳到别的
+        # 日期。切过去应停在同一天，那天没有就取日期最近的一天。
+        # 选天数最多的那级作源（默认的高级可能只有一局），保证滚动有得测。
+        near = A.App._nearest_day
+        check("取最近一天：精确命中",
+              near(["2026-11-10", "2026-11-15", "2026-11-20"], "2026-11-15")
+              == "2026-11-15")
+        check("取最近一天：落在两个之间，取更近的",
+              near(["2026-11-10", "2026-11-20"], "2026-11-16") == "2026-11-20")
+        check("取最近一天：一样近取较新",
+              near(["2026-11-10", "2026-11-20"], "2026-11-15") == "2026-11-20")
+        check("取最近一天：早于全部/晚于全部取端点",
+              near(["2026-11-10", "2026-11-20"], "2026-01-01") == "2026-11-10"
+              and near(["2026-11-10", "2026-11-20"], "2026-12-31") == "2026-11-20")
+
+        ranked = sorted(A.core.LEVELS,
+                        key=lambda k: -len(win.daily_by_level[k]))
+        src = ranked[0]
+        others = [k for k in ranked[1:] if win.daily_by_level[k]]
+        if len(win.daily_by_level[src]) > 1 and others:
+            dst = others[0]
+            win.set_daily_level(src)
+            win.update()
+            tv = win.tbl_daily.tv
+            tv.yview_moveto(0.45)           # 滚到中段，确保第一行不是最新那天
+            win.update()
+            anchor = win._daily_top_date()
+            win.set_daily_level(dst)
+            win.update()
+            after_days = [r["date"] for r in win.daily_by_level[dst]]
+            want = anchor if anchor in after_days else near(after_days, anchor)
+            got = win._daily_top_date()
+            visible = bool(tv.bbox(want)) if want in tv.get_children() else False
+            # 末尾几天下面行数不够置顶时，只要求目标那天在视口里可见
+            tail = after_days[-8:]
+            ok = got == want or (want in tail and visible)
+            check("切到%s仍停在同一天（或最近一天 %s），实际 %s"
+                  % (A.core.LEVEL_CN[dst], want, got), ok)
+            win.set_daily_level(src)        # 恢复，别影响后面的测试
+            win.update()
+        else:
+            print("跳过：切级别滚动测试需要至少两个级别各有多天数据")
+
+        # 真机置顶：真实录像每级只有几天，全可见、滚不动，上面那条走的是宽松
+        # 分支。这里注入合成的多天数据，确认「滚动到中段→切级别→置顶同一天」
+        # 真的成立（置顶算法以后改坏了，这条会红）。测完恢复原 games。
+        from datetime import datetime as _dt
+        saved_games = win.games
+        base = _dt(2026, 1, 1).timestamp()
+        def _synthetic(level, ndays, start):
+            out = []
+            for j in range(ndays):
+                t0 = base + (start + j) * 86400 + 9 * 3600
+                out.append({"t0": t0, "t1": t0 + 10, "time": 10.0, "bv": 40,
+                            "bvs": 4.0, "stnb": 1.0, "level": level,
+                            "nf": True, "path": "x", "category": "all"})
+            return out
+        win.games = _synthetic("b", 60, 0) + _synthetic("i", 55, 3)
+        win.set_daily_level("b")
+        win.update()
+        tv = win.tbl_daily.tv
+        tv.yview_moveto(0.45)
+        win.update()
+        anchor = win._daily_top_date()
+        win.set_daily_level("i")
+        win.update()
+        after_days = [r["date"] for r in win.daily_by_level["i"]]
+        want = anchor if anchor in after_days else A.App._nearest_day(after_days, anchor)
+        check("多天数据：滚到中段切级别，第一行精确停在 %s" % want,
+              win._daily_top_date() == want)
+        win.games = saved_games
+        win.set_daily_level(src)            # 重算 daily_by_level 并恢复级别
+        win.update()
+
         # 概览页的「今日总结」按钮：今天的几个级别并在一张图 / 一段文字里
         win.show_tab("overview")
         win.update()

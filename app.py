@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.28.0"
+APP_VER = "0.28.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -3147,6 +3147,56 @@ class App(tk.Tk):
             p.set_selected(k == key)
         self.render_daily()
 
+    def _daily_top_date(self):
+        """视口里最上面那一行的日期（行 iid 就是日期）。空表返回 None。
+
+        注意不是 get_children()[0] —— 表往下滚过之后第一行已经出了视口，
+        要找第一个 bbox 非空的才算「正在看的那一天」。
+        """
+        tv = self.tbl_daily.tv
+        for iid in tv.get_children():
+            if tv.bbox(iid):
+                return iid
+        return None
+
+    @staticmethod
+    def _nearest_day(dates, anchor):
+        """dates 里离 anchor 最近的一天；一样近就取较新的。ISO 日期可直接比大小。"""
+        best, best_gap = None, None
+        a = datetime.fromisoformat(anchor)
+        for d in dates:
+            gap = abs((datetime.fromisoformat(d) - a).days)
+            if best_gap is None or gap < best_gap or (gap == best_gap and d > best):
+                best, best_gap = d, gap
+        return best
+
+    def _daily_scroll_to(self, day):
+        """把某一天滚到视口第一行（列表末尾行数不够时尽力让它可见）。"""
+        tv = self.tbl_daily.tv
+        if day not in tv.get_children():
+            return
+        tv.see(day)                     # 先保证进视口，far away 时也能定位
+        self.update_idletasks()
+        # yview_moveto / see 会有最多一行的四舍五入误差，用 bbox 反馈推到第一行。
+        # 末尾几天下面行数不够，滚不动 —— 那时它已经可见，不再强求置顶。
+        for _ in range(3):
+            bb = tv.bbox(day)
+            if not bb or bb[3] <= 0:
+                break
+            first_y = None
+            for iid in tv.get_children():
+                b = tv.bbox(iid)
+                if b:
+                    first_y = b[1]
+                    break
+            if first_y is None:
+                break
+            steps = int(round((bb[1] - first_y) / float(bb[3])))
+            if steps <= 0:
+                break
+            tv.yview_scroll(steps, "units")
+            self.update_idletasks()
+
     def render_daily(self):
         """按天聚合，一天一行。
 
@@ -3156,6 +3206,10 @@ class App(tk.Tk):
         """
         if not hasattr(self, "tbl_daily"):
             return
+        # 换数据前先记下正在看的那天：Treeview 整表 delete+insert 后滚动位置
+        # 按百分比保留，切级别时三级行数不同，同一个百分比落到的日期就变了。
+        # 这里在不同级别之间共用「天」，切过去还在同一天；没有那天就取最近的。
+        anchor = self._daily_top_date()
         # 三个级别各聚合一次：右键菜单要给出「当天全部级别」的总结，一弹出就要
         # 知道那天有哪几级（标签要写出来），不能等点下去再算。实测 22723 局
         # 三级合计约 20 ms，一次渲染付一次，之后菜单只是查表。
@@ -3171,6 +3225,13 @@ class App(tk.Tk):
             text="双击某一天看当天每一局" if rows else "这个级别还没有完成局",
             fg=C_DIM)
         self.btn_daily_open.set_enabled(False)
+        if anchor and rows:
+            # 有同一天就停同一天，没有就取日期最近的一天（平局取较新）
+            if any(r["date"] == anchor for r in rows):
+                target = anchor
+            else:
+                target = self._nearest_day([r["date"] for r in rows], anchor)
+            self._daily_scroll_to(target)
         self._draw_daily_groups()       # 行变了，组头按新的列宽重画
 
     def _on_daily_pick(self, _e=None):
