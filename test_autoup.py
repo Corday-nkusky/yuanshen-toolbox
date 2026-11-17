@@ -167,7 +167,7 @@ older = [game("i", 30 + i, 5500 + 100 * i) for i in range(5)]
 board = site_top("std:it", [5000, 5100, 5200, 5300, 5400])
 got = autoup.judge(older + [fast], ("top",), {fast["path"]}, site_top=board)
 check("挤进网站前五的局要传", [x["path"] for x in got] == [fast["path"]])
-check("理由带「网站第五」", "网站第五 5.400 秒" in " ".join(got[0]["why"]))
+check("理由写明在网站榜第几名", "time 第 4 名" in " ".join(got[0]["why"]))
 check("理由带涨分榜名", any("涨分" in w for w in got[0]["why"]))
 
 # 三个指标都卡死：时间刚好同值、3BV/s 与 stnb 都够不着，才算「同值不涨分」。
@@ -185,7 +185,7 @@ check("同值不算涨分（站点同分不替换末项）", got == [])
 board_short = site_top("std:it", [5000, 5100])
 got = autoup.judge(older + [fast], ("top",), {fast["path"]}, site_top=board_short)
 check("不满五条时本地成绩可补位", len(got) == 1)
-check("补位写「新上榜」", "新上榜" in " ".join(got[0]["why"]))
+check("短榜也按实际行数写名次", "time 第 3 名" in " ".join(got[0]["why"]))
 
 # 本地前五之外：6 条更快的局
 quicker = [game("i", 30 + i, 4000 + 100 * i) for i in range(6)]
@@ -195,6 +195,19 @@ check("进不了本地前五就不传", got == [])
 fl = game("i", 34, 5203, style="fl")
 got = autoup.judge(older + [fl], ("top_nf",), {fl["path"]}, site_top=board)
 check("NF 前端榜不收 FL 局", got == [])
+
+# 一条 NF 局同时挤进全榜和 NF 榜：两条理由各自报名次，不能互相盖掉
+nf_fast = game("i", 34, 5203, style="nf", path="C:/replay/nf_both.evf")
+board_nf = dict(board)
+board_nf.update(site_top("nf:it", [6000, 6100, 6200, 6300, 6400]))
+got = autoup.judge(older + [nf_fast], ("top", "top_nf"),
+                   {nf_fast["path"]}, site_top=board_nf)
+why = " ".join(got[0]["why"]) if got else ""
+check("NF 局同时进两榜时两条都留着",
+      any("涨分·NF" in w for w in got[0]["why"])
+      and any(w.startswith("涨分 ·") for w in got[0]["why"]) if got else False)
+check("全榜与 NF 榜各报各的名次",
+      "涨分 · 中级 time 第 4 名" in why and "涨分·NF · 中级 time 第 1 名" in why)
 
 # ---------------------------------------------------------------- 新局 / 预检 / 去重
 got = autoup.judge([fast], ("pb",), set(), site_pb=[])

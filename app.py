@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.28.1"
+APP_VER = "0.29.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -806,6 +806,9 @@ class Table(ttk.Frame):
                 # 与基准的差距：正数带 + 号（数越小越好）。非数值（"PB" / "—"）
                 # 原样显示 —— 它们不是数字，硬格式化只会多出个 0.000。
                 v = f"+{v:.3f}" if v else "0.000"
+            elif kind == "delta2" and isinstance(v, (int, float)):
+                # 3BV/s / stnb 的差距：这两个量本来就只读两位小数。
+                v = f"+{v:.2f}" if v else "0.00"
             elif kind == "gain":
                 # 涨分：不涨就留空。一行里没有这个数是有意义的信息，
                 # 写成 "0.0" 只会把 96% 的行铺满噪声。
@@ -851,7 +854,7 @@ class Table(ttk.Frame):
 
         def keyf(r):
             v = r.get(key)
-            if kind == "delta":
+            if kind in ("delta", "delta2"):
                 # 差距列：数字越小越好。"PB"（同一局，差距 0）排最前，
                 # "—"（没有基准可比）永远垫底，不能按字符串比较。
                 if isinstance(v, (int, float)):
@@ -963,7 +966,7 @@ class Table(ttk.Frame):
         self.clipboard_append(path)
         top = self.winfo_toplevel()
         if hasattr(top, "set_status"):
-            top.set_status("已复制路径：" + path, "dim")
+            top.set_status("已复制路径：" + path, "dim", hold=5000)
 
     def _reveal(self, path):
         """在资源管理器里定位它；目录就直接打开目录。"""
@@ -3015,7 +3018,9 @@ class App(tk.Tk):
             ("stnb", "stnb", 78, "e", "f2"),
             ("date", "日期", 100, "center", "str"),
             ("clock", "时间", 84, "center", "str"),
-            ("vs_pb", "距当前 PB", 130, "e", "delta"),
+            ("vs_pb", "距当前 PB", 120, "e", "delta"),
+            ("vs_pb_bvs", "3BV/s 距 PB", 104, "e", "delta2"),
+            ("vs_pb_stnb", "stnb 距 PB", 100, "e", "delta2"),
             ("gain", "涨分", 64, "e", "gain"),
         ]
         _, self.tbl_recent = self._table(page, cols, height=5)
@@ -3342,10 +3347,13 @@ class App(tk.Tk):
     def _put_summary(self, img, what):
         """把画好的图放进剪贴板，状态栏报一句人话。三处入口共用。"""
         if img is None or not summary.copy_image(img):
-            self.set_status("图片复制失败（剪贴板被别的程序占着？）", "err")
+            self.set_status("图片复制失败（剪贴板被别的程序占着？）", "err",
+                            hold=5000)
             return
+        # 复制回执是「说完就过期」的话，必须自己退场 —— 它在最底下一行，
+        # 不设 hold 就会一直挂在那儿，跟后来切到哪页都对不上。
         self.set_status("已复制 %s（图片 %d×%d）"
-                        % (what, img.size[0], img.size[1]), "ok")
+                        % (what, img.size[0], img.size[1]), "ok", hold=5000)
 
     def _today_rows(self):
         """今天有完成局的级别：[(级别, 名称, 该天聚合行), ...]。"""
@@ -3778,17 +3786,34 @@ class App(tk.Tk):
                                       font=FONT_SMALL, anchor="e")
         self.lbl_auto_stat.pack(side="right")
 
-        # 结果排在长文本列前面：为什么不传/传成什么样，先看到；「为什么传」
-        # 放最后一列吃剩余宽度，不把结果推到离内容很远的地方。
+        # 结果排在长文本列前面：为什么不传/传成什么样，先看到；「备注」
+        # 放最后一列吃剩余宽度，不把结果推到离内容很远的地方。点一行在下方
+        # 展开完整备注，所以这里不必塞下全部文字。
         cols = [
             ("t", "时间", 108, "center", "str"),
             ("level_cn", "级别", 56, "center", "str"),
             ("time", "time", 74, "e", "f3"),
             ("bv", "3BV", 48, "e", "int"),
             ("result", "结果", 190, "center", "str"),
-            ("why", "为什么传", 300, "w", "str"),
+            ("why", "备注", 300, "w", "str"),
         ]
-        _, self.tbl_auto = self._table(page, cols, height=6)
+        holder, self.tbl_auto = self._table(page, cols, height=6, fit=False)
+        # 这个表只有几条记录，不能像别的表那样自动撑高 / expand 拉满 ——
+        # 否则会把下面的详情条挤成一行。表格按内容高度，剩下的空间留给详情。
+        holder.pack_forget()
+        holder.pack(fill="x")
+
+        # 点一行在这里展开完整备注。备注列再宽也有截断，一条局既涨分又是 PB
+        # 时原因有四五条，挤在一格里根本看不全 —— 表格保持一行一局，详情单独看。
+        # 详情放在表格内部（tv 下一行），才会紧贴表格下沿；放 page 级用
+        # side=bottom 会被先 pack 的 foot 顶到窗口最底部，中间空一大段。
+        self.lbl_auto_detail = tk.Label(
+            self.tbl_auto, text="", bg=C_PANEL, fg=C_TEXT, font=FONT_SMALL,
+            anchor="w", justify="left", padx=sc(10), pady=sc(6))
+        self.lbl_auto_detail.grid(row=1, column=0, sticky="ew")
+
+        self.tbl_auto.tv.bind("<<TreeviewSelect>>",
+                              self._on_auto_select, add="+")
         self._refresh_auto_view()
 
     def _auto_scopes(self):
@@ -3885,6 +3910,30 @@ class App(tk.Tk):
             return
         self.tbl_auto.set_rows([dict(x) for x in autolog.items()])
         self._refresh_auto_status()
+        self._on_auto_select()      # 刷新后把详情对齐到仍选中（或清空）的那行
+
+    def _on_auto_select(self, _e=None):
+        """选中一行 → 在表格下方展开完整备注，多个原因一行一条。
+
+        记录里的 why 是写日志时用「；」拼起来的（见 _auto_record），这里拆回
+        多行。没有选中（或表刚刷新）就把详情清空，不留上一条的残影。
+        """
+        if not hasattr(self, "lbl_auto_detail"):
+            return
+        sel = self.tbl_auto.tv.selection()
+        if not sel:
+            self.lbl_auto_detail.config(text="")
+            return
+        iid = sel[0]
+        try:
+            row = self.tbl_auto.rows[int(iid)]
+        except (ValueError, IndexError):
+            self.lbl_auto_detail.config(text="")
+            return
+        why = row.get("why") or ""
+        parts = [s.strip() for s in why.split("；") if s.strip() and s.strip() != "—"]
+        text = ("\n".join("· " + s for s in parts)) if parts else "—"
+        self.lbl_auto_detail.config(text=text)
 
     def _auto_record(self, game, why, result, ok=False):
         autolog.add({
@@ -5525,6 +5574,9 @@ class App(tk.Tk):
             # 时间列与日期列同源：都用录像内的录制时刻，不用文件 mtime
             item["clock"] = core.clock_text(g.get("t0") or g.get("mtime") or 0)
             item["vs_pb"] = self._gap_to_pb(g, pb)
+            gap = self._gaps_to_pb(g, pb)
+            item["vs_pb_bvs"] = gap["bvs"]
+            item["vs_pb_stnb"] = gap["stnb"]
             item["gain"] = gains.get(g.get("path") or "")
             out.append(item)
         self.tbl_recent.set_rows(out)
@@ -5559,23 +5611,49 @@ class App(tk.Tk):
         return gains
 
     @staticmethod
+    def _gaps_to_pb(g, pb):
+        """这局离当前 PB 差多少：时间、3BV/s、stnb 三项一起算。
+
+        三项统一成「还差多少」：正数 = 不如 PB，0/接近 0 = 追平。时间用
+        「本局 − PB」（越慢差得越多），3BV/s 和 stnb 用「PB − 本局」（越低
+        差得越多），这样三列的读法一致，都是"正数还得补"。同局返回 "PB"，
+        没基准返回 "—"，与 _gap_to_pb 单列版同口径。
+        """
+        cat = "nf" if g.get("style") == "nf" else "all"
+        p = pb.get((cat, g.get("level"), g.get("bv")))
+        if not p:
+            return {"time": "—", "bvs": "—", "stnb": "—"}
+        if p.get("path") and p.get("path") == g.get("path"):
+            return {"time": "PB", "bvs": "PB", "stnb": "PB"}
+
+        def ms_of(row):
+            v = row.get("timems")
+            if v is None:
+                v = int(round(float(row.get("time") or 0) * 1000))
+            return int(v)
+
+        def num(row, key):
+            try:
+                return float(row.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        return {
+            "time": max(0, ms_of(g) - ms_of(p)) / 1000.0,
+            "bvs": max(0.0, num(p, "bvs") - num(g, "bvs")),
+            "stnb": max(0.0, num(p, "stnb") - num(g, "stnb")),
+        }
+
+    @staticmethod
     def _gap_to_pb(g, pb):
         """这一局比当前 PB 慢多少秒：同一局 → "PB"，没有基准 → "—"。
 
         按行的风格取对应的榜（NF 局比 NF PB，其余比全PB），与 PB 页签同口径，
         两个页面来回看不会出现两个数。用整数毫秒相减，免得浮点差出 1 ms。
+
+        三项差距的完整版见 _gaps_to_pb；这里只取时间，给每日明细表用。
         """
-        cat = "nf" if g.get("style") == "nf" else "all"
-        p = pb.get((cat, g.get("level"), g.get("bv")))
-        if not p:
-            return "—"
-        if p.get("path") and p.get("path") == g.get("path"):
-            return "PB"
-        ms_g = g.get("timems") if g.get("timems") is not None \
-            else int(round(float(g.get("time") or 0) * 1000))
-        ms_p = p.get("timems") if p.get("timems") is not None \
-            else int(round(float(p.get("time") or 0) * 1000))
-        return max(0, int(ms_g) - int(ms_p)) / 1000.0
+        return App._gaps_to_pb(g, pb)["time"]
 
     def set_pb_level(self, key):
         self._pb_level = key

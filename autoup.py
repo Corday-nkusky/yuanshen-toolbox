@@ -14,9 +14,10 @@ NF 榜独立）。本模块只做三件事：
 理由算不出来时退回范围标签，绝不能因为解释不出来就漏传。
 
 为什么理由要单独算：用户得知道这功能到底干了什么。
-「涨分 · 3BV/s 6.53（网站第五 6.12）」比「已上传」有用得多。
+「涨分 · 中级 3BV/s 第 2 名（6.53）」比「已上传」有用得多。
 """
 
+import math
 import os
 import time
 
@@ -143,13 +144,16 @@ def judge(games, scopes, new_paths, site_pb=None, site_top=None):
     best = core.site_pb_best(site_pb or [])
     cut = (core.site_top_cutoffs(site_top or {})
            if set(scopes) & {"top", "top_nf"} else {})
+    # 前端榜的完整排名表：explain 要写「第几名」，光有第五名阈值算不出来。
+    board = (core.site_top_rows(site_top or {})
+             if set(scopes) & {"top", "top_nf"} else {})
 
     out = []
     for g in games:
         p = g.get("path")
         if p not in new_paths or p not in want:
             continue
-        reasons = explain(g, games, scopes, best, cut)
+        reasons = explain(g, games, scopes, best, cut, board)
         if not reasons:
             # 理论上不该发生（want 就是按同一口径算出来的）。真出现时宁可
             # 少说一句，也不能漏传 —— 用范围标签兜底。
@@ -158,10 +162,15 @@ def judge(games, scopes, new_paths, site_pb=None, site_top=None):
     return out
 
 
-def explain(game, games, scopes, best=None, cut=None):
-    """这条局为什么值得传。返回中文短句列表，空表示解释不出来。"""
+def explain(game, games, scopes, best=None, cut=None, board=None):
+    """这条局为什么值得传。返回中文短句列表，空表示解释不出来。
+
+    board: 网站前端榜的完整排名 {(榜, 级别, 指标): [行]}，用来写「第几名」。
+    只给 cut（第五名阈值）能判该不该传，但算不出具体名次。
+    """
     best = best if best is not None else {}
     cut = cut if cut is not None else {}
+    board = board if board is not None else {}
     lv = game.get("level")
     bv = int(game.get("bv") or 0)
     ms = _ms(game)
@@ -198,21 +207,55 @@ def explain(game, games, scopes, best=None, cut=None):
                 c = cut.get((cat, lv, metric))
                 if not core.top_beats(game, metric, c):
                     continue
-                out.append(_top_text(prefix, lv_cn, metric, game, ms, c))
+                rank = _site_rank(board.get((cat, lv, metric), []),
+                                  metric, game, ms)
+                out.append(_top_text(prefix, lv_cn, metric, game, ms, rank))
     return out
 
 
-def _top_text(prefix, lv_cn, metric, game, ms, cutoff):
+def _site_rank(rows, metric, game, ms):
+    """这局插进网站榜后排第几名。它已经通过了 top_beats，必然进前五。
+
+    网站行按指标从好到坏排好（time 升序，bvs/stnb 降序）。数有几行比它更好，
+    +1 就是名次。缺明细的行没有对应指标值，不算「比它好」——否则会把没成绩
+    的行当成压在前面的名次，虚报一个靠后的排名。
+    """
+    rank = 1
+    if not rows:
+        return None             # 这个榜没读到，不虚报名次
+    if metric == "time":
+        for r in rows:
+            v = r.get("timems")
+            if v is not None and int(v) < ms:
+                rank += 1
+    else:
+        val = _ms_value(game.get(metric))
+        if val is None:
+            return None
+        for r in rows:
+            v = _ms_value(r.get(metric))
+            if v is not None and v > val:
+                rank += 1
+    return rank
+
+
+def _ms_value(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _top_text(prefix, lv_cn, metric, game, ms, rank):
     if metric == "time":
         val = "%.3f 秒" % (ms / 1000.0)
-        old = ("网站第五 %.3f 秒" % (cutoff / 1000.0)) if cutoff else "新上榜"
     elif metric == "bvs":
         val = "%.2f" % float(game.get("bvs") or 0)
-        old = ("网站第五 %.2f" % cutoff) if cutoff else "新上榜"
     else:
         val = "%.1f" % float(game.get("stnb") or 0)
-        old = ("网站第五 %.1f" % cutoff) if cutoff else "新上榜"
-    return "%s · %s %s %s（%s）" % (prefix, lv_cn, METRIC_CN[metric], val, old)
+    where = ("第 %d 名" % rank) if rank else "前端榜"
+    return "%s · %s %s %s（%s）" % (prefix, lv_cn, METRIC_CN[metric], where, val)
 
 
 # ---------------------------------------------------------------- 新局识别
