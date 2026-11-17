@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.29.4"
+APP_VER = "0.29.6"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -694,6 +694,27 @@ def _delta_text(v, nd=3):
             else f"{0:.{nd}f}")
 
 
+def _delta_num(v):
+    """差距列的排序值（float）；没法比的返回 None。
+
+    单元格里存的是显示文本（"PB -1.164"、"PB"、"+0.27"、"—"），数字就在
+    文本里，排序时必须取出来比 —— 当成一个固定值的话，破 PB 的行会全部并列，
+    破 1.1 秒和破 0.03 秒并排站着，看着就是瞎排。
+    只有 "PB"（该 BV 的第一个成绩，没有旧值可比）当 0；"—" 返回 None，垫底。
+    """
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if s.startswith("PB"):
+        s = s[2:].strip()
+        if not s:
+            return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 class Table(ttk.Frame):
     """带排序的 Treeview 封装。columns: (key, 标题, 宽度, 对齐, 类型)
 
@@ -860,8 +881,10 @@ class Table(ttk.Frame):
                 self._sort_key, self._sort_rev = key, False
             # 数值列第一次点默认降序更符合直觉（bvs/stnb/局数）；换到这一列
             # 才算「第一次」，第二次点必须能反向 —— 否则数值列永远回不来。
+            # 差距列里，时间越小越好（升序即从好到坏），3BV/s、stnb 越大越好
+            # （得从降序起步），所以只有 delta2 进这个默认降序名单。
             kind = next(c[4] for c in self.columns_def if c[0] == key)
-            if switched and kind in ("f3", "f2", "int", "gain") \
+            if switched and kind in ("f3", "f2", "int", "gain", "delta2") \
                     and not self._sort_rev:
                 self._sort_rev = True
 
@@ -869,19 +892,10 @@ class Table(ttk.Frame):
 
         def keyf(r):
             v = r.get(key)
-            if kind == "delta":
-                # 差距列：数字越小越好。「PB −2.111」（同一局，与旧 PB 比）
-                # 排最前，"—"（没有基准可比）永远垫底，不能按字符串比较。
-                if isinstance(v, (int, float)):
-                    return float(v)
-                return -1.0 if str(v).startswith("PB") else float("inf")
-            if kind == "delta2":
-                # 同样是差距列，但这两项越大越好，取相反数，升序仍然是
-                # 「最接近 PB 的排最前」。PB 行要么是提升值（数字，取反后最小），
-                # 要么是首个 PB 那行的 "PB" 字样，都得排最前；"—" 垫底。
-                if isinstance(v, (int, float)):
-                    return -float(v)
-                return float("-inf") if str(v).startswith("PB") else float("inf")
+            if kind in ("delta", "delta2"):
+                # 差距列按「从好到坏」排：时间越小越好（升序），3BV/s、stnb
+                # 越大越好（降序，见上面 _sort_by 给的默认方向）。
+                return _delta_num(v)
             if kind == "gain":
                 # 涨分列有一半是空的（没涨），空要能参与比较，而且不能被
                 # 当成字符串 —— "+12.3" 按字典序会排在 "+2.8" 前面。
@@ -896,7 +910,16 @@ class Table(ttk.Frame):
             return v
 
         try:
-            self.rows.sort(key=keyf, reverse=self._sort_rev)
+            if kind in ("delta", "delta2"):
+                # 没法比的「—」不分方向都压在最底下：按数值排的话，升序时它
+                # 会被当成最大、降序时当成最小，两头都往最前面凑，反一次就
+                # 顶到第一行去了。所以先切开，只排有数的那些。
+                has = [r for r in self.rows if _delta_num(r.get(key)) is not None]
+                none = [r for r in self.rows if _delta_num(r.get(key)) is None]
+                has.sort(key=keyf, reverse=self._sort_rev)
+                self.rows = has + none
+            else:
+                self.rows.sort(key=keyf, reverse=self._sort_rev)
         except TypeError:
             self.rows.sort(key=lambda r: str(r.get(key)), reverse=self._sort_rev)
 
