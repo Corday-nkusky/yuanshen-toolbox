@@ -3,6 +3,28 @@
 README 放不下的实现细节和研究结论。改代码前先看这里；面向玩家的说明都在
 [README](../README.md)。
 
+## 数据从哪来（录像目录与配置）
+
+「能看到多少局」由 `config.json` 里的 `roots` 决定，不是由磁盘上有多少录像决定。
+文件系统上有一堆 `.evf` / `.avf` 不等于程序会扫它们。
+
+| 项 | 位置 |
+|---|---|
+| 数据目录 | exe 同目录的 `YuanshenToolbox-data\`（不可写时回落 `%APPDATA%\YuanshenToolbox`）|
+| 录像目录列表 | `<数据目录>\config.json` → `roots: [{path, on}]` |
+| 扫描结果缓存 | `<数据目录>\scan-cache.db`（别删，删了下次全量重扫）|
+
+`roots` 可以有多条：第一条是「主目录」（`record.ini` 对账找它），只有 `on: true` 的
+才扫。默认只自动发现元扫雷的 `replay`，**阿比特目录必须由用户在界面里手动添加**。
+
+排障或跑验证时按配置来，不要手传单个目录：
+
+    MS_PB_DATA_DIR=<真实数据目录> python -c "import app; app.App()"
+
+本机（2026-11-18）配置里是三个目录、约 2.27 万局：元扫雷 `replay`（430 个 `.evf`）、
+`D:\扫雷\replays`、`D:\扫雷\replays2`。`D:\扫雷` 根目录散着的一万九千多个 `.avf`
+不在配置里，不要拿去扫。
+
 ## rce 与 NF / FL
 
 `rce` = Right Click Effective，右键有效插旗数。口径与
