@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.29.1"
+APP_VER = "0.29.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -858,17 +858,18 @@ class Table(ttk.Frame):
         def keyf(r):
             v = r.get(key)
             if kind == "delta":
-                # 差距列：数字越小越好。"PB"（同一局，差距 0）排最前，
+                # 差距列：数字越小越好。「PB↑x」（同一局，差距 0）排最前，
                 # "—"（没有基准可比）永远垫底，不能按字符串比较。
                 if isinstance(v, (int, float)):
                     return float(v)
-                return -1.0 if v == "PB" else float("inf")
+                return -1.0 if str(v).startswith("PB") else float("inf")
             if kind == "delta2":
                 # 同样是差距列，但这两项越大越好、差值恒为负，取相反数，
-                # 升序仍然是「最接近 PB 的排最前」。
+                # 升序仍然是「最接近 PB 的排最前」。PB 行的「↑提升」同理。
                 if isinstance(v, (int, float)):
                     return -float(v)
-                return float("-inf") if v == "PB" else float("inf")
+                return float("-inf") if str(v).startswith(("PB", "↑")) \
+                    else float("inf")
             if kind == "gain":
                 # 涨分列有一半是空的（没涨），空要能参与比较，而且不能被
                 # 当成字符串 —— "+12.3" 按字典序会排在 "+2.8" 前面。
@@ -5554,9 +5555,12 @@ class App(tk.Tk):
     def render_recent(self):
         """最近完成局：最近 RECENT_MIN 局与近 RECENT_DAYS 天取较多者。
 
-        每行给出「距当前 PB」还差多少秒。PB 会变，所以这里每次都按当前 PB 现算，
-        不保留「当时破 PB」的情形 —— 同一局今天显示 +0.532，等 PB 提上去之后会
-        变成 +0.900。这是这一版的定义，不是算错了。
+        每行给出「距当前 PB」还差多少。PB 会变，所以这里每次都按当前 PB 现算：
+        同一局今天显示 +0.532，等 PB 提上去之后会变成 +0.900。
+
+        破 PB 的那一局按「相对它替掉的那个旧 PB」显示提升（PB ↑0.132），
+        旧 PB 取同（榜, 级别, 3BV）下更早完成的最快一局，本地没有就用网站
+        上的成绩；首个 PB 没有旧值可比，仍旧只写 PB。
         """
         rows = sorted(self.games, key=lambda g: g.get("t0") or g.get("mtime") or 0,
                       reverse=True)
@@ -5575,17 +5579,26 @@ class App(tk.Tk):
         for r in self.pb_rows or []:
             pb[(r.get("category") or "all", r.get("level"), r.get("bv"))] = r
         gains = self._recent_gains(rows[:n])
+        prevs = self._prev_pb_of(rows[:n], pb)
         out = []
         for g in rows[:n]:
             item = dict(g)
             item["level_cn"] = core.LEVEL_CN[g["level"]]
             item["style_cn"] = core.STYLE_CN.get(g.get("style"), "?")
             # 时间列与日期列同源：都用录像内的录制时刻，不用文件 mtime
-            item["clock"] = core.clock_text(g.get("t0") or g.get("mtime") or 0)
-            item["vs_pb"] = self._gap_to_pb(g, pb)
+            item["clock"] = core.clock_text(self._row_when(g))
             gap = self._gaps_to_pb(g, pb)
+            item["vs_pb"] = gap["time"]
             item["vs_pb_bvs"] = gap["bvs"]
             item["vs_pb_stnb"] = gap["stnb"]
+            old = prevs.get(g.get("path")) if gap["time"] == "PB" else None
+            if old is not None:
+                # 破 PB 的那一局不只写个 PB：把它比旧 PB 好多少写出来，
+                # 正数就是提升（时间快了 / bvs、stnb 高了）。
+                d_t, d_b, d_s = self._improve_over(g, old)
+                item["vs_pb"] = "PB ↑%.3f" % d_t
+                item["vs_pb_bvs"] = "↑%.2f" % d_b
+                item["vs_pb_stnb"] = "↑%.2f" % d_s
             item["gain"] = gains.get(g.get("path") or "")
             out.append(item)
         self.tbl_recent.set_rows(out)
@@ -5620,6 +5633,109 @@ class App(tk.Tk):
         return gains
 
     @staticmethod
+    def _pb_cat(row):
+        """这行属于哪张榜：NF 局只跟 NF 比，其余都进全榜。"""
+        return "nf" if row.get("style") == "nf" else "all"
+
+    @staticmethod
+    def _row_ms(row):
+        v = row.get("timems")
+        if v is None:
+            v = int(round(float(row.get("time") or 0) * 1000))
+        return int(v)
+
+    @staticmethod
+    def _row_when(row):
+        """完成时刻：录像内录制时间优先，没有就退回文件 mtime。"""
+        return row.get("t0") or row.get("mtime") or 0
+
+    def _prev_pb_of(self, rows, pb):
+        """这些行里刷新 PB 的那几行，各自替掉的旧 PB。
+
+        「原 PB」= 同一（榜, 级别, 3BV）下、比本局更早完成的最快一局。本地找
+        不到更早的局（比如录像只拷了一部分）就退回网站 PB —— 说明本局刷掉的
+        原本是网站上的成绩。返回 {path: 旧 PB 行}；首个 PB（之前没成绩）不在
+        里面。只算真正破了 PB 的行，其余行不算。
+        """
+        keys = {}
+        for g in rows:
+            k = (self._pb_cat(g), g.get("level"), g.get("bv"))
+            p = pb.get(k)
+            if p and p.get("path") and p.get("path") == g.get("path"):
+                keys[g.get("path")] = k
+        if not keys:
+            return {}
+
+        cand = {}
+        key_set = set(keys.values())
+        for g in self.games:
+            k = (self._pb_cat(g), g.get("level"), g.get("bv"))
+            if k in key_set:
+                cand.setdefault(k, []).append(g)
+
+        out = {}
+        for g in rows:
+            k = keys.get(g.get("path"))
+            if k is None:
+                continue
+            t_self = self._row_when(g)
+            best, best_ms = None, None
+            for o in cand.get(k, ()):
+                if o.get("path") and o.get("path") == g.get("path"):
+                    continue
+                t = self._row_when(o)
+                if not t or not t_self or t >= t_self:
+                    continue
+                ms = self._row_ms(o)
+                if ms > 0 and (best_ms is None or ms < best_ms):
+                    best, best_ms = o, ms
+            if best is None:
+                best = self._site_prev_pb(k, self._row_ms(g))
+            if best is not None:
+                out[g.get("path")] = best
+        return out
+
+    def _site_prev_pb(self, key, ms_self):
+        """本地没有更早的局时，网站 PB 就是本局刷掉的那个旧成绩。"""
+        cat, lv, bv = key
+        best = None
+        for rec in self.site_pb or []:
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("level") or "").lower() != lv:
+                continue
+            try:
+                if int(rec.get("bv") or 0) != bv:
+                    continue
+                ms = int(rec.get("timems") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ms <= 0 or ("nf" if rec.get("nf") else "all") != cat:
+                continue
+            if ms_self and ms <= ms_self:
+                continue            # 网站更快，本局就不是 PB 行了
+            if best is None or ms < best:
+                best = ms
+        if best is None:
+            return None
+        sec = best / 1000.0
+        return {"timems": best, "time": sec,
+                "bvs": bv / sec if sec > 0 else 0.0,
+                "stnb": core.stnb_of(bv, sec, lv)}
+
+    @classmethod
+    def _improve_over(cls, g, old):
+        """这局相对旧 PB 的提升：时间快了多少秒、3BV/s 和 stnb 高了多少。
+
+        同 BV 下 PB 必然最快，所以三项都应当 >= 0；真出现负数说明数据
+        异常（旧 PB 不是同 BV 最快），按 0 显示，不写个负的「提升」。
+        """
+        d_t = (cls._row_ms(old) - cls._row_ms(g)) / 1000.0
+        d_b = float(g.get("bvs") or 0) - float(old.get("bvs") or 0)
+        d_s = float(g.get("stnb") or 0) - float(old.get("stnb") or 0)
+        return max(0.0, d_t), max(0.0, d_b), max(0.0, d_s)
+
+    @staticmethod
     def _gaps_to_pb(g, pb):
         """这局离当前 PB 差多少：时间、3BV/s、stnb 三项一起算。
 
@@ -5628,18 +5744,11 @@ class App(tk.Tk):
         该 BV 最快的局，所以这两项恒不高于 PB、差值恒为负数（−0.94 就是比
         PB 低 0.94）。同局返回 "PB"，没基准或指标缺失返回 "—"。
         """
-        cat = "nf" if g.get("style") == "nf" else "all"
-        p = pb.get((cat, g.get("level"), g.get("bv")))
+        p = pb.get((App._pb_cat(g), g.get("level"), g.get("bv")))
         if not p:
             return {"time": "—", "bvs": "—", "stnb": "—"}
         if p.get("path") and p.get("path") == g.get("path"):
             return {"time": "PB", "bvs": "PB", "stnb": "PB"}
-
-        def ms_of(row):
-            v = row.get("timems")
-            if v is None:
-                v = int(round(float(row.get("time") or 0) * 1000))
-            return int(v)
 
         def num(row, key):
             try:
@@ -5653,7 +5762,7 @@ class App(tk.Tk):
             return (a - b) if a > 0 and b > 0 else "—"
 
         return {
-            "time": max(0, ms_of(g) - ms_of(p)) / 1000.0,
+            "time": max(0, App._row_ms(g) - App._row_ms(p)) / 1000.0,
             "bvs": diff("bvs"),
             "stnb": diff("stnb"),
         }
