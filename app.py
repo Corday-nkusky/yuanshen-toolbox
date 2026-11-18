@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.29.6"
+APP_VER = "0.29.7"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -680,6 +680,56 @@ class LsfCard(tk.Frame):
         self._detail = LsfDetailDialog(self.winfo_toplevel(), self._data)
 
 
+# ------------------------------------------------------------------ 文件夹置前
+def _explorer_windows():
+    """当前开着的文件资源管理器窗口（按 Z 序，最近用的在前）。"""
+    if os.name != "nt":
+        return []
+    u = mslaunch._user32()
+    try:
+        u.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        u.GetClassNameW.restype = ctypes.c_int
+        u.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+        u.GetWindowTextLengthW.restype = ctypes.c_int
+        u.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        u.GetWindowTextW.restype = ctypes.c_int
+    except Exception:
+        return []
+    # 必须用 mslaunch 给 EnumWindows 声明过的那个回调类型：wintypes.BOOL 是
+    # c_long，跟 ctypes.c_bool 不是一回事，类型对不上会被 ctypes 直接拒绝。
+    out = []
+
+    def _cb(hwnd, _lp):
+        try:
+            cls = ctypes.create_unicode_buffer(64)
+            if not u.GetClassNameW(hwnd, cls, 64):
+                return True
+            if cls.value not in ("CabinetWClass", "ExploreWClass"):
+                return True
+            if not u.IsWindowVisible(hwnd):
+                return True
+            out.append(hwnd)
+        except Exception:
+            pass
+        return True
+
+    try:
+        u.EnumWindows(mslaunch._ENUMPROC(_cb), 0)
+    except Exception:
+        pass
+    return out
+
+
+def _window_title(u, hwnd):
+    try:
+        n = u.GetWindowTextLengthW(hwnd) + 1
+        buf = ctypes.create_unicode_buffer(n)
+        u.GetWindowTextW(hwnd, buf, n)
+        return buf.value
+    except Exception:
+        return ""
+
+
 # ------------------------------------------------------------------ 通用表格
 def _delta_text(v, nd=3):
     """差值文本：正负号本身就是方向，不再另加箭头。
@@ -1016,23 +1066,14 @@ class Table(ttk.Frame):
     def _reveal(self, path):
         """在资源管理器里定位它；目录就直接打开目录。"""
         top = self.winfo_toplevel()
-        try:
-            if os.path.isdir(path):
-                os.startfile(path)
-                return
-            if os.path.isfile(path):
-                # explorer 自己对引号敏感，用字符串交给它，比列表形式可靠
-                subprocess.Popen('explorer /select,"%s"'
-                                 % os.path.normpath(path))
-                return
-            folder = os.path.dirname(path)
-            if os.path.isdir(folder):
-                os.startfile(folder)
-                return
-            raise OSError("路径不存在")
-        except OSError:
-            if hasattr(top, "set_status"):
-                top.set_status("这个位置打不开了：%s" % shrink_path(path, 50), "warn")
+        if hasattr(top, "_reveal_path"):
+            top._reveal_path(path)
+            return
+        # 还没建好主窗口时的兜底：普通打开，至少不会什么都没发生
+        if os.path.isdir(path):
+            os.startfile(path)
+        elif os.path.isfile(path):
+            subprocess.Popen('explorer /select,"%s"' % os.path.normpath(path))
 
 
 # ------------------------------------------------------------------ PB 网格
@@ -1346,6 +1387,9 @@ class PBGrid(tk.Frame):
         if not path:
             if hasattr(top, "set_status"):
                 top.set_status("这条成绩没有本地录像", "warn")
+            return
+        if hasattr(top, "_reveal_path"):
+            top._reveal_path(path)
             return
         try:
             if os.path.isfile(path):
@@ -2852,6 +2896,46 @@ class App(tk.Tk):
         # 所以这里主动把它提上来 —— 双击之后用户要看的是录像，不是工具箱。
         self._ms_want_front()
         self._ms_try_focus()
+
+    def _reveal_path(self, path):
+        """在资源管理器里定位录像；是目录就直接打开，并把窗口提到最前。"""
+        try:
+            is_file = os.path.isfile(path)
+            folder = path if os.path.isdir(path) else os.path.dirname(path)
+            if not os.path.isdir(folder):
+                raise OSError("路径不存在")
+            before = set(_explorer_windows())
+            mslaunch.allow_foreground()
+            if is_file:
+                # explorer 自己对引号敏感，用字符串交给它，比列表形式可靠
+                subprocess.Popen('explorer /select,"%s"' % os.path.normpath(path))
+            else:
+                os.startfile(folder)
+            # 资源管理器从工具箱这个后台进程起来时，窗口会压在工具箱下面。
+            # 等它建好再提；复用了已有窗口（没有新窗口）时按文件夹名找。
+            self.after(320, lambda f=folder, b=before:
+                       self._focus_opened_folder(f, b))
+        except OSError:
+            self.set_status("这个位置打不开了：%s" % shrink_path(path, 50),
+                            "warn")
+
+    def _focus_opened_folder(self, folder, before):
+        """把刚打开的（或本来就在用的）文件夹窗口提到最前面。"""
+        if os.name != "nt":
+            return
+        u = mslaunch._user32()
+        hwnds = _explorer_windows()
+        fresh = [h for h in hwnds if h not in before]
+        target = fresh[0] if fresh else None
+        if target is None:
+            name = os.path.basename(folder.rstrip("\\/")).lower()
+            if name:
+                for h in hwnds:
+                    if name in _window_title(u, h).lower():
+                        target = h
+                        break
+        if target:
+            mslaunch.focus_hwnd(target)
 
     def launch_game(self):
         """横幅上的「启动元扫雷」：找到路径 → 启动 → 盯着它真的起来。

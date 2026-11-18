@@ -374,18 +374,16 @@ def foreground_is_self():
         return False
 
 
-def focus():
-    """把元扫雷的窗口提到最前；返回是否真的抢到了前台。
+def focus_hwnd(hwnd):
+    """把指定窗口提到最前；返回是否真的抢到了前台。
 
-    窗口还没建出来（冷启动的头几百毫秒）时返回 False，调用方隔一会儿再试。
-    最小化的窗口会先还原。全都失败就闪任务栏。
+    最小化的窗口先还原；抢不到就挂到前台线程的输入队列上再试，最后还不行
+    就闪一下任务栏。给打开文件夹等「把别人的窗口提上来」的场景复用。
     """
-    if os.name != "nt":
-        return False
-    hwnd = _main_window()
-    if not hwnd:
+    if os.name != "nt" or not hwnd:
         return False
     u = _user32()
+    ok = False
     try:
         if u.IsIconic(hwnd):
             u.ShowWindow(hwnd, _SW_RESTORE)
@@ -410,3 +408,16 @@ def focus():
     if not ok:
         _flash(hwnd)
     return ok
+
+
+def focus():
+    """把元扫雷的窗口提到最前；返回是否真的抢到了前台。
+
+    窗口还没建出来（冷启动的头几百毫秒）时返回 False，调用方隔一会儿再试。
+    """
+    if os.name != "nt":
+        return False
+    hwnd = _main_window()
+    if not hwnd:
+        return False
+    return focus_hwnd(hwnd)
