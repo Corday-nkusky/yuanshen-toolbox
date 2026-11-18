@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.30.2"
+APP_VER = "0.30.4"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -3797,7 +3797,10 @@ class App(tk.Tk):
                            values=("10", "20", "50", "100", "全部"),
                            font=FONT_MONO_B, justify="center")
         box.pack(side="left", ipady=sc(2))
-        for ev in ("<<ComboboxSelected>>", "<Return>", "<FocusOut>"):
+        self.rank_n_box = box
+        # 只在选中下拉项 / 回车时提交。不绑 <FocusOut>：那里回填会把用户
+        # 刚选中、还没改完的文字又覆盖回去，看着像删不掉、移不走。
+        for ev in ("<<ComboboxSelected>>", "<Return>"):
             box.bind(ev, lambda *_: self._on_rank_n())
 
         grid = tk.Frame(page, bg=C_BG)
@@ -3819,7 +3822,7 @@ class App(tk.Tk):
                 ("score", "time", 84, "e", "f3"),
                 ("bv", "3BV", 52, "e", "int"),
                 ("style_cn", "风格", 46, "center", "str"),
-                ("date", "完成", 78, "center", "str"),
+                ("date", "完成", 96, "center", "str"),
             ]
             t = Table(holder, cols, height=10, fit=False)
             t.pack(fill="x", padx=1, pady=1)
@@ -3847,11 +3850,14 @@ class App(tk.Tk):
             try:
                 n = max(0, int(float(raw)))
             except ValueError:
-                n = self._rank_n    # 输入中途（比如刚敲了个负号）先不打断
-                self.var_rank_n.set(str(n))
+                return              # 空着或正在改，别把用户没输完的内容顶回去
         if n != self._rank_n:
             self._rank_n = n
             self.render_rank()
+        # 选中下拉项后 Tk 会把文字整段全选，看着像被锁住、删不掉；
+        # 提交完把高亮收掉、光标放末尾，输入框才是能直接改的样子。
+        self.rank_n_box.selection_clear()
+        self.rank_n_box.icursor("end")
 
     def render_rank(self):
         """三级别各取前 N 局；N=0 时放开到这个级别的全部录像。"""
@@ -3877,7 +3883,7 @@ class App(tk.Tk):
                     "score": g.get(metric) or 0,
                     "bv": g.get("bv") or 0,
                     "style_cn": core.STYLE_CN.get(g.get("style"), ""),
-                    "date": (g.get("date") or "")[5:],
+                    "date": g.get("date") or "",
                     "path": g.get("path") or "",
                 })
             t.set_rows(rows)
