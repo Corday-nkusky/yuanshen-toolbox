@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.30.8"
+APP_VER = "0.30.9"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -2479,6 +2479,9 @@ class App(tk.Tk):
         self._rank_metric = "time"     # 排行榜看哪个指标：time / bvs / stnb
         self._rank_style = "all"       # 排行榜风格：all / nf
         self._rank_n = 10              # 排行榜每个级别显示几条，0 = 全部录像
+        self.rank_grid = None          # 排行榜的三列表格容器（量高度用）
+        self._rank_fit_job = None      # 「等页面排好版再量一次」的定时器
+        self._rank_fit_tries = 0       # 已经重试过几拍
         self._bvmin_level = None
         self._bv_guard = False
         self._empty_prompted = False
@@ -2523,6 +2526,12 @@ class App(tk.Tk):
                                          _cfg.get("auto_upload", False)))
         self._auto_on = self._auto_start
         self._auto_watermark = int(_cfg.get("auto_watermark") or 0)
+        # 排行榜看多少条记着上次的：调成 50 之后重开还是 50，不用每次重新填。
+        # 0 表示「全部」，存的就是这个口径。
+        try:
+            self._rank_n = max(0, int(_cfg.get("rank_n", 10)))
+        except (TypeError, ValueError):
+            self._rank_n = 10
         self._auto_tracker = autoup.Tracker(self._auto_watermark)
         self._auto_stop = ""       # 需要用户动手才能恢复（额度 / 登录 / 封禁）
         self._auto_backoff = 0.0   # 网络类临时失败：到这个时间点再试
@@ -3845,7 +3854,8 @@ class App(tk.Tk):
                                                padx=(sc(8), sc(10)), pady=sc(2))
         tk.Label(bar, text="Top", bg=C_BG, fg=C_DIM,
                  font=FONT_MONO_B).pack(side="left", padx=(0, sc(6)))
-        self.var_rank_n = tk.StringVar(value=str(self._rank_n))
+        self.var_rank_n = tk.StringVar(
+            value="全部" if self._rank_n <= 0 else str(self._rank_n))
         box = ttk.Combobox(bar, textvariable=self.var_rank_n, width=6,
                            values=("10", "20", "50", "100", "全部"),
                            font=FONT_MONO_B, justify="center")
@@ -3859,6 +3869,7 @@ class App(tk.Tk):
 
         grid = tk.Frame(page, bg=C_BG)
         grid.pack(fill="both", pady=(sc(6), 0))
+        self.rank_grid = grid
         for i in range(3):
             grid.columnconfigure(i, weight=1, uniform="rank")
 
@@ -3907,6 +3918,7 @@ class App(tk.Tk):
                 return              # 空着或正在改，别把用户没输完的内容顶回去
         if n != self._rank_n:
             self._rank_n = n
+            save_config(rank_n=n)   # 下次打开还是这个范围
             self.render_rank()
         # 提交后两件事一起做，缺一个都会被用户看见：
         #   1) Tk 在 <<ComboboxSelected>> 后把文字整段选中（灰底），要清掉；
@@ -3920,6 +3932,7 @@ class App(tk.Tk):
         """三级别各取前 N 局；N=0 时放开到这个级别的全部录像。"""
         if not getattr(self, "rank_tables", None):
             return
+        self._rank_fit_tries = 0        # 每次重画都重新给「等排版」的预算
         metric = self._rank_metric
         kind, title = (("f2", "stnb") if metric == "stnb" else
                        ("f3", "3BV/s" if metric == "bvs" else "time"))
@@ -3954,21 +3967,48 @@ class App(tk.Tk):
 
         每列行数可能差很多（全部时初/中/高 1 万/1 万/400），
         但页面高度只够显示一屏 —— 超出部分留给滚动条，绝不让表格撑满。
+
+        可用高度必须**量**出来，不能用常数推：每列表格上方还有 40px 的级别
+        标题和边距，行高也随缩放变（1.5 倍屏上一行 48px，不是 45px）。
+        以前按常数算，多算出一行，最后一行正好被挤出可视区。
         """
         if not getattr(self, "rank_tables", None):
             return
         page = self.pages["rank"]
         ph = page.winfo_height()
-        if ph < sc(120):               # 页面还没布局好，等 <Configure> 再算
+        top = self.rank_grid.winfo_y()  # 工具条占掉的高度（含页面上下 padding）
+        if ph < sc(120) or top <= 0:    # 页面刚切过来，尺寸还没定，过一拍再量
+            self._rank_fit_retry()
             return
-        bar_h = self.rank_bar.winfo_reqheight()
-        head = sc(47)                  # 表头高度，和 Table._fit 同一个口径
-        row_h = max(1, sc(30))         # 一行数据的实际高度
-        avail = ph - bar_h - sc(24)    # 工具条 + 上下的 padding
-        cap = max(3, int((avail - head) // row_h))
+        avail = ph - top - sc(8)        # 三张表一共能用的高度，底部留一点空
         for t in self.rank_tables.values():
+            tv = t.tv
+            cell = t.master.master      # holder -> cell（cell 里还有级别标题）
+            head, row_h = sc(47), max(1, sc(32))
+            kids = tv.get_children()
+            if kids:
+                bb = tv.bbox(kids[0])   # bbox 的 y 是表头高，h 是一行的高
+                if bb:
+                    head, row_h = bb[1], max(1, bb[3])
+            extra = max(0, cell.winfo_height() - tv.winfo_height())  # 标题 + 边距
+            cap = max(3, int((avail - extra - head) // row_h))
             n = len(t.rows)
-            t.tv.configure(height=min(n, cap) if n else 3)
+            tv.configure(height=min(n, cap) if n else 3)
+        self._rank_fit_tries = 0
+
+    def _rank_fit_retry(self):
+        """页面刚切过来时尺寸还没定，隔一拍再量；只重试几拍，别空转。"""
+        if not self.winfo_exists() or self._rank_fit_tries >= 12:
+            return
+        if self._rank_fit_job is not None:
+            return
+        self._rank_fit_tries += 1
+        self._rank_fit_job = self.after(40, self._rank_fit_again)
+
+    def _rank_fit_again(self):
+        self._rank_fit_job = None
+        if self.winfo_exists():
+            self._rank_fit()
 
     # ---------- 上传页 ----------
     def _build_upload(self):
