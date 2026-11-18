@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.30.5"
+APP_VER = "0.30.7"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -3798,10 +3798,11 @@ class App(tk.Tk):
                            font=FONT_MONO_B, justify="center")
         box.pack(side="left", ipady=sc(2))
         self.rank_n_box = box
-        # 只在选中下拉项 / 回车时提交。不绑 <FocusOut>：那里回填会把用户
-        # 刚选中、还没改完的文字又覆盖回去，看着像删不掉、移不走。
+        # 回车 / 选下拉项 / 鼠标点到别处（失焦）都提交。
+        # 失焦那条不抢焦点 —— 焦点本来就在离开，再 focus_set 会抢走用户要点的地方。
         for ev in ("<<ComboboxSelected>>", "<Return>"):
             box.bind(ev, lambda *_: self._on_rank_n())
+        box.bind("<FocusOut>", lambda *_: self._on_rank_n(settle_focus=False))
 
         grid = tk.Frame(page, bg=C_BG)
         grid.pack(fill="both", pady=(sc(6), 0))
@@ -3818,7 +3819,7 @@ class App(tk.Tk):
             holder = tk.Frame(cell, bg=C_LINE)
             holder.grid(row=1, column=0, sticky="ew", pady=(sc(6), 0))
             cols = [
-                ("rank", "#", 30, "e", "int"),
+                ("rank", "#", 60, "e", "int"),
                 ("score", "time", 84, "e", "f3"),
                 ("bv", "3BV", 52, "e", "int"),
                 ("style_cn", "风格", 46, "center", "str"),
@@ -3842,7 +3843,7 @@ class App(tk.Tk):
             p.set_selected(k == key)
         self.render_rank()
 
-    def _on_rank_n(self):
+    def _on_rank_n(self, settle_focus=True):
         raw = (self.var_rank_n.get() or "").strip()
         if raw in ("全部", "所有", "all"):
             n = 0
@@ -3854,9 +3855,13 @@ class App(tk.Tk):
         if n != self._rank_n:
             self._rank_n = n
             self.render_rank()
-        # 提交完把焦点交出去：焦点留在 Combobox 上就会一直闪着光标，
-        # 像一直停在输入状态。要改时点一下框自然会重新拿到焦点。
-        self.rank_n_box.tk_focusNext().focus_set()
+        # 提交后两件事一起做，缺一个都会被用户看见：
+        #   1) Tk 在 <<ComboboxSelected>> 后把文字整段选中（灰底），要清掉；
+        #   2) 回车/选下拉项时把焦点交出去，别一直闪光标。
+        # 失焦触发时焦点本就在走，不抢它（否则抢走用户正要点的地方）。
+        self.rank_n_box.selection_clear()
+        if settle_focus:
+            self.rank_n_box.tk_focusNext().focus_set()
 
     def render_rank(self):
         """三级别各取前 N 局；N=0 时放开到这个级别的全部录像。"""
