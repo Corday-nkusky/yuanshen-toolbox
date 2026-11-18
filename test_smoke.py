@@ -8,8 +8,8 @@ import sys
 import time
 import tkinter as tk
 
+import uitest  # 后台跑界面：窗口对用户透明，见 app.py 里 MS_PB_QUIET
 import app as A
-from PIL import ImageGrab
 
 A.App._restore_session = lambda self: None      # 冒烟测试不需要账号，别碰网络
 
@@ -37,11 +37,9 @@ def shot(win, name):
     win.update()
     time.sleep(0.25)
     win.update()
-    x, y = win.winfo_rootx(), win.winfo_rooty()
-    w, h = win.winfo_width(), win.winfo_height()
-    img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
-    img.save(os.path.join(HERE, name))
-    print("shot", name, img.size)
+    # 窗口对用户是透明的，抓屏幕只能抓到桌面；改成抓窗口自己的像素
+    w, h = uitest.grab(win, os.path.join(HERE, name))
+    print("shot", name, (w, h))
 
 
 def main():

@@ -26,6 +26,7 @@ os.makedirs(REPLAY, exist_ok=True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import uitest  # 后台跑界面：窗口对用户透明，见 app.py 里 MS_PB_QUIET
 import app as A          # noqa: E402
 import autoup            # noqa: E402
 import core              # noqa: E402

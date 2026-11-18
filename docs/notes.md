@@ -147,7 +147,24 @@ PyInstaller 默认清单不带 `dpiAware`，进程起来后再调会被系统拒
 级别 / 风格 / 来源 / 状态 / 日期时间这类短标签居中 `"center"`，文件与路径左对齐 `"w"`。
 表头跟着单元格同向。加列时按这三桶挑。
 
-## 图标怎么来的（任务栏清晰度）
+## 跑界面测试不能占用户的屏幕
+
+跑一次冒烟测试要开十几个窗口，把用户正在做的事挡掉、还抢键盘焦点。用户明确要求
+「我工作的时候电脑还能正常用」。做法（`app.py` 顶部 `QUIET` 一段 + `uitest.py`）：
+
+1. 测试脚本**先 `import uitest`，再 `import app`**（`uitest` 会设 `MS_PB_QUIET=1`）。
+   漏了这行窗口就会照常弹出来。
+2. `QUIET` 生效时，每个 `Tk` / `Toplevel` 建好后都被改成：`-alpha 0`（完全透明）、
+   `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT`（不进任务栏、
+   不被激活、鼠标穿透），映射后再盖一遍，并把前台还给用户原来那个窗口。
+3. **不能把窗口挪到屏幕外**：那样的窗口 DWM 不给合成面，截图只能抓到一片白。
+   必须留在屏幕坐标上、只是 alpha 0。
+4. 截图改用 `uitest.grab(win, path)`：`PrintWindow` 抓**客户区**句柄
+   （`winfo_id`），标志位用 `2`（`PW_RENDERFULLCONTENT`，Treeview / Canvas 都在
+   里面）；全白时退回 `0`（`WM_PRINT`，Tk 自己实现的控件才有，表格会是空白）。
+   外层带标题栏的句柄抓出来只有标题栏，客户区全白 —— 所以截图里没有标题栏。
+
+
 
 ![任务栏图标：改前 / 改后](icon_taskbar.png)
 

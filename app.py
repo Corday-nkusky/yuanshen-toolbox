@@ -36,12 +36,128 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.31.2"
+APP_VER = "0.31.3"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
 BUNDLED_FONTS = ("MiSans-Regular.ttf", "MiSans-Demibold.ttf")
 FONT_FILES = []
+
+
+# --------------------------------------------------------------- 后台跑界面
+# 跑测试、截图脚本时会弹出一堆窗口，把用户正在做的事挡掉、还会抢走键盘焦点。
+# 设了 MS_PB_QUIET=1：窗口照常布局（截图还能抓），但对用户完全透明 ——
+# alpha 0 看不见、点不穿、不抢焦点、不占任务栏。
+# 为什么不是挪到屏幕外：屏幕外的窗口 DWM 不给合成面，截图只能抓到一片白。
+# 正常启动没有这个变量，行为完全不变。打包后的 exe 一律不认这个变量 ——
+# 万一环境里残留了它，用户会看见一个「打不开的程序」。
+QUIET = (os.environ.get("MS_PB_QUIET") == "1"
+         and not getattr(sys, "frozen", False))
+
+if QUIET:
+    # 句柄是 64 位，不声明 restype 会被截成 32 位，SetForegroundWindow 就废了
+    _u32 = ctypes.windll.user32
+    _u32.GetForegroundWindow.restype = ctypes.c_void_p
+    _u32.GetAncestor.restype = ctypes.c_void_p
+    _u32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    _u32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    _u32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+    _u32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    _u32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+
+
+def _quiet_style(win):
+    """完全透明 + 不抢焦点 + 不进任务栏 + 鼠标穿透。"""
+    try:
+        win.attributes("-alpha", 0.0)
+    except tk.TclError:
+        pass
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetAncestor(win.winfo_id(), 2)       # GA_ROOT
+        if not hwnd:
+            return
+        gwl_exstyle = -20
+        # TOOLWINDOW（不在任务栏/Alt-Tab）| NOACTIVATE（不抢焦点）
+        # | TRANSPARENT（鼠标穿透，免得挡住用户点自己的窗口）
+        add = 0x80 | 0x08000000 | 0x20
+        cur = user32.GetWindowLongW(hwnd, gwl_exstyle)
+        user32.SetWindowLongW(hwnd, gwl_exstyle, cur | add)
+    except Exception:
+        pass
+
+
+def _foreground():
+    try:
+        return ctypes.windll.user32.GetForegroundWindow()
+    except Exception:
+        return 0
+
+
+def _ours(hwnd):
+    """这个窗口是不是本进程的。"""
+    try:
+        pid = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return pid.value == os.getpid()
+    except Exception:
+        return False
+
+
+def _give_back_focus(hwnd):
+    """把前台还给用户原来那个窗口。
+
+    Tk 在映射窗口时会把样式重设一遍（NOACTIVATE 被抹掉），Windows 就顺手把
+    新窗口激活了 —— 用户正在敲字时这一下会吃掉按键。所以映射完把前台还回去。
+
+    只在「前台现在是本进程的窗口」时才抢回来：用户中途点了别的窗口，
+    说明他已经换了目标，别跟人抢。
+    """
+    if not hwnd:
+        return
+    try:
+        user32 = ctypes.windll.user32
+        cur = user32.GetForegroundWindow()
+        if cur and cur != hwnd and _ours(cur):
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+if QUIET:
+    _orig_tk_init = tk.Tk.__init__
+    _orig_top_init = tk.Toplevel.__init__
+
+    def _quiet_apply(win):
+        """窗口映射时 Tk 会把窗口样式重设一遍，所以要在建好之后再来一次。
+
+        <Map> 会从子控件冒泡上来，所以这里认的是窗口本身，不看 event.widget。
+        映射那一下 Windows 会把新窗口设成前台，所以把用户原来的前台还回去。
+        """
+        prev = _foreground()
+
+        def again(_e=None):
+            _quiet_style(win)
+            _give_back_focus(prev)
+
+        _quiet_style(win)
+        try:
+            win.bind("<Map>", again, add="+")
+            win.after(80, again)          # 映射之后 Tk 会重设样式，再盖一遍
+            win.after(260, again)
+        except tk.TclError:
+            pass
+
+    def _quiet_tk_init(self, *a, **kw):
+        _orig_tk_init(self, *a, **kw)
+        _quiet_apply(self)
+
+    def _quiet_top_init(self, *a, **kw):
+        _orig_top_init(self, *a, **kw)
+        _quiet_apply(self)
+
+    tk.Tk.__init__ = _quiet_tk_init
+    tk.Toplevel.__init__ = _quiet_top_init
 
 
 def font_dirs():

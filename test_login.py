@@ -8,6 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 ctypes.windll.shcore.SetProcessDpiAwareness(1)
 
+import uitest  # 后台跑界面：窗口对用户透明，见 app.py 里 MS_PB_QUIET
 import app  # noqa: E402
 import test_tabs  # noqa: E402
 

@@ -9,6 +9,7 @@ import os
 import sys
 import time
 
+import uitest  # 后台跑界面：窗口对用户透明，见 app.py 里 MS_PB_QUIET
 import app as A
 import journal
 import openms
@@ -317,6 +318,11 @@ def main():
             # 与 tk.Menu 一致：空菜单返回 None，否则返回最后一项的下标
             return None if not self.items else len(self.items) - 1
 
+        def type(self, index):
+            # app.py 靠它判断末尾是不是分隔符，别再往里加重复的分隔线
+            i = len(self.items) - 1 if index == "end" else int(index)
+            return "separator" if self.items[i] == "-" else "command"
+
         def tk_popup(self, x, y):
             pass
 
@@ -339,9 +345,9 @@ def main():
         rec.tv.identify_row = real_identify
         A.tk.Menu = real_menu
     labels = made[0].items if made else []
-    checks += [("右键菜单：播放 / 复制路径 / 打开所在文件夹",
-                labels[:1] == ["用元扫雷播放"] and "复制路径" in labels
-                and "打开所在文件夹" in labels)]
+    checks += [("右键菜单：详细信息 / 播放 / 复制路径 / 打开所在文件夹",
+                labels[:3] == ["详细信息", "-", "用元扫雷播放"]
+                and "复制路径" in labels and "打开所在文件夹" in labels)]
 
     win.destroy()
     journal.clear()
