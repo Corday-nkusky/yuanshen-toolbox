@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.31.4"
+APP_VER = "0.31.5"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -887,6 +887,19 @@ def _auto_reasons(row):
     return [s.strip() for s in why.split("；") if s.strip() and s.strip() != "—"]
 
 
+def _auto_why_pair(s):
+    """「涨分·NF · 中级 3BV/s 4.31（…）」→（"涨分·NF", "中级 3BV/s 4.31（…）"）。
+
+    详情按两列摆：左边是这条理由属于哪个榜，右边是具体成绩。拆开之后左边
+    一样长，右边才会从同一条竖线开始 —— 整串连在一起时每行行首缩进不同，
+    看着就是上下错位。
+    """
+    head, sep, tail = s.partition(" · ")
+    if sep and head and len(head) <= 8:
+        return head, tail
+    return "", s
+
+
 # 备注那格放几条短写。一局同时破 PB、进三张榜时理由有六七条，全铺开又回到
 # 「一行塞不下」的老样子；多出来的用省略号带过，完整理由在下面的详情条里。
 AUTO_NOTE_MAX = 3
@@ -989,7 +1002,11 @@ class Table(ttk.Frame):
             bb = self.tv.bbox(kids[0])      # bbox 的 y 就是表头实际高度
             if bb:
                 head = bb[1]
-        rows = max(self.min_rows, int((h - head) // row_h))
+        fit_rows = int((h - head) // row_h)
+        # 够宽裕时至少留 min_rows 行；实在放不下就别硬撑 —— 硬撑的那几行会
+        # 把底下的详情条顶出表格外，最后几行理由就被裁掉了。
+        rows = max(self.min_rows, fit_rows) if fit_rows >= self.min_rows \
+            else max(1, fit_rows)
         if rows != self._fit_rows:
             self._fit_rows = rows
             self.tv.configure(height=rows)
@@ -4569,12 +4586,18 @@ class App(tk.Tk):
         # 时原因有四五条 —— 表格保持一行一局，完整理由单独一行一条看。
         # 详情放在表格内部（tv 下一行），才会紧贴表格下沿；放 page 级用
         # side=bottom 会被先 pack 的 foot 顶到窗口最底部，中间空一大段。
-        self.lbl_auto_detail = tk.Label(
-            self.tbl_auto, text="", bg=C_PANEL, fg=C_TEXT, font=FONT_SMALL,
-            anchor="w", justify="left", padx=sc(10), pady=sc(6))
-        self.lbl_auto_detail.grid(row=1, column=0, columnspan=2, sticky="ew")
+        #
+        # 用「左边榜名 + 右边成绩」两列而不是一整段文本：理由长短差很多，
+        # 一条长句里还夹着「·」分隔符，堆在一起每行行首都不一样，读起来上下
+        # 跳。分列之后左列宽度由最长的榜名决定，右边的成绩全部从同一条竖线开始。
+        self.frm_auto_detail = tk.Frame(self.tbl_auto, bg=C_PANEL)
+        self.frm_auto_detail.grid(row=1, column=0, columnspan=2, sticky="ew",
+                                  padx=sc(4), pady=(sc(3), sc(4)))
+        self.frm_auto_detail.columnconfigure(1, weight=1)
+        self._auto_rows = []          # [(榜名 Label, 成绩 Label)]
+        self._auto_lines = 1
         # 高度自适应时把这行让出来，否则行数按整帧算，最后一行会盖住详情
-        self.tbl_auto.extra_bottom = self.lbl_auto_detail
+        self.tbl_auto.extra_bottom = self.frm_auto_detail
 
         self.tbl_auto.tv.bind("<<TreeviewSelect>>",
                               self._on_auto_select, add="+")
@@ -4682,8 +4705,9 @@ class App(tk.Tk):
         self.tbl_auto.set_rows(rows)
         # 详情条的高度按「这批记录里理由最多的一条」定死：选中不同行时表格
         # 不会忽高忽低，也不会把详情条挤掉。理由最多几条是数得出来的。
-        lines = max([len(_auto_reasons(r)) for r in rows] or [1])
-        self.lbl_auto_detail.config(height=lines)
+        self._auto_lines = max([len(_auto_reasons(r)) for r in rows] or [1])
+        self._auto_detail_rows(self._auto_lines)
+        self.frm_auto_detail.update_idletasks()
         self.tbl_auto.refit()
         self._refresh_auto_status()
         # 刷新会把选中清掉：默认停在最新一条上，详情条不留空
@@ -4691,27 +4715,56 @@ class App(tk.Tk):
             self.tbl_auto.tv.selection_set("0")
         self._on_auto_select()      # 刷新后把详情对齐到仍选中（或清空）的那行
 
+    def _auto_detail_rows(self, n):
+        """把详情条调成正好 n 行；行数没变时复用原来的控件，只改文字。"""
+        rows = self._auto_rows
+        while len(rows) < n:
+            i = len(rows)
+            top = sc(2) if i == 0 else 0
+            tag = tk.Label(self.frm_auto_detail, text="", bg=C_PANEL, fg=C_DIM,
+                           font=FONT_SMALL, anchor="nw")
+            txt = tk.Label(self.frm_auto_detail, text="", bg=C_PANEL, fg=C_TEXT,
+                           font=FONT_SMALL, anchor="nw", justify="left")
+            tag.grid(row=i, column=0, sticky="nw", padx=(sc(8), sc(10)),
+                     pady=(top, 0))
+            txt.grid(row=i, column=1, sticky="nw", padx=(0, sc(8)),
+                     pady=(top, 0))
+            rows.append((tag, txt))
+        while len(rows) > n:
+            for lb in rows.pop():
+                lb.destroy()
+        return rows
+
     def _on_auto_select(self, _e=None):
-        """选中一行 → 在表格下方展开完整理由，多个原因一行一条。
+        """选中一行 → 在表格下方展开完整理由，一条理由一行。
 
         记录里的 why 是写日志时用「；」拼起来的（见 _auto_record），这里拆回
-        多行。没有选中（或表刚刷新）就把详情清空，不留上一条的残影。
+        多条，再按「榜名 / 成绩」分两列摆。没有选中（或表刚刷新）就把文字清空，
+        行数保持不变，表格不会跟着跳。
         """
-        if not hasattr(self, "lbl_auto_detail"):
+        if not hasattr(self, "frm_auto_detail"):
             return
+        parts = []
         sel = self.tbl_auto.tv.selection()
-        if not sel:
-            self.lbl_auto_detail.config(text="")
-            return
-        iid = sel[0]
-        try:
-            row = self.tbl_auto.rows[int(iid)]
-        except (ValueError, IndexError):
-            self.lbl_auto_detail.config(text="")
-            return
-        parts = _auto_reasons(row)
-        self.lbl_auto_detail.config(
-            text=("\n".join("· " + s for s in parts)) if parts else "—")
+        if sel:
+            try:
+                parts = _auto_reasons(self.tbl_auto.rows[int(sel[0])])
+            except (ValueError, IndexError):
+                parts = []
+        pairs = [_auto_why_pair(s) for s in parts] or [("", "—")]
+        n = max(self._auto_lines, len(pairs))
+        grew = n != len(self._auto_rows)
+        rows = self._auto_detail_rows(n)
+        for i, (tag, txt) in enumerate(rows):
+            head, body = pairs[i] if i < len(pairs) else ("", "")
+            tag.config(text=head, fg=C_DIM)
+            txt.config(text=body)
+        if grew:
+            # 万一某条记录的理由比刷新时算出的还多，让表格重新扣一次高度，
+            # 否则多出来的那行会被表格最后一行盖住。
+            self._auto_lines = n
+            self.frm_auto_detail.update_idletasks()
+            self.tbl_auto.refit()
 
     def _auto_record(self, game, why, result, ok=False, brief=None):
         autolog.add({
