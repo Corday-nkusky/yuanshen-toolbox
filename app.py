@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.31.1"
+APP_VER = "0.31.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -2286,12 +2286,16 @@ class GameDetail(tk.Toplevel):
                                                   pady=sc(2))
 
     def _metrics(self, body):
-        """time / 3BV/s / stnb，各自后面跟「本级第几 / 本级共多少局」。"""
+        """三指标 + 同 BV + 当天，各自后面跟「第几 / 共几局」。"""
         g = self.game
         ranks = self._ranks()
-        rows = (("time", fmt_time(g.get("time") or 0), ranks.get("time")),
-                ("3BV/s", fmt_bvs(g.get("bvs") or 0), ranks.get("bvs")),
-                ("stnb", fmt_stnb(g.get("stnb") or 0), ranks.get("stnb")))
+        rows = (
+            ("time", fmt_time(g.get("time") or 0), ranks.get("time")),
+            ("3BV/s", fmt_bvs(g.get("bvs") or 0), ranks.get("bvs")),
+            ("stnb", fmt_stnb(g.get("stnb") or 0), ranks.get("stnb")),
+            ("BV", "", ranks.get("bv")),
+            (g.get("date") or "", "", ranks.get("day")),
+        )
         for row, (label, val, rk) in enumerate(rows):
             tk.Label(body, text=label, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
                      anchor="w").grid(row=row, column=0, sticky="w",
@@ -2299,7 +2303,10 @@ class GameDetail(tk.Toplevel):
             tk.Label(body, text=val, bg=C_BG, fg=C_TEXT, font=FONT_MONO,
                      anchor="w").grid(row=row, column=1, sticky="w",
                                       pady=sc(3))
-            tk.Label(body, text=rk or "—", bg=C_BG, fg=C_DIM,
+            # 名次右端对齐（"%5d"）；没有名次时给一个同样宽度的短横，
+            # 让它落在数字那一列上，而不是贴在最左边
+            tk.Label(body, text=("%5s" % rk) if rk else "%5s" % "—",
+                     bg=C_BG, fg=C_DIM,
                      font=FONT_MONO, anchor="w").grid(
                          row=row, column=2, sticky="w", pady=sc(3))
 
@@ -2309,33 +2316,52 @@ class GameDetail(tk.Toplevel):
         return ("%s %s" % (core.day_text(t0), core.clock_text(t0))).strip()
 
     def _ranks(self):
-        """三项指标在本级别里各排第几；分母是这一级有多少局。
+        """三指标的本级名次，加上同 BV、当天的名次。
 
-        门槛跟排行榜一致（没过门槛的局榜里不出现，这里也不给名次）；
-        同值算同一名次。本轮扫描已经算好 time / bvs / stnb，不重演录像。
+        三项指标的分母是「本级过了门槛的局」—— 门槛跟排行榜一致，没过门槛的局
+        榜里本来就不出现；同值算同一名次。同 BV 和当天只看本级，不分风格：
+        同一盘面、同一天，风格不改变题目本身。扫描时已经算好 time / bvs / stnb，
+        这里不重演录像。
         """
         g = self.game
         lv = g.get("level")
         floor = core.BV_MIN_DEFAULT.get(lv, 0)
-        if (g.get("bv") or 0) < floor:
-            return {}
+        bv = g.get("bv") or 0
+        day = g.get("date") or ""
         t = g.get("time") or 0
         b = g.get("bvs") or 0
         s = g.get("stnb") or 0
         rt = rb = rs = cnt = 0
+        r_bv = n_bv = 0
+        r_day = n_day = 0
         for x in self.app.games:
-            if x.get("level") != lv or (x.get("bv") or 0) < floor:
+            if x.get("level") != lv:
+                continue
+            xt = x.get("time") or 0
+            if (x.get("bv") or 0) == bv:
+                n_bv += 1
+                if xt < t:
+                    r_bv += 1
+            if day and x.get("date") == day:
+                n_day += 1
+                if xt < t:
+                    r_day += 1
+            if (x.get("bv") or 0) < floor:
                 continue
             cnt += 1
-            if (x.get("time") or 0) < t:
+            if xt < t:
                 rt += 1
             if (x.get("bvs") or 0) > b:
                 rb += 1
             if (x.get("stnb") or 0) > s:
                 rs += 1
-        return {"time": "%5d / %d" % (rt + 1, cnt),
-                "bvs": "%5d / %d" % (rb + 1, cnt),
-                "stnb": "%5d / %d" % (rs + 1, cnt)}
+        out = {"bv": "%5d / %d" % (r_bv + 1, n_bv),
+               "day": "%5d / %d" % (r_day + 1, n_day)}
+        if bv >= floor and cnt:
+            out.update({"time": "%5d / %d" % (rt + 1, cnt),
+                        "bvs": "%5d / %d" % (rb + 1, cnt),
+                        "stnb": "%5d / %d" % (rs + 1, cnt)})
+        return out
 
     def _copy_path(self):
         p = self.game.get("path") or ""
