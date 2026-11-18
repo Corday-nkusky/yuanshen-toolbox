@@ -19,6 +19,7 @@ NF 榜独立）。本模块只做三件事：
 
 import math
 import os
+import re
 import time
 
 import core
@@ -153,12 +154,15 @@ def judge(games, scopes, new_paths, site_pb=None, site_top=None):
         p = g.get("path")
         if p not in new_paths or p not in want:
             continue
-        reasons = explain(g, games, scopes, best, cut, board)
-        if not reasons:
+        pairs = _explain(g, games, scopes, best, cut, board)
+        if not pairs:
             # 理论上不该发生（want 就是按同一口径算出来的）。真出现时宁可
             # 少说一句，也不能漏传 —— 用范围标签兜底。
-            reasons = [SCOPE_CN.get(scopes[0], "符合上传范围")]
-        out.append({"path": p, "game": g, "why": reasons})
+            label = SCOPE_CN.get(scopes[0], "符合上传范围")
+            pairs = [(label, label)]
+        out.append({"path": p, "game": g,
+                    "why": [full for _short, full in pairs],
+                    "brief": [short for short, _full in pairs]})
     return out
 
 
@@ -167,6 +171,15 @@ def explain(game, games, scopes, best=None, cut=None, board=None):
 
     board: 网站前端榜的完整排名 {(榜, 级别, 指标): [行]}，用来写「第几名」。
     只给 cut（第五名阈值）能判该不该传，但算不出具体名次。
+    """
+    return [full for _short, full in _explain(game, games, scopes, best, cut, board)]
+
+
+def _explain(game, games, scopes, best=None, cut=None, board=None):
+    """理由的长短两版：``(短写, 完整)``。
+
+    短写进表格那一格（列宽有限，一局可能有三四条理由），完整版在表格下面的
+    详情条里 —— 一行一条，写全。
     """
     best = best if best is not None else {}
     cut = cut if cut is not None else {}
@@ -185,12 +198,15 @@ def explain(game, games, scopes, best=None, cut=None, board=None):
             continue                    # NF PB 榜只收 NF 局
         cat = "nf" if s == "pb_nf" else "all"
         name = "NF PB" if cat == "nf" else "全PB"
+        tag = "nf pb" if cat == "nf" else "pb"
         cur = best.get((lv, bv, cat))
         if cur is None:
-            out.append("%s · %s %d 首次（%.3f 秒）" % (name, lv_cn, bv, sec))
+            out.append((tag + " 首次",
+                        "%s · %s %d 首次（%.3f 秒）" % (name, lv_cn, bv, sec)))
         elif ms <= cur:
-            out.append("%s · %s %d %.3f 秒（原 %.3f 秒）"
-                       % (name, lv_cn, bv, sec, cur / 1000.0))
+            out.append((tag + " " + _sec_delta((ms - cur) / 1000.0),
+                        "%s · %s %d %.3f 秒（原 %.3f 秒）"
+                        % (name, lv_cn, bv, sec, cur / 1000.0)))
 
     if set(scopes) & {"top", "top_nf"}:
         floor = core.BV_MIN_DEFAULT.get(lv, 0)
@@ -209,8 +225,57 @@ def explain(game, games, scopes, best=None, cut=None, board=None):
                     continue
                 rank = _site_rank(board.get((cat, lv, metric), []),
                                   metric, game, ms)
-                out.append(_top_text(prefix, lv_cn, metric, game, ms, rank))
+                edge = cut.get((cat, lv, metric))
+                short = "%s %s" % (prefix, METRIC_CN[metric])
+                if rank:
+                    short += " 第%d" % rank
+                out.append((short,
+                            _top_text(prefix, lv_cn, metric, game, ms,
+                                      rank, edge)))
     return out
+
+
+def _sec_delta(sec):
+    """PB 快了多少秒。四舍五入后归零的不冒 -0.000 这种自相矛盾的符号。"""
+    return ("%+.3fs" % sec) if abs(sec) >= 0.0005 else "0s"
+
+
+# 老记录（v0.31.x 及更早写的）只存了长句，没有短写。表格那一格要的是短写，
+# 而当时的数据（网站第五名、原 PB）现在未必还在，重算会算出不一样的数 ——
+# 所以从存下来的长句里抠，抠不出来就原样返回，宁可长也不瞎编。
+_BRIEF_TAG = {"全PB": "pb", "NF PB": "nf pb", "涨分": "涨分", "涨分·NF": "涨分·NF"}
+_BRIEF_METRIC = ("3BV/s", "stnb", "time")
+
+
+def briefs(why):
+    """长句（可能多条，用「；」连着）→ 每条的短写。"""
+    parts = [s.strip() for s in (why or "").split("；")
+             if s.strip() and s.strip() != "—"]
+    return [_brief_one(s) for s in parts]
+
+
+def brief_text(why):
+    """长句 → 一行短写（几条用「 · 」连着）。"""
+    return " · ".join(briefs(why)) or "—"
+
+
+def _brief_one(s):
+    head, _sep, rest = s.partition(" · ")
+    tag = _BRIEF_TAG.get(head)
+    if tag is None:
+        return s
+    if tag.endswith("pb"):
+        if "首次" in rest:
+            return tag + " 首次"
+        m = re.search(r"([\d.]+)\s*秒（原\s*([\d.]+)\s*秒）", rest)
+        if not m:
+            return s
+        return "%s %s" % (tag, _sec_delta(float(m.group(1)) - float(m.group(2))))
+    metric = next((m for m in _BRIEF_METRIC if m in rest), None)
+    if metric is None:
+        return s
+    m = re.search(r"第\s*(\d+)\s*名", rest) or re.search(r"网站第\s*(\d+)", rest)
+    return "%s %s%s" % (tag, metric, (" 第" + m.group(1)) if m else "")
 
 
 def _site_rank(rows, metric, game, ms):
@@ -247,15 +312,30 @@ def _ms_value(v):
     return f if math.isfinite(f) else None
 
 
-def _top_text(prefix, lv_cn, metric, game, ms, rank):
+def _val_text(metric, v):
+    """指标值按习惯写：time 带秒，3BV/s 两位、stnb 一位。"""
     if metric == "time":
-        val = "%.3f 秒" % (ms / 1000.0)
-    elif metric == "bvs":
-        val = "%.2f" % float(game.get("bvs") or 0)
-    else:
-        val = "%.1f" % float(game.get("stnb") or 0)
-    where = ("第 %d 名" % rank) if rank else "前端榜"
-    return "%s · %s %s %s（%s）" % (prefix, lv_cn, METRIC_CN[metric], where, val)
+        return "%.3f 秒" % (float(v) / 1000.0)
+    if metric == "bvs":
+        return "%.2f" % float(v)
+    return "%.1f" % float(v)
+
+
+def _top_text(prefix, lv_cn, metric, game, ms, rank, edge=None):
+    """一条涨分理由：这局多少、插进网站榜第几、第五名（边缘）是多少。
+
+    边缘 = 网站这个榜现在第五名的成绩，是「还能不能挤进去」的那条线。
+    """
+    val = _val_text(metric, {"time": ms,
+                             "bvs": game.get("bvs") or 0,
+                             "stnb": game.get("stnb") or 0}[metric])
+    bits = []
+    if rank:
+        bits.append("第 %d 名" % rank)
+    if edge is not None:
+        bits.append("边缘 " + _val_text(metric, edge))
+    tail = ("（%s）" % " · ".join(bits)) if bits else ""
+    return "%s · %s %s %s%s" % (prefix, lv_cn, METRIC_CN[metric], val, tail)
 
 
 # ---------------------------------------------------------------- 新局识别

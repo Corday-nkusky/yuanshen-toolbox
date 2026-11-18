@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.31.3"
+APP_VER = "0.31.4"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -881,6 +881,26 @@ def _delta_num(v):
         return None
 
 
+def _auto_reasons(row):
+    """一条自动上传记录里的完整理由（多条时按「；」拆开）。"""
+    why = row.get("why") or ""
+    return [s.strip() for s in why.split("；") if s.strip() and s.strip() != "—"]
+
+
+# 备注那格放几条短写。一局同时破 PB、进三张榜时理由有六七条，全铺开又回到
+# 「一行塞不下」的老样子；多出来的用省略号带过，完整理由在下面的详情条里。
+AUTO_NOTE_MAX = 3
+
+
+def _auto_note(items):
+    items = [str(s) for s in (items or []) if s]
+    if not items:
+        return "—"
+    if len(items) > AUTO_NOTE_MAX:
+        return " · ".join(items[:AUTO_NOTE_MAX]) + " …"
+    return " · ".join(items)
+
+
 class Table(ttk.Frame):
     """带排序的 Treeview 封装。columns: (key, 标题, 宽度, 对齐, 类型)
 
@@ -892,9 +912,10 @@ class Table(ttk.Frame):
 
     def __init__(self, master, columns, height=6, zebra=True, fit=True,
                  selectmode="browse", iid_key=None, vbar=True, on_double=None,
-                 on_menu=None):
+                 on_menu=None, min_rows=3):
         super().__init__(master, style="Card.TFrame")
         self.columns_def = columns
+        self.min_rows = max(1, int(min_rows))   # 高度自适应时的下限行数
         self.zebra = zebra
         self.rows = []
         self.iid_key = iid_key          # 用某个字段当 iid，便于原地更新某一行
@@ -914,7 +935,7 @@ class Table(ttk.Frame):
             self.tv.heading(key, text=title, anchor=anchor,
                             command=lambda k=key: self._sort_by(k))
             self.tv.column(key, width=sc(width), anchor=anchor,
-                           stretch=(key in ("file", "path", "player", "why",
+                           stretch=(key in ("file", "path", "player", "note",
                                             "vs_pb")))
         self.tv.grid(row=0, column=0, sticky="nsew")
         if vbar:
@@ -934,6 +955,9 @@ class Table(ttk.Frame):
         self._tip = None
         self._fit_job = None
         self._fit_rows = height
+        # 表格底下还挂着一个块（比如详情条）时填进来：算行数要把它扣掉，
+        # 否则最后一行会压到它上面。
+        self.extra_bottom = None
         if fit:
             self.bind("<Configure>", self._schedule_fit)
 
@@ -943,10 +967,19 @@ class Table(ttk.Frame):
             self.after_cancel(self._fit_job)
         self._fit_job = self.after(20, self._fit)
 
+    def refit(self):
+        """内容变了（比如底下的块变高）时重算行数。"""
+        self._schedule_fit()
+
     def _fit(self):
         """按实际可用高度调行数，免得末行被切成半截。"""
         self._fit_job = None
         h = self.winfo_height()
+        if self.extra_bottom is not None:
+            try:
+                h -= self.extra_bottom.winfo_reqheight()
+            except tk.TclError:
+                pass
         if h < sc(60):
             return
         row_h = max(1, sc(32))
@@ -956,7 +989,7 @@ class Table(ttk.Frame):
             bb = self.tv.bbox(kids[0])      # bbox 的 y 就是表头实际高度
             if bb:
                 head = bb[1]
-        rows = max(3, int((h - head) // row_h))
+        rows = max(self.min_rows, int((h - head) // row_h))
         if rows != self._fit_rows:
             self._fit_rows = rows
             self.tv.configure(height=rows)
@@ -2840,6 +2873,7 @@ class App(tk.Tk):
         self._auto_backoff = 0.0   # 网络类临时失败：到这个时间点再试
         self._auto_session = 0     # 本次会话自动传成功几条
         self._auto_why = {}        # path -> [理由]，上传回调用
+        self._auto_brief = {}      # path -> [短写]，同上
         self._auto_retry = {}      # path -> 已重试次数（网络类临时失败）
         self._up_silent = False    # 这一批是不是自动上传发的（决定要不要弹窗）
 
@@ -4514,31 +4548,33 @@ class App(tk.Tk):
                                       font=FONT_SMALL, anchor="e")
         self.lbl_auto_stat.pack(side="right")
 
-        # 结果排在长文本列前面：为什么不传/传成什么样，先看到；「备注」
-        # 放最后一列吃剩余宽度，不把结果推到离内容很远的地方。点一行在下方
-        # 展开完整备注，所以这里不必塞下全部文字。
+        # 结果排在长文本列前面：为什么不传/传成什么样，先看到。备注只写短写
+        # （pb -1.164s / 涨分 3BV/s 第4），完整理由在下方详情条里。
         cols = [
             ("t", "时刻", 108, "center", "str"),
             ("level_cn", "级别", 56, "center", "str"),
             ("time", "time", 74, "e", "f3"),
             ("bv", "3BV", 48, "e", "int"),
             ("result", "结果", 190, "center", "str"),
-            ("why", "备注", 300, "w", "str"),
+            ("note", "备注", 420, "w", "str"),
         ]
-        holder, self.tbl_auto = self._table(page, cols, height=6, fit=False)
-        # 这个表只有几条记录，不能像别的表那样自动撑高 / expand 拉满 ——
-        # 否则会把下面的详情条挤成一行。表格按内容高度，剩下的空间留给详情。
+        holder, self.tbl_auto = self._table(page, cols, height=6, fit=True,
+                                           min_rows=2)
+        # 表格能滚，就别钉在 6 行：下面空着的整块给表格，记录多了能一屏多看
+        # 几条。详情条的高度单独留出来（见 _refresh_auto_view），不会被挤掉。
         holder.pack_forget()
-        holder.pack(fill="x")
+        holder.pack(fill="both", expand=True)
 
-        # 点一行在这里展开完整备注。备注列再宽也有截断，一条局既涨分又是 PB
-        # 时原因有四五条，挤在一格里根本看不全 —— 表格保持一行一局，详情单独看。
+        # 点一行在这里展开完整理由。备注列只放得下短写，一条局既涨分又是 PB
+        # 时原因有四五条 —— 表格保持一行一局，完整理由单独一行一条看。
         # 详情放在表格内部（tv 下一行），才会紧贴表格下沿；放 page 级用
         # side=bottom 会被先 pack 的 foot 顶到窗口最底部，中间空一大段。
         self.lbl_auto_detail = tk.Label(
             self.tbl_auto, text="", bg=C_PANEL, fg=C_TEXT, font=FONT_SMALL,
             anchor="w", justify="left", padx=sc(10), pady=sc(6))
-        self.lbl_auto_detail.grid(row=1, column=0, sticky="ew")
+        self.lbl_auto_detail.grid(row=1, column=0, columnspan=2, sticky="ew")
+        # 高度自适应时把这行让出来，否则行数按整帧算，最后一行会盖住详情
+        self.tbl_auto.extra_bottom = self.lbl_auto_detail
 
         self.tbl_auto.tv.bind("<<TreeviewSelect>>",
                               self._on_auto_select, add="+")
@@ -4636,12 +4672,27 @@ class App(tk.Tk):
     def _refresh_auto_view(self):
         if not hasattr(self, "tbl_auto"):
             return
-        self.tbl_auto.set_rows([dict(x) for x in autolog.items()])
+        rows = []
+        for x in autolog.items():
+            r = dict(x)
+            if not r.get("note"):
+                # 老记录只存了长句，短写从长句里抠（见 autoup.briefs）
+                r["note"] = _auto_note(autoup.briefs(r.get("why") or ""))
+            rows.append(r)
+        self.tbl_auto.set_rows(rows)
+        # 详情条的高度按「这批记录里理由最多的一条」定死：选中不同行时表格
+        # 不会忽高忽低，也不会把详情条挤掉。理由最多几条是数得出来的。
+        lines = max([len(_auto_reasons(r)) for r in rows] or [1])
+        self.lbl_auto_detail.config(height=lines)
+        self.tbl_auto.refit()
         self._refresh_auto_status()
+        # 刷新会把选中清掉：默认停在最新一条上，详情条不留空
+        if rows and not self.tbl_auto.tv.selection():
+            self.tbl_auto.tv.selection_set("0")
         self._on_auto_select()      # 刷新后把详情对齐到仍选中（或清空）的那行
 
     def _on_auto_select(self, _e=None):
-        """选中一行 → 在表格下方展开完整备注，多个原因一行一条。
+        """选中一行 → 在表格下方展开完整理由，多个原因一行一条。
 
         记录里的 why 是写日志时用「；」拼起来的（见 _auto_record），这里拆回
         多行。没有选中（或表刚刷新）就把详情清空，不留上一条的残影。
@@ -4658,16 +4709,19 @@ class App(tk.Tk):
         except (ValueError, IndexError):
             self.lbl_auto_detail.config(text="")
             return
-        why = row.get("why") or ""
-        parts = [s.strip() for s in why.split("；") if s.strip() and s.strip() != "—"]
-        text = ("\n".join("· " + s for s in parts)) if parts else "—"
-        self.lbl_auto_detail.config(text=text)
+        parts = _auto_reasons(row)
+        self.lbl_auto_detail.config(
+            text=("\n".join("· " + s for s in parts)) if parts else "—")
 
-    def _auto_record(self, game, why, result, ok=False):
+    def _auto_record(self, game, why, result, ok=False, brief=None):
         autolog.add({
             "level_cn": core.LEVEL_CN.get(game.get("level"), "?"),
             "time": game.get("time"),
             "bv": game.get("bv"),
+            # 表格那一格只放短写（pb -1.164s / 涨分 3BV/s 第4），完整理由在
+            # 下面的详情条里；why 留着给详情用。
+            "note": _auto_note(brief if brief else autoup.briefs(
+                "；".join(w for w in (why or []) if w))),
             "why": "；".join([w for w in (why or []) if w]) or "—",
             "result": result,
             "ok": bool(ok),
@@ -4792,7 +4846,7 @@ class App(tk.Tk):
             if k:
                 keys.add(k)
 
-        todo, why = [], {}
+        todo, why, brief = [], {}, {}
         for c in cands:
             g = c["game"]
             reason = autoup.blocked(g, self.oms_idents or None)
@@ -4801,10 +4855,12 @@ class App(tk.Tk):
                 if autoup.uploaded_before(g, keys) or (k and journal.has(k)):
                     reason = "网站上已经有这条了"
             if reason:
-                self._auto_record(g, c["why"], "没传：" + reason, ok=False)
+                self._auto_record(g, c["why"], "没传：" + reason, ok=False,
+                                  brief=c.get("brief"))
                 continue
             todo.append(c["path"])
             why[c["path"]] = c["why"]
+            brief[c["path"]] = c.get("brief")
 
         # 判定完了才 commit：中途因为数据没就绪返回时，这局下次还能再判
         self._auto_tracker.commit(ready)
@@ -4813,7 +4869,7 @@ class App(tk.Tk):
             self._refresh_auto_status()
             return
         diag.log.info("自动上传：%d 条新成绩符合范围", len(todo))
-        self._start_upload(todo, silent=True, why=why)
+        self._start_upload(todo, silent=True, why=why, brief=brief)
 
     # ---------- 账号 ----------
     def open_login(self):
@@ -5467,7 +5523,7 @@ class App(tk.Tk):
             return
         self._start_upload(paths)
 
-    def _start_upload(self, paths, silent=False, why=None):
+    def _start_upload(self, paths, silent=False, why=None, brief=None):
         """silent=True 是自动上传发的：不确认、不锁按钮、失败不弹窗。
 
         自动上传每局都会走这条路，任何弹窗都会抢走元扫雷的焦点，一局就废了。
@@ -5491,6 +5547,7 @@ class App(tk.Tk):
         self._up_stop = False
         self._up_silent = bool(silent)
         self._auto_why = dict(why or {})
+        self._auto_brief = dict(brief or {})
         self._up_total = len(paths)
         self._last_failed.clear()
         self._up_done = self._up_ok = self._up_dup = self._up_fail = 0
@@ -5651,7 +5708,8 @@ class App(tk.Tk):
                     self._auto_record(
                         g, self._auto_why.get(path),
                         "网站已有" if res.get("collision")
-                        else openms.STATE_CN.get(state, "已上传"), ok=True)
+                        else openms.STATE_CN.get(state, "已上传"), ok=True,
+                        brief=self._auto_brief.get(path))
                     # 自动上传不重拉录像列表（那是 2000 条、21 批请求），但页面
                     # 上的「网站已有」和「未上传」是拿这个列表算的 —— 所以把刚传
                     # 成功的这条按站点字段补进内存，否则下一次重扫会把它显示回
@@ -5668,7 +5726,8 @@ class App(tk.Tk):
                 else:
                     self._auto_record(g, self._auto_why.get(path),
                                       "没传：%s" % (res.get("reason") or "失败"),
-                                      ok=False)
+                                      ok=False,
+                                      brief=self._auto_brief.get(path))
                     # 断网、5xx 这种可能自己好起来的：放回候选池，20/40/60 秒后再试。
                     # 判定错（格式、级别、审核码）不放回 —— 再试还是同样的结果。
                     if res.get("transient"):
