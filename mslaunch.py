@@ -14,6 +14,7 @@
 
 import ctypes
 import os
+import socket
 import subprocess
 from ctypes import wintypes as _w
 
@@ -95,6 +96,25 @@ def find_running():
 
 
 # ------------------------------------------------------------------ 找安装位置
+def port_open(port, host="127.0.0.1", timeout=0.08):
+    """本机这个端口有没有人在监听。
+
+    用来判断「元扫雷是已经起来了（插件服务在监听）还是还在启动」：
+    起来之后再起一个进程只会把路径转交给它然后退出，是安全的；
+    还在启动的时候再起一个，两个会抢同一组插件端口，后来者直接崩。
+
+    连不上是常态（端口没开），所以这里只做一次非阻塞式的尝试，不会卡住。
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        return s.connect_ex((host, int(port))) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def _env(*names):
     for n in names:
         v = os.environ.get(n)

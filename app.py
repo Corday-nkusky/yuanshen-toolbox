@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.30.7"
+APP_VER = "0.30.8"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -2539,6 +2539,12 @@ class App(tk.Tk):
         self._ms_launch_at = 0.0   # 上次点启动的时刻，用于冷启动宽限
         self._ms_focus_until = 0.0   # 让元扫雷露脸的截止时刻，过了就不管了
         self._ms_status = ""       # 状态栏那句「元扫雷已启动」，关掉时要收回
+        # 播放录像时别把元扫雷拉起两个（原因见 open_replay 上方那段说明）
+        self._play_path = ""       # 上次交给它的录像
+        self._play_at = 0.0        # 上次交给它的时刻
+        self._play_wait = 0.0      # 从什么时候开始等它启动完（0 = 没在等）
+        self._play_pending = ""    # 等它起来之后要补交的录像
+        self._play_job = None      # 补交的定时器
 
         # 自动刷新：盯「启用目录 + 它们的所有子目录」的 mtime，变了就重扫
         self._watch_dirs = {}      # 目录 -> 上次看到的 mtime_ns
@@ -2883,6 +2889,8 @@ class App(tk.Tk):
         if not os.path.isfile(path):
             self.set_status("这个录像已经不在了：%s" % shrink_path(path, 46), "warn")
             return
+        if not self._play_gate(path):
+            return
         exe = mslaunch.resolve(self.ms_exe, self._ms_path)
         if not exe:
             exe = self._ask_ms_exe()
@@ -2897,12 +2905,57 @@ class App(tk.Tk):
             self.set_status("没能用元扫雷打开这条录像", "err")
             return
         diag.log.info("用元扫雷打开录像：%s", path)
+        self._play_path = path
+        self._play_at = time.monotonic()
+        self._play_wait = 0.0
         self.set_status("正在用元扫雷打开 %s…" % os.path.basename(path), "dim",
                         hold=5000)
         # 元扫雷的播放窗口默认会压在工具箱下面（Windows 只让前台进程抢前台），
         # 所以这里主动把它提上来 —— 双击之后用户要看的是录像，不是工具箱。
         self._ms_want_front()
         self._ms_try_focus()
+
+    # ---- 播放前先确认「现在只能起一个元扫雷」 -------------------------------
+    #
+    # 元扫雷同一时刻只允许一个实例：它启动时会把插件服务绑在 5555/5556/5557。
+    # 冷启动的头一两秒里它还没开始接「把文件路径转交给已有窗口」的本地 socket，
+    # 这段时间里再起一个进程，新进程找不到已有窗口，就自己去绑同一组端口，
+    # 撞上正在启动的那个 —— 元扫雷会直接弹「Address in use」的未处理异常框。
+    #
+    # 实测踩过：同一路录像连点两下，两个进程落在同一秒里（见 app.log），
+    # 第二个就是这么崩的。所以同一局短时间内只认一次；如果它还在启动，
+    # 等它把插件端口开出来再交，而不是再起一个。
+    MS_PLUGIN_PORT = 5556          # 基础 5555 派生出的 PUB 端口
+    PLAY_REPEAT_GUARD = 3.0        # 同一路录像这几秒内的重复点击算一次
+    PLAY_STARTUP_WAIT = 8.0        # 等它启动完最多等这么久
+
+    def _play_gate(self, path):
+        """现在能不能安心起一个进程去播这条路录像；不能就排到稍后再交。"""
+        now = time.monotonic()
+        if path == self._play_path and now - self._play_at < self.PLAY_REPEAT_GUARD:
+            return False                    # 连点了同一局，上一次已经在打开
+        if (mslaunch.find_running() is not None
+                and not mslaunch.port_open(self.MS_PLUGIN_PORT)):
+            # 进程在、插件端口还没开 = 还在启动。等它起来再交，别起第二个。
+            if not self._play_wait:
+                self._play_wait = now
+                self.set_status("元扫雷正在启动，稍等一下…", "dim", hold=2500)
+            if now - self._play_wait < self.PLAY_STARTUP_WAIT:
+                self._play_pending = path
+                if self._play_job is None:
+                    self._play_job = self.after(500, self._play_resume)
+                return False
+            # 等够久了它还没开插件服务，那就不等了 —— 别把用户的点击吞掉
+        return True
+
+    def _play_resume(self):
+        """元扫雷启动完了，把刚才那条录像补交过去。"""
+        self._play_job = None
+        if not self.winfo_exists():
+            return
+        path, self._play_pending = self._play_pending, ""
+        if path:
+            self.open_replay(path)
 
     def _reveal_path(self, path):
         """在资源管理器里定位录像；是目录就直接打开，并把窗口提到最前。"""
