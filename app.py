@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.30.9"
+APP_VER = "0.31.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1035,12 +1035,18 @@ class Table(ttk.Frame):
             return
         self.tv.selection_set(iid)
         m = tk.Menu(self, tearoff=0)
+        path = self._path_of(iid)
+        top = self.winfo_toplevel()
+        # 详情排第一：点右键盘就是为了先看一眼这局，别让它排在播放下面。
+        # 只有真有录像文件的行才有详情（汇总行、站点行没有 path）。
+        if path and hasattr(top, "show_game_detail"):
+            m.add_command(label="详细信息",
+                          command=lambda p=path: top.show_game_detail(p))
+            m.add_separator()
         if self.on_menu is not None:
             self.on_menu(iid, m)
-        path = self._path_of(iid)
         if path:
-            top = self.winfo_toplevel()
-            if m.index("end") is not None:
+            if m.index("end") is not None and m.type("end") != "separator":
                 m.add_separator()
             if mslaunch.is_replay(path) and hasattr(top, "open_replay"):
                 m.add_command(label="用元扫雷播放",
@@ -2201,6 +2207,166 @@ class IdentsDialog(tk.Toplevel):
             self.lbl_msg.config(text="已复制 %d 个标识" % len(self.idents), fg=C_OK)
         except tk.TclError:
             pass
+
+
+class GameDetail(tk.Toplevel):
+    """一局摊开看：成绩、这局在同 3BV / 同级别里的位置、什么时候打的。
+
+    只读扫描时已经算好的字段 —— 不重演录像、不启动元扫雷，右键就出来。
+    """
+
+    def __init__(self, app, game):
+        super().__init__(app)
+        self.app = app
+        self.game = game
+        self.title("这一局")
+        self.configure(bg=C_BG)
+        self.transient(app)
+        self.resizable(False, False)
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self._build()
+        self._place()
+
+    # ---------- 布局 ----------
+    def _build(self):
+        g = self.game
+        wrap = tk.Frame(self, bg=C_BG)
+        wrap.pack(fill="both", expand=True, padx=sc(20), pady=(sc(16), sc(14)))
+
+        tk.Label(wrap, text=self._when(), bg=C_BG, fg=C_DIM,
+                 font=FONT_SMALL, anchor="w").pack(fill="x")
+        head = "%s · %s · 3BV %s" % (
+            core.LEVEL_CN.get(g.get("level"), ""),
+            core.STYLE_CN.get(g.get("style"), ""),
+            g.get("bv") or 0)
+        tk.Label(wrap, text=head, bg=C_BG, fg=C_TEXT, font=FONT_SECTION,
+                 anchor="w").pack(fill="x", pady=(0, sc(4)))
+
+        # 所有分组共用一张网格：标签列宽度锁死，几组的值才会从同一条竖线开始。
+        body = tk.Frame(wrap, bg=C_BG)
+        body.pack(fill="x")
+        body.columnconfigure(0, minsize=sc(76))
+        body.columnconfigure(1, weight=1)
+        self._body = body
+        self._row = 0
+
+        self._group("成绩", [
+            ("用时", "%s 秒" % fmt_time(g.get("time") or 0)),
+            ("3BV/s", fmt_bvs(g.get("bvs") or 0)),
+            ("stnb", fmt_stnb(g.get("stnb") or 0)),
+        ])
+
+        where = self._where()
+        if where:
+            self._group("这一局排在哪", where)
+
+        files = []
+        src = {"ms": "元扫雷", "arb": "阿比特"}.get(g.get("src"), "")
+        if src:
+            files.append(("来源", src))
+        if g.get("ident"):
+            files.append(("玩家", g["ident"]))
+        self._group("文件", files)
+
+        # 文件名一个人占一行：挤在值列里会在单词中间折行，读起来很别扭
+        tk.Label(body, text=g.get("file") or "", bg=C_BG, fg=C_TEXT,
+                 font=FONT_MONO, anchor="w", justify="left",
+                 wraplength=sc(430)).grid(row=self._row, column=0,
+                                          columnspan=2, sticky="w",
+                                          pady=(sc(6), 0))
+
+        foot = tk.Frame(wrap, bg=C_BG)
+        foot.pack(fill="x", pady=(sc(14), 0))
+        Pill(foot, "复制路径", command=self._copy_path, accent=C_ACCENT2,
+             padx=16, height=30).pack(side="left")
+        Pill(foot, "关闭", command=self.destroy, accent=C_DIM,
+             padx=18, height=30).pack(side="right")
+
+    def _group(self, title, pairs):
+        tk.Label(self._body, text=title, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
+                 anchor="w").grid(row=self._row, column=0, columnspan=2,
+                                  sticky="w", pady=(sc(10), sc(3)))
+        self._row += 1
+        for k, v in pairs:
+            tk.Label(self._body, text=k, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
+                     anchor="w").grid(row=self._row, column=0, sticky="w",
+                                      pady=sc(2))
+            tk.Label(self._body, text=v, bg=C_BG, fg=C_TEXT, font=FONT_MONO,
+                     anchor="w", justify="left").grid(row=self._row, column=1,
+                                                      sticky="w", pady=sc(2))
+            self._row += 1
+
+    # ---------- 内容 ----------
+    def _when(self):
+        t0 = self.game.get("t0")
+        return ("%s %s" % (core.day_text(t0), core.clock_text(t0))).strip()
+
+    def _where(self):
+        """同 3BV 的名次、这个 3BV 的最快、本级别的名次。
+
+        同 3BV 只跟同风格比（NF 和 FL 不是一回事）；本级别按用时比，
+        门槛跟排行榜一致，没过门槛的局在榜里本来就不出现，这里也不给名次。
+        """
+        g = self.game
+        lv = g.get("level")
+        bv = g.get("bv") or 0
+        style = g.get("style")
+        t = g.get("time") or 0
+        floor = core.BV_MIN_DEFAULT.get(lv, 0)
+        rank = cnt = 0
+        best = None
+        lv_rank = lv_cnt = 0
+        for x in self.app.games:
+            if x.get("level") != lv:
+                continue
+            xt = x.get("time") or 0
+            if (x.get("bv") or 0) >= floor:
+                lv_cnt += 1
+                if xt < t:
+                    lv_rank += 1
+            if (x.get("bv") or 0) == bv and x.get("style") == style:
+                cnt += 1
+                if best is None or xt < best:
+                    best = xt
+                if xt < t:
+                    rank += 1
+        out = []
+        if cnt:
+            out.append(("同 3BV", "第 %d / 共 %d 局" % (rank + 1, cnt)))
+            if best is not None and best < t - 1e-9:
+                out.append(("同 3BV 最快",
+                            "%s 秒（慢 %.3f 秒）" % (fmt_time(best), t - best)))
+            else:
+                out.append(("同 3BV 最快", "就是这一局"))
+        if bv >= floor and lv_cnt:
+            out.append(("本级别", "第 %d 快 / 共 %d 局" % (lv_rank + 1, lv_cnt)))
+        return out
+
+    def _copy_path(self):
+        p = self.game.get("path") or ""
+        if not p:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(p)
+        except tk.TclError:
+            return
+        if hasattr(self.app, "set_status"):
+            self.app.set_status("已复制路径：" + p, "dim", hold=5000)
+
+    # ---------- 位置 ----------
+    def _place(self):
+        """贴着鼠标出现；右边放不下就翻到左边，底下放不下就往上抬。"""
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        px, py = self.winfo_pointerxy()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x, y = px + sc(14), py + sc(10)
+        if x + w > sw - sc(16):
+            x = max(sc(8), px - w - sc(14))
+        if y + h > sh - sc(60):
+            y = max(sc(8), sh - h - sc(60))
+        self.geometry("+%d+%d" % (x, y))
 
 
 class PathsDialog(tk.Toplevel):
@@ -3834,6 +4000,9 @@ class App(tk.Tk):
         bar.pack(fill="x", pady=(sc(10), sc(6)))
         self.rank_bar = bar
 
+        # 三指标和 3BV 同时上表，这三个按钮只决定按哪一列排。
+        tk.Label(bar, text="排序", bg=C_BG, fg=C_DIM,
+                 font=FONT_UI).pack(side="left", padx=(0, sc(8)))
         self.rank_metric_seg = {}
         for key, label in (("time", "time"), ("bvs", "3BV/s"), ("stnb", "stnb")):
             p = Pill(bar, label, command=lambda k=key: self.set_rank_metric(k),
@@ -3878,19 +4047,27 @@ class App(tk.Tk):
             cell = tk.Frame(grid, bg=C_BG)
             cell.grid(row=0, column=i, sticky="nwe",
                       padx=(0 if i == 0 else sc(12), 0))
+            # cell 被 grid 拉宽了，但里面的表格是 pack 的：不给 column 权重，
+            # 表格只占它自己请求的宽度，右边留一条空档，像没画完。
+            cell.columnconfigure(0, weight=1)
             self._section(cell, core.LEVEL_CN[lv],
                           LEVEL_ACCENT[lv][0]).grid(row=0, column=0, sticky="w")
             holder = tk.Frame(cell, bg=C_LINE)
             holder.grid(row=1, column=0, sticky="ew", pady=(sc(6), 0))
             cols = [
-                ("rank", "#", 60, "e", "int"),
-                ("score", "time", 84, "e", "f3"),
-                ("bv", "3BV", 52, "e", "int"),
-                ("style_cn", "风格", 46, "center", "str"),
-                ("date", "完成", 96, "center", "str"),
+                ("rank", "#", 44, "e", "int"),
+                ("time", "用时", 62, "e", "f3"),
+                ("bvs", "3BV/s", 62, "e", "f3"),
+                ("stnb", "stnb", 56, "e", "f2"),
+                ("bv", "3BV", 44, "e", "int"),
+                ("style_cn", "风格", 52, "center", "str"),
             ]
             t = Table(holder, cols, height=10, fit=False)
             t.pack(fill="x", padx=1, pady=1)
+            # 三个指标列吸收多余宽度，表就铺满这一格，右端不会留一条空档；
+            # 窗口变窄时也是它们先收缩，名次和 3BV 不会第一个被裁掉。
+            for key in ("time", "bvs", "stnb"):
+                t.tv.column(key, stretch=True)
             self.rank_tables[lv] = t
         page.bind("<Configure>", lambda _e: self._rank_fit())
         self.set_rank_metric(self._rank_metric)
@@ -3934,26 +4111,24 @@ class App(tk.Tk):
             return
         self._rank_fit_tries = 0        # 每次重画都重新给「等排版」的预算
         metric = self._rank_metric
-        kind, title = (("f2", "stnb") if metric == "stnb" else
-                       ("f3", "3BV/s" if metric == "bvs" else "time"))
         style = None if self._rank_style == "all" else "nf"
         for lv, t in self.rank_tables.items():
-            # 成绩列的标题与精度跟着指标变；排序用 core 的同一套口径。
-            t.columns_def[1] = ("score", title, 84, "e", kind)
-            t.tv.heading("score", text=title)
-            # 清掉上一次点表头留下的排序键：榜的名次由 core.top_n 定，
-            # 不能让残留的 sort_key 在 set_rows 时把它重排成一个别的顺序。
+            # 清掉上一次点表头留下的排序键和箭头：榜的名次由 core.top_n 定，
+            # 不能让残留的 sort_key 在 set_rows 时把它重排成别的顺序。
             t._sort_key = None
+            for key, title, _w, _a, _k in t.columns_def:
+                t.tv.heading(key, text=title)
             pool = core.top_n(self.games, lv, metric,
                               core.BV_MIN_DEFAULT[lv], style, self._rank_n)
             rows = []
             for i, g in enumerate(pool, 1):
                 rows.append({
                     "rank": i,
-                    "score": g.get(metric) or 0,
+                    "time": g.get("time") or 0,
+                    "bvs": g.get("bvs") or 0,
+                    "stnb": g.get("stnb") or 0,
                     "bv": g.get("bv") or 0,
                     "style_cn": core.STYLE_CN.get(g.get("style"), ""),
-                    "date": g.get("date") or "",
                     "path": g.get("path") or "",
                 })
             t.set_rows(rows)
@@ -3961,6 +4136,10 @@ class App(tk.Tk):
             # yview，看过「全部」再切回 Top50 会卡在半截，只见 #35–49。
             t.tv.yview_moveto(0)
         self._rank_fit()
+        # 刚切到这一页时 page 的高度还是上一次布局的值（或半截），
+        # 量出来只有三四行；<Configure> 又恰好不会再触发。隔一拍补量。
+        if self._rank_fit_job is None:
+            self._rank_fit_job = self.after(60, self._rank_fit_again)
 
     def _rank_fit(self):
         """表格高度 = 数据行数，最多到页面放得下；不拉出一截空框。
@@ -3990,7 +4169,11 @@ class App(tk.Tk):
                 bb = tv.bbox(kids[0])   # bbox 的 y 是表头高，h 是一行的高
                 if bb:
                     head, row_h = bb[1], max(1, bb[3])
-            extra = max(0, cell.winfo_height() - tv.winfo_height())  # 标题 + 边距
+            # 表格上方只有级别标题 + 6px 间距。不能拿 cell 高减 tv 高：
+            # 表格还没画出来时 tv 的高度是 1，减出来是一个几百像素的假标题，
+            # 能把一屏 15 行压成 4 行。
+            gb = cell.grid_bbox(0, 0)
+            extra = (gb[3] + sc(6)) if gb and gb[3] > sc(10) else sc(36)
             cap = max(3, int((avail - extra - head) // row_h))
             n = len(t.rows)
             tv.configure(height=min(n, cap) if n else 3)
@@ -4009,6 +4192,32 @@ class App(tk.Tk):
         self._rank_fit_job = None
         if self.winfo_exists():
             self._rank_fit()
+
+    # ---------- 右键详情 ----------
+    def show_game_detail(self, path):
+        """把这一局摊开看：成绩、同 3BV / 同级里的位置、来源与文件名。
+
+        只读扫描结果，不重演、不起元扫雷 —— 多数时候只是想看一眼，不是要播。
+        """
+        game = self._find_game(path)
+        if game is None:
+            self.set_status("这一行没有对应的本地录像", "dim")
+            return
+        old = getattr(self, "_detail_win", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+        self._detail_win = GameDetail(self, game)
+
+    def _find_game(self, path):
+        if not path:
+            return None
+        for g in self.games:
+            if g.get("path") == path:
+                return g
+        return None
 
     # ---------- 上传页 ----------
     def _build_upload(self):
