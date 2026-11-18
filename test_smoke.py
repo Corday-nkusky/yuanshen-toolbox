@@ -93,7 +93,7 @@ def main():
         kids = win.tbl_daily.tv.get_children()
         labels = {win.daily_strip.itemcget(i, "text"): win.daily_strip.coords(i)[0]
                   for i in win.daily_strip.find_all()}
-        check("三组组头都在（时间 / 3BV/s / stnb）",
+        check("三组组头都在（time / 3BV/s / stnb）",
               set(labels) == {g[2] for g in A.App.DAILY_GROUPS})
         for first, last, name in A.App.DAILY_GROUPS:
             a = win.tbl_daily.tv.bbox(kids[0], first)

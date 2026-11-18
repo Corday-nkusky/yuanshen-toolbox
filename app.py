@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.31.0"
+APP_VER = "0.31.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1471,7 +1471,7 @@ class LsfDetailDialog(tk.Toplevel):
         holder2.pack(fill="x")
         gcols = [
             ("rank", "#", 36, "e", "int"),
-            ("time", "时间", 84, "e", "f3"),
+            ("time", "time", 84, "e", "f3"),
             ("bv", "3BV", 56, "e", "int"),
             ("bvs", "3BV/s", 74, "e", "f3"),
             ("stnb", "stnb", 66, "e", "f2"),
@@ -2219,7 +2219,7 @@ class GameDetail(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.game = game
-        self.title("这一局")
+        self.title("录像详情")
         self.configure(bg=C_BG)
         self.transient(app)
         self.resizable(False, False)
@@ -2240,40 +2240,27 @@ class GameDetail(tk.Toplevel):
             core.STYLE_CN.get(g.get("style"), ""),
             g.get("bv") or 0)
         tk.Label(wrap, text=head, bg=C_BG, fg=C_TEXT, font=FONT_SECTION,
-                 anchor="w").pack(fill="x", pady=(0, sc(4)))
+                 anchor="w").pack(fill="x", pady=(0, sc(10)))
 
-        # 所有分组共用一张网格：标签列宽度锁死，几组的值才会从同一条竖线开始。
-        body = tk.Frame(wrap, bg=C_BG)
-        body.pack(fill="x")
-        body.columnconfigure(0, minsize=sc(76))
-        body.columnconfigure(1, weight=1)
-        self._body = body
-        self._row = 0
+        # 标签列、值列都定宽，两组内容才从同一条竖线开始；名次紧跟数值，
+        # 不让多余宽度把名次甩到窗口另一头（见 _grid）。
+        self._wrap = wrap
+        self._metrics(self._grid())
 
-        self._group("成绩", [
-            ("用时", "%s 秒" % fmt_time(g.get("time") or 0)),
-            ("3BV/s", fmt_bvs(g.get("bvs") or 0)),
-            ("stnb", fmt_stnb(g.get("stnb") or 0)),
-        ])
+        # 一条细线代替分组标题：上面是成绩，下面是这一局的来源。
+        tk.Frame(wrap, bg=C_LINE, height=1).pack(fill="x", pady=(sc(10), sc(8)))
 
-        where = self._where()
-        if where:
-            self._group("这一局排在哪", where)
-
-        files = []
+        body2 = self._grid()
         src = {"ms": "元扫雷", "arb": "阿比特"}.get(g.get("src"), "")
         if src:
-            files.append(("来源", src))
+            self._pair(body2, "来源", src)
         if g.get("ident"):
-            files.append(("玩家", g["ident"]))
-        self._group("文件", files)
+            self._pair(body2, "玩家", g["ident"])
 
         # 文件名一个人占一行：挤在值列里会在单词中间折行，读起来很别扭
-        tk.Label(body, text=g.get("file") or "", bg=C_BG, fg=C_TEXT,
+        tk.Label(wrap, text=g.get("file") or "", bg=C_BG, fg=C_TEXT,
                  font=FONT_MONO, anchor="w", justify="left",
-                 wraplength=sc(430)).grid(row=self._row, column=0,
-                                          columnspan=2, sticky="w",
-                                          pady=(sc(6), 0))
+                 wraplength=sc(430)).pack(fill="x", pady=(sc(6), 0))
 
         foot = tk.Frame(wrap, bg=C_BG)
         foot.pack(fill="x", pady=(sc(14), 0))
@@ -2282,65 +2269,73 @@ class GameDetail(tk.Toplevel):
         Pill(foot, "关闭", command=self.destroy, accent=C_DIM,
              padx=18, height=30).pack(side="right")
 
-    def _group(self, title, pairs):
-        tk.Label(self._body, text=title, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
-                 anchor="w").grid(row=self._row, column=0, columnspan=2,
-                                  sticky="w", pady=(sc(10), sc(3)))
-        self._row += 1
-        for k, v in pairs:
-            tk.Label(self._body, text=k, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
-                     anchor="w").grid(row=self._row, column=0, sticky="w",
-                                      pady=sc(2))
-            tk.Label(self._body, text=v, bg=C_BG, fg=C_TEXT, font=FONT_MONO,
-                     anchor="w", justify="left").grid(row=self._row, column=1,
-                                                      sticky="w", pady=sc(2))
-            self._row += 1
+    def _grid(self):
+        """标签列 + 值列都定宽；宽度只按内容取，不吸收窗口多余宽度。"""
+        f = tk.Frame(self._wrap, bg=C_BG)
+        f.pack(anchor="w")
+        f.columnconfigure(0, minsize=sc(76))
+        f.columnconfigure(1, minsize=sc(66))
+        return f
+
+    def _pair(self, body, k, v):
+        row = len(body.grid_slaves()) // 2
+        tk.Label(body, text=k, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
+                 anchor="w").grid(row=row, column=0, sticky="w", pady=sc(2))
+        tk.Label(body, text=v, bg=C_BG, fg=C_TEXT, font=FONT_MONO,
+                 anchor="w", justify="left").grid(row=row, column=1, sticky="w",
+                                                  pady=sc(2))
+
+    def _metrics(self, body):
+        """time / 3BV/s / stnb，各自后面跟「本级第几 / 本级共多少局」。"""
+        g = self.game
+        ranks = self._ranks()
+        rows = (("time", fmt_time(g.get("time") or 0), ranks.get("time")),
+                ("3BV/s", fmt_bvs(g.get("bvs") or 0), ranks.get("bvs")),
+                ("stnb", fmt_stnb(g.get("stnb") or 0), ranks.get("stnb")))
+        for row, (label, val, rk) in enumerate(rows):
+            tk.Label(body, text=label, bg=C_BG, fg=C_DIM, font=FONT_SMALL,
+                     anchor="w").grid(row=row, column=0, sticky="w",
+                                      pady=sc(3))
+            tk.Label(body, text=val, bg=C_BG, fg=C_TEXT, font=FONT_MONO,
+                     anchor="w").grid(row=row, column=1, sticky="w",
+                                      pady=sc(3))
+            tk.Label(body, text=rk or "—", bg=C_BG, fg=C_DIM,
+                     font=FONT_MONO, anchor="w").grid(
+                         row=row, column=2, sticky="w", pady=sc(3))
 
     # ---------- 内容 ----------
     def _when(self):
         t0 = self.game.get("t0")
         return ("%s %s" % (core.day_text(t0), core.clock_text(t0))).strip()
 
-    def _where(self):
-        """同 3BV 的名次、这个 3BV 的最快、本级别的名次。
+    def _ranks(self):
+        """三项指标在本级别里各排第几；分母是这一级有多少局。
 
-        同 3BV 只跟同风格比（NF 和 FL 不是一回事）；本级别按用时比，
-        门槛跟排行榜一致，没过门槛的局在榜里本来就不出现，这里也不给名次。
+        门槛跟排行榜一致（没过门槛的局榜里不出现，这里也不给名次）；
+        同值算同一名次。本轮扫描已经算好 time / bvs / stnb，不重演录像。
         """
         g = self.game
         lv = g.get("level")
-        bv = g.get("bv") or 0
-        style = g.get("style")
-        t = g.get("time") or 0
         floor = core.BV_MIN_DEFAULT.get(lv, 0)
-        rank = cnt = 0
-        best = None
-        lv_rank = lv_cnt = 0
+        if (g.get("bv") or 0) < floor:
+            return {}
+        t = g.get("time") or 0
+        b = g.get("bvs") or 0
+        s = g.get("stnb") or 0
+        rt = rb = rs = cnt = 0
         for x in self.app.games:
-            if x.get("level") != lv:
+            if x.get("level") != lv or (x.get("bv") or 0) < floor:
                 continue
-            xt = x.get("time") or 0
-            if (x.get("bv") or 0) >= floor:
-                lv_cnt += 1
-                if xt < t:
-                    lv_rank += 1
-            if (x.get("bv") or 0) == bv and x.get("style") == style:
-                cnt += 1
-                if best is None or xt < best:
-                    best = xt
-                if xt < t:
-                    rank += 1
-        out = []
-        if cnt:
-            out.append(("同 3BV", "第 %d / 共 %d 局" % (rank + 1, cnt)))
-            if best is not None and best < t - 1e-9:
-                out.append(("同 3BV 最快",
-                            "%s 秒（慢 %.3f 秒）" % (fmt_time(best), t - best)))
-            else:
-                out.append(("同 3BV 最快", "就是这一局"))
-        if bv >= floor and lv_cnt:
-            out.append(("本级别", "第 %d 快 / 共 %d 局" % (lv_rank + 1, lv_cnt)))
-        return out
+            cnt += 1
+            if (x.get("time") or 0) < t:
+                rt += 1
+            if (x.get("bvs") or 0) > b:
+                rb += 1
+            if (x.get("stnb") or 0) > s:
+                rs += 1
+        return {"time": "%5d / %d" % (rt + 1, cnt),
+                "bvs": "%5d / %d" % (rb + 1, cnt),
+                "stnb": "%5d / %d" % (rs + 1, cnt)}
 
     def _copy_path(self):
         p = self.game.get("path") or ""
@@ -3381,7 +3376,7 @@ class App(tk.Tk):
             ("bvs", "3BV/s", 86, "e", "f3"),
             ("stnb", "stnb", 78, "e", "f2"),
             ("date", "日期", 100, "center", "str"),
-            ("clock", "时间", 84, "center", "str"),
+            ("clock", "时刻", 84, "center", "str"),
             ("vs_pb", "距当前 PB", 120, "e", "delta"),
             ("vs_pb_bvs", "3BV/s 距 PB", 104, "e", "delta2"),
             ("vs_pb_stnb", "stnb 距 PB", 100, "e", "delta2"),
@@ -3419,7 +3414,7 @@ class App(tk.Tk):
         ("stnb_avg", "平均", 58, "e", "f2"),
         ("stnb_min", "最低", 58, "e", "f2"),
     ]
-    DAILY_GROUPS = (("best", "worst", "时间（秒）"),
+    DAILY_GROUPS = (("best", "worst", "time"),
                     ("bvs_max", "bvs_min", "3BV/s"),
                     ("stnb_max", "stnb_min", "stnb"))
 
@@ -3811,7 +3806,7 @@ class App(tk.Tk):
         tk.Frame(top, bg=C_LINE, width=1).pack(side="left", fill="y",
                                                padx=(sc(8), sc(10)), pady=sc(2))
         self.pb_metric_seg = {}
-        for key, label in (("time", "时间"), ("bvs", "3BV/s"),
+        for key, label in (("time", "time"), ("bvs", "3BV/s"),
                            ("stnb", "stnb"), ("rank", "排名")):
             p = Pill(top, label, command=lambda k=key: self.set_pb_metric(k),
                      accent=C_ACCENT2, padx=13)
@@ -3965,7 +3960,7 @@ class App(tk.Tk):
             grid.columnconfigure(i, weight=1, uniform="t")
 
         self.top_tables = {}
-        specs = [("time", "最快时间 Top5"),
+        specs = [("time", "time 最快 Top5"),
                  ("bvs", "最高 3BV/s Top5"),
                  ("stnb", "最高 stnb Top5")]
         for i, (metric, title) in enumerate(specs):
@@ -4056,7 +4051,7 @@ class App(tk.Tk):
             holder.grid(row=1, column=0, sticky="ew", pady=(sc(6), 0))
             cols = [
                 ("rank", "#", 44, "e", "int"),
-                ("time", "用时", 62, "e", "f3"),
+                ("time", "time", 62, "e", "f3"),
                 ("bvs", "3BV/s", 62, "e", "f3"),
                 ("stnb", "stnb", 56, "e", "f2"),
                 ("bv", "3BV", 44, "e", "int"),
@@ -4381,7 +4376,7 @@ class App(tk.Tk):
         # 放最后一列吃剩余宽度，不把结果推到离内容很远的地方。点一行在下方
         # 展开完整备注，所以这里不必塞下全部文字。
         cols = [
-            ("t", "时间", 108, "center", "str"),
+            ("t", "时刻", 108, "center", "str"),
             ("level_cn", "级别", 56, "center", "str"),
             ("time", "time", 74, "e", "f3"),
             ("bv", "3BV", 48, "e", "int"),
