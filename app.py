@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.31.5"
+APP_VER = "0.31.6"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -2836,6 +2836,7 @@ class App(tk.Tk):
         self._rank_fit_job = None      # 「等页面排好版再量一次」的定时器
         self._rank_fit_tries = 0       # 已经重试过几拍
         self._bvmin_level = None
+        self._bvmin_eff = 0            # BV 下限当前生效值（输入框里可能是半截）
         self._bv_guard = False
         self._empty_prompted = False
         self._tab = "overview"
@@ -2930,6 +2931,30 @@ class App(tk.Tk):
         # 手动刷新：快捷键；自动刷新从第一轮扫描结束后开始（见 _on_scanned → _watch_rebuild）
         self.bind("<F5>", lambda _e: self.start_scan())
         self.bind("<FocusIn>", self._on_focus)
+        # 点到输入框以外就把它放开（见 _drop_entry_focus）
+        self.bind("<Button-1>", self._drop_entry_focus, add="+")
+
+    def _drop_entry_focus(self, ev=None):
+        """点到输入框以外的地方，把键盘焦点收回来。
+
+        Tk 换焦点的条件是「点到了另一个能聚焦的控件」，按钮、标签、表格都不算 ——
+        从输入框点到这些地方，插入光标会一直留在框里闪，用户以为卡死了（只有
+        按 Tab 才走得掉）。这里补一手：目标是文本控件就不管，否则把焦点收回主窗口。
+        """
+        w = ev.widget if ev is not None else None
+        while w is not None and w is not self:
+            if isinstance(w, (tk.Entry, ttk.Entry, tk.Text)):
+                return                      # 点到另一个输入框：正常换焦点
+            w = getattr(w, "master", None)
+        box = getattr(self, "bvmin_box", None)
+        if box is not None:
+            # 框里可能还留着半截数字（"007"、"abc"、空）没提交，点走时就地归一。
+            # 不看焦点在哪里：点到表格时 Tk 的 class 绑定会抢先换焦点，那时再查
+            # focus_get() 已经查不到这个框了。
+            if (box.get() or "").strip() != str(self._bvmin_eff):
+                self._settle_bvmin(quiet=True)
+            if isinstance(self.focus_get(), (tk.Entry, ttk.Entry, tk.Text)):
+                self.focus_set()
 
     # ---------- 字体 / 图标 / 主题 ----------
     def _init_fonts(self):
@@ -4134,8 +4159,14 @@ class App(tk.Tk):
         tk.Label(top, text="BV 下限", bg=C_BG, fg=C_DIM,
                  font=FONT_UI).pack(side="left", padx=(sc(14), sc(6)))
         self.var_bvmin = tk.StringVar(value=str(core.BV_MIN_DEFAULT["b"]))
-        self._entry(top, self.var_bvmin, width=6).pack(side="left", ipady=sc(2))
+        self._bvmin_eff = core.BV_MIN_DEFAULT["b"]      # 当前真正生效的值
+        self.bvmin_box = self._entry(top, self.var_bvmin, width=6)
+        self.bvmin_box.pack(side="left", ipady=sc(2))
         self.var_bvmin.trace_add("write", lambda *_: self._on_bvmin_change())
+        # 回车 / Esc / 点到别处都算收工：光标不能被困在这个框里
+        self.bvmin_box.bind("<Return>", lambda _e: self._settle_bvmin())
+        self.bvmin_box.bind("<Escape>", lambda _e: self._settle_bvmin(restore=True))
+        self.bvmin_box.bind("<FocusOut>", lambda _e: self._settle_bvmin(quiet=True))
         tk.Label(top, text="（默认官方门槛，0 = 不限）",
                  bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(side="left", padx=(sc(8), 0))
 
@@ -6700,7 +6731,35 @@ class App(tk.Tk):
     def _on_bvmin_change(self):
         if self._bv_guard:
             return
+        try:
+            v = max(0, int((self.var_bvmin.get() or "").strip()))
+        except ValueError:
+            return                      # 还在输，等收工时再归一
+        self._bvmin_eff = v
         self.render_top()
+
+    def _settle_bvmin(self, restore=False, quiet=False):
+        """这一格收工：把内容归成有效数字（或退回上次生效的值），再交出焦点。
+
+        逐字 render 是为了边输边看结果，但输入框本身不会被「提交」——用户点到
+        按钮、表格上时 Tk 不会换焦点，光标就一直闪。所以回车、Esc、失焦三处都
+        走这里，把内容和焦点一次收干净。
+        """
+        raw = (self.var_bvmin.get() or "").strip()
+        ok = raw.isdigit()
+        if restore or not ok:
+            val = self._bvmin_eff
+        else:
+            val = max(0, int(raw))
+        self._bv_guard = True
+        self.var_bvmin.set(str(val))
+        self._bv_guard = False
+        if val != self._bvmin_eff:
+            self._bvmin_eff = val
+            self.render_top()
+        self.bvmin_box.selection_clear()
+        if not quiet:
+            self.focus_set()
 
     def set_top_style(self, key):
         self._top_style = key
@@ -6719,6 +6778,7 @@ class App(tk.Tk):
             self.var_bvmin.set(str(core.BV_MIN_DEFAULT[lv]))
             self._bv_guard = False
             self._bvmin_level = lv
+            self._bvmin_eff = core.BV_MIN_DEFAULT[lv]
         self.render_top()
 
     def _top_site_note(self):
@@ -6739,10 +6799,7 @@ class App(tk.Tk):
         return text, (C_WARN if self.site_top_detail_err else C_DIM)
 
     def render_top(self):
-        try:
-            bvmin = max(0, int(self.var_bvmin.get() or 0))
-        except ValueError:
-            bvmin = 0
+        bvmin = getattr(self, "_bvmin_eff", 0)
         style = None if self._top_style == "all" else "nf"
         cat = "nf" if style == "nf" else "all"
         site_map = (core.site_top_rows(self.site_top, self.site_top_details)

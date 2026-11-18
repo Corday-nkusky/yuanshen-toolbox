@@ -423,6 +423,25 @@ def main():
         check("Top5 至少有一项有成绩",
               any(table.rows for table in win.top_tables.values()))
 
+        # BV 下限输入框：点进这一格之后，点标签/按钮也得能把焦点放开，
+        # 否则插入光标会一直留在框里闪（Tk 不会因为点到 Label 就换焦点）
+        box = win.bvmin_box
+        box.focus_set()
+        win.update()
+        win.lbl_top_site.event_generate("<Button-1>", x=5, y=5)
+        win.update()
+        check("点别处后 BV 下限不再占着焦点", win.focus_get() is not box)
+        box.delete(0, "end")
+        box.insert(0, "007")
+        win.update()
+        win.lbl_top_site.event_generate("<Button-1>", x=5, y=5)
+        win.update()
+        check("半截数字点走会归一（007 → 7）",
+              box.get() == "7" and win._bvmin_eff == 7)
+        # 换一次级别把 BV 下限还原成官方门槛，后面的截图才跟默认界面一致
+        win.set_top_level("i")
+        win.set_top_level("b")
+
         # 个人 LSF：有锚点就必须算出数，没有锚点只能留「—」
         if win.lsf_anchors:
             value = win.lsf_card.lbl_value.cget("text")
