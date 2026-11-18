@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.29.7"
+APP_VER = "0.30.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -2476,6 +2476,9 @@ class App(tk.Tk):
         self._pb_index = {}            # 当前网格里 BV -> 行
         self._pb_picked = None
         self._top_style = "all"        # 前端成绩：all=全PB / nf=NF PB
+        self._rank_metric = "time"     # 排行榜看哪个指标：time / bvs / stnb
+        self._rank_style = "all"       # 排行榜风格：all / nf
+        self._rank_n = 10              # 排行榜每个级别显示几条，0 = 全部录像
         self._bvmin_level = None
         self._bv_guard = False
         self._empty_prompted = False
@@ -2701,8 +2704,8 @@ class App(tk.Tk):
         self.tab_pills = {}
         for key, label in (("overview", "概览"), ("daily", "每日"),
                            ("pb", "PB 表"),
-                           ("top", "lsf"), ("upload", "上传"),
-                           ("auto", "自动上传")):
+                           ("top", "lsf"), ("rank", "排行榜"),
+                           ("upload", "上传"), ("auto", "自动上传")):
             p = Pill(nav, label, command=lambda k=key: self.show_tab(k),
                      accent=C_ACCENT, padx=22, height=32)
             p.pack(side="left", padx=(0, sc(8)))
@@ -2739,6 +2742,7 @@ class App(tk.Tk):
             "daily": tk.Frame(body, bg=C_BG),
             "pb": tk.Frame(body, bg=C_BG),
             "top": tk.Frame(body, bg=C_BG),
+            "rank": tk.Frame(body, bg=C_BG),
             "upload": tk.Frame(body, bg=C_BG),
             "auto": tk.Frame(body, bg=C_BG),
         }
@@ -2751,6 +2755,7 @@ class App(tk.Tk):
         self._build_daily()
         self._build_pb()
         self._build_top()
+        self._build_rank()
         self._build_upload()
         self._build_auto()
         self.show_tab("overview")
@@ -2768,6 +2773,8 @@ class App(tk.Tk):
             self._ensure_up_rows()      # 懒重建：切到这一页才把 2 万行算出来
         elif key == "auto":
             self._refresh_auto_view()
+        elif key == "rank":
+            self.render_rank()
 
     # ---------- 横幅 ----------
     def _draw_banner(self, event=None):
@@ -3756,6 +3763,126 @@ class App(tk.Tk):
             self.top_tables[metric] = t
         self.set_top_style(self._top_style)
 
+
+    # ---------- 排行榜 ----------
+    def _build_rank(self):
+        """本地全部录像的三级别排行：指标切换 + 全部/NF + 自定义条数。"""
+        page = self.pages["rank"]
+        bar = tk.Frame(page, bg=C_BG)
+        bar.pack(fill="x", pady=(sc(10), sc(6)))
+
+        self.rank_metric_seg = {}
+        for key, label in (("time", "time"), ("bvs", "3BV/s"), ("stnb", "stnb")):
+            p = Pill(bar, label, command=lambda k=key: self.set_rank_metric(k),
+                     accent=C_ACCENT, padx=16)
+            p.pack(side="left", padx=(0, sc(6)))
+            self.rank_metric_seg[key] = p
+
+        tk.Frame(bar, bg=C_LINE, width=1).pack(side="left", fill="y",
+                                               padx=(sc(8), sc(10)), pady=sc(2))
+        self.rank_style_seg = {}
+        for key, label in (("all", "全部"), ("nf", "NF")):
+            p = Pill(bar, label, command=lambda k=key: self.set_rank_style(k),
+                     accent=C_ACCENT3, padx=14)
+            p.pack(side="left", padx=(0, sc(6)))
+            self.rank_style_seg[key] = p
+
+        tk.Frame(bar, bg=C_LINE, width=1).pack(side="left", fill="y",
+                                               padx=(sc(8), sc(10)), pady=sc(2))
+        tk.Label(bar, text="每条", bg=C_BG, fg=C_DIM, font=FONT_UI).pack(
+            side="left", padx=(0, sc(6)))
+        self.var_rank_n = tk.StringVar(value=str(self._rank_n))
+        box = ttk.Combobox(bar, textvariable=self.var_rank_n, width=6,
+                           values=("10", "20", "50", "100", "全部"),
+                           font=FONT_MONO_B, justify="center")
+        box.pack(side="left", ipady=sc(2))
+        for ev in ("<<ComboboxSelected>>", "<Return>", "<FocusOut>"):
+            box.bind(ev, lambda *_: self._on_rank_n())
+        tk.Label(bar, text="名（填「全部」看这个级别的所有录像）",
+                 bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(side="left", padx=(sc(8), 0))
+
+        grid = tk.Frame(page, bg=C_BG)
+        grid.pack(fill="both", expand=True, pady=(sc(6), 0))
+        for i in range(3):
+            grid.columnconfigure(i, weight=1, uniform="rank")
+        grid.rowconfigure(0, weight=1)
+
+        self.rank_tables = {}
+        for i, lv in enumerate(core.LEVELS):
+            cell = tk.Frame(grid, bg=C_BG)
+            cell.grid(row=0, column=i, sticky="nsew",
+                      padx=(0 if i == 0 else sc(12), 0))
+            cell.rowconfigure(1, weight=1)
+            self._section(cell, core.LEVEL_CN[lv],
+                          LEVEL_ACCENT[lv][0]).grid(row=0, column=0, sticky="w")
+            holder = tk.Frame(cell, bg=C_LINE)
+            holder.grid(row=1, column=0, sticky="nsew", pady=(sc(6), 0))
+            cols = [
+                ("rank", "#", 30, "e", "int"),
+                ("score", "time", 84, "e", "f3"),
+                ("bv", "3BV", 52, "e", "int"),
+                ("style_cn", "风格", 46, "center", "str"),
+                ("date", "完成", 78, "center", "str"),
+            ]
+            t = Table(holder, cols, height=10, fit=False)
+            t.pack(fill="both", expand=True, padx=1, pady=1)
+            self.rank_tables[lv] = t
+        self.set_rank_metric(self._rank_metric)
+
+    def set_rank_metric(self, key):
+        self._rank_metric = key
+        for k, p in self.rank_metric_seg.items():
+            p.set_selected(k == key)
+        self.render_rank()
+
+    def set_rank_style(self, key):
+        self._rank_style = key
+        for k, p in self.rank_style_seg.items():
+            p.set_selected(k == key)
+        self.render_rank()
+
+    def _on_rank_n(self):
+        raw = (self.var_rank_n.get() or "").strip()
+        if raw in ("全部", "所有", "all"):
+            n = 0
+        else:
+            try:
+                n = max(0, int(float(raw)))
+            except ValueError:
+                n = self._rank_n    # 输入中途（比如刚敲了个负号）先不打断
+                self.var_rank_n.set(str(n))
+        if n != self._rank_n:
+            self._rank_n = n
+            self.render_rank()
+
+    def render_rank(self):
+        """三级别各取前 N 局；N=0 时放开到这个级别的全部录像。"""
+        if not getattr(self, "rank_tables", None):
+            return
+        metric = self._rank_metric
+        kind, title = (("f2", "stnb") if metric == "stnb" else
+                       ("f3", "3BV/s" if metric == "bvs" else "time"))
+        style = None if self._rank_style == "all" else "nf"
+        for lv, t in self.rank_tables.items():
+            # 成绩列的标题与精度跟着指标变；排序用 core 的同一套口径。
+            t.columns_def[1] = ("score", title, 84, "e", kind)
+            t.tv.heading("score", text=title)
+            # 清掉上一次点表头留下的排序键：榜的名次由 core.top_n 定，
+            # 不能让残留的 sort_key 在 set_rows 时把它重排成一个别的顺序。
+            t._sort_key = None
+            pool = core.top_n(self.games, lv, metric,
+                              core.BV_MIN_DEFAULT[lv], style, self._rank_n)
+            rows = []
+            for i, g in enumerate(pool, 1):
+                rows.append({
+                    "rank": i,
+                    "score": g.get(metric) or 0,
+                    "bv": g.get("bv") or 0,
+                    "style_cn": core.STYLE_CN.get(g.get("style"), ""),
+                    "date": (g.get("date") or "")[5:],
+                    "path": g.get("path") or "",
+                })
+            t.set_rows(rows)
 
     # ---------- 上传页 ----------
     def _build_upload(self):

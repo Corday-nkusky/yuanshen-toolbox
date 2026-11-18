@@ -961,11 +961,12 @@ def count_by_bv(games, style=None):
     return cnt
 
 
-def top5(games, level, metric, bv_min=0, style=None):
-    """某级别某指标的前 5 局。
+def top_n(games, level, metric, bv_min=0, style=None, n=5):
+    """某级别某指标的前 n 局；n<=0 表示不限（全部）。
 
     metric: 'time'（升序）| 'bvs'（降序）| 'stnb'（降序）
     style:  None=全部 | 'nf' | 'fl'
+    排序口径与 top5 完全相同，只是条数可变。
     """
     pool = [g for g in games
             if g["level"] == level and g["bv"] >= bv_min
@@ -974,7 +975,12 @@ def top5(games, level, metric, bv_min=0, style=None):
         pool.sort(key=lambda g: (g["time"], -g["bv"]))
     else:
         pool.sort(key=lambda g: (-g[metric], g["time"]))
-    return pool[:5]
+    return pool if n is None or n <= 0 else pool[:n]
+
+
+def top5(games, level, metric, bv_min=0, style=None):
+    """某级别某指标的前 5 局。见 top_n。"""
+    return top_n(games, level, metric, bv_min, style, 5)
 
 
 # 站点 Top5 字段：std:bt / nf:es 等，t=time(ms)、b=3BV/s、s=iqg。
