@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.30.4"
+APP_VER = "0.30.5"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -3854,10 +3854,9 @@ class App(tk.Tk):
         if n != self._rank_n:
             self._rank_n = n
             self.render_rank()
-        # 选中下拉项后 Tk 会把文字整段全选，看着像被锁住、删不掉；
-        # 提交完把高亮收掉、光标放末尾，输入框才是能直接改的样子。
-        self.rank_n_box.selection_clear()
-        self.rank_n_box.icursor("end")
+        # 提交完把焦点交出去：焦点留在 Combobox 上就会一直闪着光标，
+        # 像一直停在输入状态。要改时点一下框自然会重新拿到焦点。
+        self.rank_n_box.tk_focusNext().focus_set()
 
     def render_rank(self):
         """三级别各取前 N 局；N=0 时放开到这个级别的全部录像。"""
@@ -3887,6 +3886,9 @@ class App(tk.Tk):
                     "path": g.get("path") or "",
                 })
             t.set_rows(rows)
+            # 换指标/风格/条数后视图必须回顶：Treeview 换数据时保留旧的
+            # yview，看过「全部」再切回 Top50 会卡在半截，只见 #35–49。
+            t.tv.yview_moveto(0)
         self._rank_fit()
 
     def _rank_fit(self):
