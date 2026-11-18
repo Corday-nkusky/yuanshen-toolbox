@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.30.0"
+APP_VER = "0.30.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -3770,6 +3770,7 @@ class App(tk.Tk):
         page = self.pages["rank"]
         bar = tk.Frame(page, bg=C_BG)
         bar.pack(fill="x", pady=(sc(10), sc(6)))
+        self.rank_bar = bar
 
         self.rank_metric_seg = {}
         for key, label in (("time", "time"), ("bvs", "3BV/s"), ("stnb", "stnb")):
@@ -3789,8 +3790,8 @@ class App(tk.Tk):
 
         tk.Frame(bar, bg=C_LINE, width=1).pack(side="left", fill="y",
                                                padx=(sc(8), sc(10)), pady=sc(2))
-        tk.Label(bar, text="每条", bg=C_BG, fg=C_DIM, font=FONT_UI).pack(
-            side="left", padx=(0, sc(6)))
+        tk.Label(bar, text="Top", bg=C_BG, fg=C_DIM,
+                 font=FONT_MONO_B).pack(side="left", padx=(0, sc(6)))
         self.var_rank_n = tk.StringVar(value=str(self._rank_n))
         box = ttk.Combobox(bar, textvariable=self.var_rank_n, width=6,
                            values=("10", "20", "50", "100", "全部"),
@@ -3798,25 +3799,21 @@ class App(tk.Tk):
         box.pack(side="left", ipady=sc(2))
         for ev in ("<<ComboboxSelected>>", "<Return>", "<FocusOut>"):
             box.bind(ev, lambda *_: self._on_rank_n())
-        tk.Label(bar, text="名（填「全部」看这个级别的所有录像）",
-                 bg=C_BG, fg=C_DIM, font=FONT_SMALL).pack(side="left", padx=(sc(8), 0))
 
         grid = tk.Frame(page, bg=C_BG)
-        grid.pack(fill="both", expand=True, pady=(sc(6), 0))
+        grid.pack(fill="both", pady=(sc(6), 0))
         for i in range(3):
             grid.columnconfigure(i, weight=1, uniform="rank")
-        grid.rowconfigure(0, weight=1)
 
         self.rank_tables = {}
         for i, lv in enumerate(core.LEVELS):
             cell = tk.Frame(grid, bg=C_BG)
-            cell.grid(row=0, column=i, sticky="nsew",
+            cell.grid(row=0, column=i, sticky="nwe",
                       padx=(0 if i == 0 else sc(12), 0))
-            cell.rowconfigure(1, weight=1)
             self._section(cell, core.LEVEL_CN[lv],
                           LEVEL_ACCENT[lv][0]).grid(row=0, column=0, sticky="w")
             holder = tk.Frame(cell, bg=C_LINE)
-            holder.grid(row=1, column=0, sticky="nsew", pady=(sc(6), 0))
+            holder.grid(row=1, column=0, sticky="ew", pady=(sc(6), 0))
             cols = [
                 ("rank", "#", 30, "e", "int"),
                 ("score", "time", 84, "e", "f3"),
@@ -3825,8 +3822,9 @@ class App(tk.Tk):
                 ("date", "完成", 78, "center", "str"),
             ]
             t = Table(holder, cols, height=10, fit=False)
-            t.pack(fill="both", expand=True, padx=1, pady=1)
+            t.pack(fill="x", padx=1, pady=1)
             self.rank_tables[lv] = t
+        page.bind("<Configure>", lambda _e: self._rank_fit())
         self.set_rank_metric(self._rank_metric)
 
     def set_rank_metric(self, key):
@@ -3883,6 +3881,28 @@ class App(tk.Tk):
                     "path": g.get("path") or "",
                 })
             t.set_rows(rows)
+        self._rank_fit()
+
+    def _rank_fit(self):
+        """表格高度 = 数据行数，最多到页面放得下；不拉出一截空框。
+
+        每列行数可能差很多（全部时初/中/高 1 万/1 万/400），
+        但页面高度只够显示一屏 —— 超出部分留给滚动条，绝不让表格撑满。
+        """
+        if not getattr(self, "rank_tables", None):
+            return
+        page = self.pages["rank"]
+        ph = page.winfo_height()
+        if ph < sc(120):               # 页面还没布局好，等 <Configure> 再算
+            return
+        bar_h = self.rank_bar.winfo_reqheight()
+        head = sc(47)                  # 表头高度，和 Table._fit 同一个口径
+        row_h = max(1, sc(30))         # 一行数据的实际高度
+        avail = ph - bar_h - sc(24)    # 工具条 + 上下的 padding
+        cap = max(3, int((avail - head) // row_h))
+        for t in self.rank_tables.values():
+            n = len(t.rows)
+            t.tv.configure(height=min(n, cap) if n else 3)
 
     # ---------- 上传页 ----------
     def _build_upload(self):
