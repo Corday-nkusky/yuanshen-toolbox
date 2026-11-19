@@ -61,7 +61,42 @@ check("三个开关 -> 范围：一个都不勾 = 空",
 check("范围 -> 开关：来回一致",
       autoup.flags_of(autoup.scopes_of({"rank": True, "pb_nf": True}))
       == {"rank": True, "pb": False, "pb_nf": True})
-check("范围不含「全部完成局」", "all" not in autoup.AUTO_SCOPES)
+check("按成绩筛的范围里没有 all（它自己单独一条路）",
+      "all" not in autoup.AUTO_SCOPES)
+
+# ---------------------------------------------------------------- 全量范围
+check("规范化：all 单独成立", autoup.normalize_scopes(("all",)) == ("all",))
+check("规范化：all 覆盖其它项",
+      autoup.normalize_scopes(("all", "top", "pb")) == ("all",))
+check("规范化：不认识的范围丢掉，不退化成全量",
+      autoup.normalize_scopes(("ALL", "every")) == ())
+check("规范化：正常范围原样保留",
+      autoup.normalize_scopes(("pb", "top_nf")) == ("top_nf", "pb"))
+check("规范化：空输入是空",
+      autoup.normalize_scopes(()) == () and autoup.normalize_scopes(None) == ())
+check("全量不要求网站 PB / Top5 就绪",
+      autoup.ready(("all",), site_pb=[], site_top={}) is True)
+
+# 一局成绩平平的局：进不了 PB 榜前五、也进不了前端榜，全量下照样要传。
+plain = game("b", 9, 1774)
+check("全量：不破 PB、不进 Top5 的局也入队",
+      [c["path"] for c in autoup.judge([plain], ("all",), {plain["path"]},
+                                       site_pb=[], site_top={})]
+      == [plain["path"]])
+all_cands = autoup.judge([plain], ("all",), {plain["path"]})
+check("全量：理由写「新增完成局」",
+      all_cands[0]["why"] == ["新增完成局"]
+      and all_cands[0]["brief"] == ["新增完成局"])
+check("全量：只有这次新出现的局才进候选",
+      autoup.judge([plain], ("all",), set()) == [])
+check("全量：不认识的开关组合不变成全量",
+      autoup.judge([plain], ("every",), {plain["path"]}) == [])
+check("全量 + 三项混着传也按全量算，不重复出候选",
+      [c["path"] for c in autoup.judge([plain], ("all", "pb"),
+                                       {plain["path"]}, site_pb=[])]
+      == [plain["path"]])
+check("全量解释器也给「新增完成局」",
+      autoup.explain(plain, [plain], ("all",)) == ["新增完成局"])
 
 # ---------------------------------------------------------------- 数据就绪
 check("涨分局缺网站 Top5 -> 拒绝判定",

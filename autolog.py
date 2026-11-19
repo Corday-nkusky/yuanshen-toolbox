@@ -11,6 +11,7 @@
 位置：``<数据目录>\\auto-uploads.json``，跟着数据目录一起删。
 """
 
+import atexit
 import json
 import os
 import tempfile
@@ -21,10 +22,13 @@ import paths
 
 VERSION = 1
 MAX_ITEMS = 100           # 一条约 200 字节，100 条 20 KB，够了
+FLUSH_GAP = 0.05          # 连着写很多条时，落盘最多每 50 ms 一次
 FIELDS = ("t", "level_cn", "time", "bv", "why", "result", "ok", "path")
 
 _lock = threading.RLock()
 _cache = None
+_dirty = False            # 内存里有还没写盘的记录
+_last_flush = 0.0
 
 
 def _path():
@@ -56,7 +60,12 @@ def items():
 
 
 def add(entry):
-    """追加一条（最新的排最前），超出上限丢最旧的。"""
+    """追加一条（最新的排最前），超出上限丢最旧的。
+
+    落盘按时间合并：连着写很多条时不必每条都重写整个文件。内存里的
+    记录立刻是最新的，``items()`` 读到的永远不会少一条。
+    """
+    global _dirty
     if not isinstance(entry, dict):
         return False
     item = {k: entry.get(k) for k in FIELDS if entry.get(k) is not None}
@@ -65,17 +74,43 @@ def add(entry):
         data = load()
         data["items"].insert(0, item)
         del data["items"][MAX_ITEMS:]
-        return _flush(data)
+        _dirty = True
+        return _flush_due(data)
+
+
+def flush():
+    """立刻把内存里的记录写盘（退出前、清空前用）。"""
+    with _lock:
+        if not _dirty:
+            return True
+        return _flush_due(load(), force=True)
 
 
 def clear():
-    global _cache
+    global _cache, _dirty
     with _lock:
         _cache = {"version": VERSION, "items": []}
+        _dirty = False
         try:
             os.remove(_path())
         except OSError:
             pass
+
+
+def _flush_due(data, force=False):
+    """距上次落盘不到 FLUSH_GAP 就先攒着；force 时无条件写。"""
+    global _dirty, _last_flush
+    now = time.monotonic()
+    if not force and now - _last_flush < FLUSH_GAP:
+        return True
+    ok = _flush(data)
+    if ok:
+        _dirty = False
+        _last_flush = now
+    return ok
+
+
+atexit.register(lambda: flush())
 
 
 def _flush(data):

@@ -13,6 +13,10 @@ NF 榜独立）。本模块只做三件事：
 筛选只认 ``scope_paths``，``explain`` 只负责解释。两者分开的原因是：
 理由算不出来时退回范围标签，绝不能因为解释不出来就漏传。
 
+``all``（全部新增完成局）不参与任何成绩对照：它要的就是候选池里所有新局。
+这条路径单独写、不走 ``scope_paths`` —— 那个函数对未知范围是「返回全部」的
+兜底，靠兜底实现功能，等哪天它加了校验就会静默变成一条不传。
+
 为什么理由要单独算：用户得知道这功能到底干了什么。
 「涨分 · 中级 3BV/s 第 2 名（6.53）」比「已上传」有用得多。
 """
@@ -25,9 +29,12 @@ import time
 import core
 import openms
 
-# 自动上传能选的范围。故意不含 'all'（全部完成局）：那不是「符合要求」，
-# 是备份，量级完全不同（几万局 vs 账号录像额度）。
+# 按成绩筛的三个范围。'all'（全部完成局）单独走，见上面 docstring。
 AUTO_SCOPES = ("top", "top_nf", "pb", "pb_nf")
+
+# 「全部新增完成局」：新出现的标准完成局一律传，不看 PB / Top5。
+ALL = "all"
+ALL_WHY = "新增完成局"
 
 # 界面上的三个开关 -> 范围集合。涨分局 = 前端 std + 前端 NF，两项绑在一起：
 # 用户口径里它们是同一件事（排行榜上的显示值变好）。
@@ -42,6 +49,7 @@ SCOPE_CN = {
     "top_nf": "涨分·NF",
     "pb": "全PB",
     "pb_nf": "NF PB",
+    "all": "所有新局",
 }
 
 METRIC_CN = {"time": "time", "bvs": "3BV/s", "stnb": "stnb"}
@@ -58,10 +66,22 @@ def scopes_of(flags):
 
 
 def flags_of(scopes):
-    """范围元组 -> 三个开关的布尔值（读配置用）。"""
+    """范围元组 -> 三个开关的布尔值（读配置用）。all 不算在三个开关里。"""
     have = set(scopes or ())
     return {key: all(s in have for s in sc) if sc else False
             for key, sc, _label in GROUPS}
+
+
+def normalize_scopes(scopes):
+    """范围规范化：all 单独成立（它覆盖其它），不认识的丢掉。
+
+    丢掉未知值是必须的 —— 否则一个拼错的范围名会落进「按成绩筛」的
+    那套计算里，算出来的集合还可能不空。
+    """
+    have = set(scopes or ())
+    if ALL in have:
+        return (ALL,)
+    return tuple(s for s in AUTO_SCOPES if s in have)
 
 
 def pool(games, include_arb=True):
@@ -75,13 +95,19 @@ def pool(games, include_arb=True):
 
 
 def ready(scopes, site_pb=None, site_top=None):
-    """判定需要的网站数据齐了没有。
+    """判定需要的**成绩对照数据**齐了没有；账号与录像列表不归这里管。
 
     涨分局缺网站 Top5 就**不能**判：``top_beats`` 在没有阈值时一律返回 True，
     会把「本地前五」全当成「新上榜」一口气传一堆。PB 两榜缺网站 PB 只是可能
     传了比网站慢的，但既然读 PB 只要一个请求，就一并要求，省额度。
+
+    全量不对照任何成绩，所以这里恒为可判。它要等的是「当前账号的录像列表
+    已到齐」，那是 App 的状态（``oms_loaded`` / ``oms_synced`` / 请求代次），
+    由 ``App._auto_ready_reason()`` 挡 —— 全量唯一的去重依据就是那份列表。
     """
-    scopes = set(scopes or ())
+    scopes = set(normalize_scopes(scopes))
+    if ALL in scopes:
+        return True
     if scopes & {"top", "top_nf"} and not site_top:
         return False
     if scopes & {"pb", "pb_nf"} and not site_pb:
@@ -129,11 +155,21 @@ def judge(games, scopes, new_paths, site_pb=None, site_top=None):
     """新局里哪些值得传。
 
     new_paths: ``Tracker`` 放行的路径集合（已确认写稳的新局）。
-    返回 ``[{"path", "game", "why": [str]}]``；不在返回里的就是不传。
+    返回 ``[{"path", "game", "why", "brief"}]``；不在返回里的就是不传。
+
+    ``games`` 是候选池（通常已过 ``pool()``，阿比特按用户勾选处理过）。
+    全量范围就是「池里所有新局」—— 不复算一次成绩范围，也不再按 PB / Top5
+    排除。模式与完成状态的过滤在扫描层，这里不重写一套。
     """
-    scopes = tuple(s for s in AUTO_SCOPES if s in set(scopes or ()))
+    scopes = normalize_scopes(scopes)
     if not scopes or not new_paths:
         return []
+
+    if scopes == (ALL,):
+        # 就绪由 App 保证：当前账号的录像列表已到齐，去重才有依据。
+        return [{"path": g["path"], "game": g, "why": [ALL_WHY],
+                 "brief": [ALL_WHY]}
+                for g in games if g.get("path") in new_paths]
 
     want = set()
     for s in scopes:
@@ -184,6 +220,8 @@ def _explain(game, games, scopes, best=None, cut=None, board=None):
     best = best if best is not None else {}
     cut = cut if cut is not None else {}
     board = board if board is not None else {}
+    if ALL in (scopes or ()):
+        return [(ALL_WHY, ALL_WHY)]
     lv = game.get("level")
     bv = int(game.get("bv") or 0)
     ms = _ms(game)

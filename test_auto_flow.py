@@ -70,7 +70,9 @@ def main():
 
     sent = []
     win._start_upload = lambda paths, **k: sent.append(list(paths))
-    # 判定与门槛不是这份测试的主题（test_autoup 已覆盖），这里只关心「有没有第二拍」
+    # 判定与门槛不是这份测试的主题（test_autoup 已覆盖），这里只关心「有没有第二拍」。
+    # 真 ready 留一份：最后那条「三项还是要求成绩就绪」得用它。
+    real_ready = autoup.ready
     A.autoup.ready = lambda *a, **k: True
     A.autoup.blocked = lambda *a, **k: ""
     A.autoup.uploaded_before = lambda *a, **k: False
@@ -145,6 +147,98 @@ def main():
     check("头部正常的录像仍然照常解析",
           core.read_video(os.path.join(REPLAY, os.path.basename(sample[0]))) is not None)
     os.remove(bad)
+
+    # ---- 4. 配置：空范围不能被 `or` 吞回默认三项 ----
+    check("配置缺字段 -> 默认三项",
+          A.config_auto_scopes({}) == ["top", "top_nf", "pb"])
+    check("三项全取消（存空列表）-> 重启仍是空",
+          A.config_auto_scopes({"auto_scopes": []}) == [])
+    check("类型不对才回落默认",
+          A.config_auto_scopes({"auto_scopes": "pb"}) == ["top", "top_nf", "pb"]
+          and A.config_auto_scopes({"auto_scopes": [1, 2]}) == [])
+
+    # ---- 5. 全部完成局：控件联动、配置、就绪判定 ----
+    # 上面为了让三项控件全亮已经存过一次范围（三个开关对应四个 scope），
+    # 拿它当「三项偏好」的基线，验证切全量不会把它改掉。
+    three_scopes = A.load_config().get("auto_scopes")
+    win.var_auto_all.set(False)
+    win.toggle_auto_all()
+    check("关掉全量：三项控件可用",
+          all(cb.cget("state") == "normal" for cb in win.auto_checks.values()))
+    check("关掉全量：三项勾选照旧还在",
+          all(v.get() for v in win.auto_vars.values()))
+    check("关掉全量：有效范围回到那三项",
+          win._auto_scopes() == autoup.scopes_of(win.auto_flags))
+    win.var_auto_all.set(True)
+    win.toggle_auto_all()
+    check("勾上全量：有效范围就是 all",
+          win._auto_scopes() == (autoup.ALL,))
+    check("勾上全量：三项变灰",
+          all(cb.cget("state") == "disabled"
+              for cb in win.auto_checks.values()))
+    check("勾上全量：三项勾选标记留着（不是被点掉）",
+          all(v.get() for v in win.auto_vars.values()))
+    check("勾上全量：没去改三项的保存值",
+          A.load_config().get("auto_scopes") == three_scopes)
+    check("勾上全量：配置里落盘 auto_all",
+          A.load_config().get("auto_all") is True)
+    check("全量开着时程序调 toggle_auto_scope 不会改偏好",
+          (win.toggle_auto_scope() or True) and
+          A.load_config().get("auto_scopes") == three_scopes)
+
+    # 就绪：全量只等「当前这一代」的录像列表，不看 PB / Top5
+    win.oms_user = {"id": 1, "username": "tester"}
+    win._auto_on = True
+    win._watch_enabled = True
+    win._auto_stop = ""
+    win._auto_backoff = 0.0
+    win._site_seq = 5
+    win._auto_acct_seq = 4
+    win.oms_loaded = True
+    win.oms_synced = True
+    check("全量：上一代拉到的列表不算数",
+          "录像记录" in win._auto_ready_reason())
+    win._auto_acct_seq = 5
+    check("全量：这一代列表到齐 -> 就绪", win._auto_ready_reason() == "")
+    win.oms_synced = False
+    check("全量：列表没拉到 -> 说还在读 / 会重试",
+          "录像记录" in win._auto_ready_reason())
+    win.oms_synced = True
+    win.oms_loaded = False
+    check("全量：列表还没开始读 -> 不就绪",
+          "录像记录" in win._auto_ready_reason())
+    win.oms_loaded = True
+    win.site_pb, win.site_top = [], {}
+    win.var_auto_all.set(False)
+    win.toggle_auto_all()
+    A.autoup.ready = real_ready        # 上面为了测「第二拍」把它假成了恒真
+    check("三项范围仍然要求网站成绩就绪",
+          win._auto_ready_reason() != "")
+    A.autoup.ready = lambda *a, **k: True
+
+    # ---- 6. 状态行跟着网站成绩走：没有新局可判也要重算 ----
+    # 启动时网站数据还没到，那句「还没读到你在网站上的成绩」会留着；数据到了
+    # 之后这一拍即使没有新局可判，也得把它抹掉，不能等用户切走再切回来。
+    win.oms_user = {"id": 1, "username": "tester"}
+    win._auto_on = True
+    win._watch_enabled = True
+    win._auto_stop = ""
+    win._auto_backoff = 0.0
+    win.oms_loaded = True
+    win.oms_synced = True
+    win._auto_acct_seq = win._site_seq
+    win.var_auto_all.set(False)
+    A.autoup.ready = real_ready
+    win.site_pb, win.site_top = [], {}
+    win._auto_tracker = autoup.Tracker(0)
+    win._auto_tracker.prime(win.games)      # 基线拉满：这一拍没有任何新局
+    win._refresh_auto_status()
+    before = win.lbl_auto_status.cget("text")
+    win.site_pb = [{"level": 0, "bv": 1, "timems": 99999}]
+    win.site_top = {"b": {"time": [99999]}}
+    win._auto_tick_once()
+    check("成绩到了，状态行自己消失（不用切页）",
+          bool(before) and not win.lbl_auto_status.cget("text"))
 
     win.destroy()
     print()
