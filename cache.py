@@ -202,3 +202,133 @@ def size_on_disk():
         return os.path.getsize(db_path())
     except OSError:
         return 0
+
+
+# ---------- 网站录像明细缓存（`site-cache.db`） ----------
+# 为什么要它：`staticdetailbatch` 一次最多 100 个 ID（超了 400，实测），限流 5 次/秒，
+# 2100 条录像要 21 批串行，实测 11 秒。而一条录像的解析字段（用时 / 3BV / 文件大小 /
+# 级别 …）上传之后就不会再变，重拉纯属浪费。
+#
+# 边界（重要，别越界）：这里缓存的是**按 ID 的明细**，不是「我有哪些录像」。
+# 「有哪些」永远来自每次重拉的 `videolist` —— 用户在网页上删掉录像，ID 就不在列表里，
+# 它的缓存行自然用不上，所以不会出现「删了还判成已上传、再也传不上去」。
+# `docs/TODO.md` 里那条「网站数据磁盘缓存」指的是连列表/PB/Top5 一起缓存，那是另一件事，
+# 它才需要「缓存不参与判定」这条硬约束。
+_SITE_FILE = "site-cache.db"
+_site_lock = threading.RLock()
+_site_conn = None
+_site_ram = None                  # id -> dict；第一次用到时全量读进内存
+
+
+def site_db_path():
+    return os.path.join(paths.data_dir(), _SITE_FILE)
+
+
+def _site_db():
+    global _site_conn
+    if _site_conn is not None:
+        return _site_conn
+    p = site_db_path()
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        _site_conn = sqlite3.connect(p, check_same_thread=False)
+        _site_conn.execute("PRAGMA journal_mode=WAL")
+        _site_conn.execute(
+            "CREATE TABLE IF NOT EXISTS detail(id INTEGER PRIMARY KEY, data TEXT)")
+    except (sqlite3.Error, OSError):
+        if _site_conn is not None:
+            try:
+                _site_conn.close()
+            except sqlite3.Error:
+                pass
+        _site_conn = None
+    return _site_conn
+
+
+def _site_load():
+    """一次读进内存：两千多行，几十毫秒，之后查 ID 不再碰库。"""
+    global _site_ram
+    if _site_ram is not None:
+        return _site_ram
+    _site_ram = {}
+    db = _site_db()
+    if db is None:
+        return _site_ram
+    try:
+        import json
+        for vid, data in db.execute("SELECT id, data FROM detail"):
+            try:
+                _site_ram[int(vid)] = json.loads(data)
+            except ValueError:
+                continue
+    except sqlite3.Error:
+        pass
+    return _site_ram
+
+
+def site_detail_get(ids):
+    """按 ID 取明细，命中的才返回。返回新 dict，调用方随便改。"""
+    with _site_lock:
+        ram = _site_load()
+        out = {}
+        for i in ids or []:
+            row = ram.get(i)
+            if row is not None:
+                out[i] = dict(row)
+        return out
+
+
+def site_detail_put(rows):
+    """写入/覆盖若干条明细（`{id: dict}`）。调用方不必等落盘。"""
+    if not rows:
+        return 0
+    import json
+    with _site_lock:
+        ram = _site_load()
+        data = []
+        for vid, row in rows.items():
+            try:
+                vid = int(vid)
+            except (TypeError, ValueError):
+                continue
+            row = dict(row)
+            ram[vid] = row
+            data.append((vid, json.dumps(row, ensure_ascii=False)))
+        if not data:
+            return 0
+        db = _site_db()
+        if db is None:
+            return 0
+        try:
+            with db:
+                db.executemany(
+                    "INSERT INTO detail(id, data) VALUES(?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET data=excluded.data", data)
+        except sqlite3.Error:
+            return 0
+        return len(data)
+
+
+def site_detail_rows():
+    with _site_lock:
+        return len(_site_load())
+
+
+def site_detail_clear():
+    global _site_ram
+    with _site_lock:
+        _site_ram = {}
+        db = _site_db()
+        if db is not None:
+            try:
+                with db:
+                    db.execute("DELETE FROM detail")
+            except sqlite3.Error:
+                pass
+
+
+def site_size_on_disk():
+    try:
+        return os.path.getsize(site_db_path())
+    except OSError:
+        return 0

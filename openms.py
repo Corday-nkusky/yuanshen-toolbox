@@ -425,7 +425,7 @@ class Client:
         self.store.clear_session()
 
     # --- 数据 ---
-    def videos(self, user_id, progress=None):
+    def videos(self, user_id, progress=None, cache=None):
         """我的录像，每条都补齐去重三元组（timems / bv / file_size）。
 
         站点改版（2026-10）前，`videolist` 一次就能拿到完整明细；现在它只返回
@@ -433,11 +433,11 @@ class Client:
         `staticdetailbatch` 批量取。少了这一步，「网站是否已有这条录像」永远判否。
 
         `progress(done, total)` 逐批回调，供界面显示读取进度；列表本身没到之前
-        报不出总数，所以只在明细阶段回调。
+        报不出总数，所以只在明细阶段回调。`cache` 见 `static_details`。
         """
         status, p = self.get_json("/api/userprofile/videolist?user_id=%d" % int(user_id))
         if isinstance(p, list):
-            return self.attach_static_details(p, progress=progress)
+            return self.attach_static_details(p, progress=progress, cache=cache)
         raise OmsError("读取网站录像失败（HTTP %s）" % status, status, p)
 
     def get_json_retry(self, path, retries=3, timeout=None):
@@ -457,14 +457,20 @@ class Client:
                 continue
             return status, p
 
-    def static_details(self, ids, progress=None):
+    def static_details(self, ids, progress=None, cache=None):
         """按录像 ID 批量取解析字段，返回 {id: {...}}。
 
         读不到的 ID 不会出现在结果里（未公开、已删除、无权限），调用方按
         「没有解析数据」处理即可，不能当成空记录写入。
 
-        `progress(done, total)` 每批回调一次，参数是「已处理的 ID 数 / 待处理的
-        ID 数」。回调只做通知，异常吞掉 —— 界面出错不能把数据读取拖死。
+        `progress(done, total)` 每批回调一次，参数是「已知明细的 ID 数 / 总 ID 数」
+        （命中缓存的先算已读，界面上一开始就不会是 0）。回调只做通知，异常吞掉 ——
+        界面出错不能把数据读取拖死。
+
+        `cache` 传 cache 模块（或同接口对象）时按 ID 复用明细：一条录像的解析字段
+        上传后不再变化，所以只对没见过的 ID 发请求。2100 条实测 21 批 11 秒，
+        第二次起是 0 批。**「有哪些录像」始终来自每次重拉的 videolist**，缓存里
+        多出来的 ID 不会被当成「网站上还留着这条」。
         """
         uniq, seen = [], set()
         for i in ids or []:
@@ -476,19 +482,27 @@ class Client:
                 seen.add(i)
                 uniq.append(i)
 
+        total = len(uniq)
+        out, miss = {}, list(uniq)
+        if cache is not None:
+            try:
+                out = cache.site_detail_get(uniq) or {}
+                miss = [i for i in uniq if i not in out]
+            except Exception:                        # noqa: BLE001
+                out, miss = {}, list(uniq)
+
         def _tick(done):
             if progress is None:
                 return
             try:
-                progress(done, len(uniq))
+                progress(done, total)
             except Exception:                        # noqa: BLE001
                 pass
 
-        _tick(0)
-        out = {}
-        done = 0
-        for start in range(0, len(uniq), DETAIL_MAX_IDS):
-            chunk = uniq[start:start + DETAIL_MAX_IDS]
+        _tick(total - len(miss))
+        done = total - len(miss)
+        for start in range(0, len(miss), DETAIL_MAX_IDS):
+            chunk = miss[start:start + DETAIL_MAX_IDS]
             if start:
                 time.sleep(DETAIL_GAP)
             status, p = self.get_json_retry(
@@ -496,14 +510,21 @@ class Client:
                 % ",".join(str(i) for i in chunk))
             if not isinstance(p, list):
                 raise OmsError("读取网站录像明细失败（HTTP %s）" % status, status, p)
+            got = {}
             for row in p:
                 if isinstance(row, dict) and row.get("id") is not None:
-                    out[int(row["id"])] = row
+                    got[int(row["id"])] = row
+            out.update(got)
+            if cache is not None and got:
+                try:
+                    cache.site_detail_put(got)
+                except Exception:                    # noqa: BLE001
+                    pass
             done += len(chunk)
-            _tick(min(done, len(uniq)))
+            _tick(min(done, total))
         return out
 
-    def attach_static_details(self, rows, progress=None):
+    def attach_static_details(self, rows, progress=None, cache=None):
         """给 videolist 的元信息补上解析字段，返回新的列表。
 
         `state` 一律以 videolist 为准（staticdetailbatch 不返回 state）；
@@ -513,7 +534,7 @@ class Client:
         ids = [r.get("id") for r in rows if r.get("id")]
         if not ids:
             return rows
-        det = self.static_details(ids, progress=progress)
+        det = self.static_details(ids, progress=progress, cache=cache)
         fields = ("timems", "bv", "file_size", "level", "software", "mode",
                   "identifier", "end_time")
         for r in rows:

@@ -13,7 +13,9 @@ import time
 
 import uitest  # 后台跑界面：窗口对用户透明，见 app.py 里 MS_PB_QUIET
 import app as A
+import cache
 import openms
+import paths
 
 checks = []
 
@@ -76,6 +78,112 @@ def test_static_details_progress():
         openms.DETAIL_GAP = old_gap
 
 
+# ---------- 明细缓存 ----------
+class DictCache:
+    """cache 模块的替身：只实现 static_details 用到的两个方法。"""
+
+    def __init__(self, known=None):
+        self.rows = dict(known or {})
+        self.puts = []
+
+    def site_detail_get(self, ids):
+        return {i: dict(self.rows[i]) for i in ids if i in self.rows}
+
+    def site_detail_put(self, rows):
+        self.puts.append(sorted(rows))
+        self.rows.update(rows)
+        return len(rows)
+
+
+def test_detail_cache():
+    old_gap = openms.DETAIL_GAP
+    openms.DETAIL_GAP = 0
+    try:
+        # 命中缓存的不再发请求，进度从「已命中」开始
+        o, hits = fake_oms()
+        known = {i: {"id": i, "bv": 1, "timems": 1000}
+                 for i in range(1, 201)}
+        c = DictCache(known)
+        seen = []
+        det = o.static_details(list(range(1, 301)), cache=c,
+                               progress=lambda d, t: seen.append((d, t)))
+        check("缓存命中的不发请求", len(hits) == 1)
+        check("只请求缺的那些", hits == ["/api/video/staticdetailbatch?ids=%s"
+                                   % ",".join(str(i) for i in range(201, 301))])
+        check("进度从已命中开始", seen[0] == (200, 300))
+        check("最后一格到 100%", seen[-1] == (300, 300))
+        check("结果里缓存和新取的都在", set(det) == set(range(1, 301)))
+        check("新取的写回缓存", c.puts and c.puts[-1] == list(range(201, 301)))
+
+        # 全命中：一个请求都不发
+        o2, hits2 = fake_oms()
+        c2 = DictCache(det)
+        o2.static_details(list(range(1, 301)), cache=c2)
+        check("全命中时零请求", hits2 == [])
+
+        # 缓存坏了不能拖死读数：照样全量去取
+        class Broken:
+            def site_detail_get(self, ids):
+                raise RuntimeError("坏了")
+
+            def site_detail_put(self, rows):
+                raise RuntimeError("还是坏的")
+
+        o3, hits3 = fake_oms()
+        det3 = o3.static_details([1, 2, 3], cache=Broken())
+        check("缓存抛异常照样读完", len(det3) == 3 and len(hits3) == 1)
+    finally:
+        openms.DETAIL_GAP = old_gap
+
+
+def test_realdb():
+    """真库：写入 / 读出 / 存盘后重启还在 / 清空。"""
+    import shutil
+    import tempfile
+
+    old_env = os.environ.get(paths.ENV_OVERRIDE)
+    tmp = tempfile.mkdtemp(prefix="ms-site-cache-")
+    try:
+        os.environ[paths.ENV_OVERRIDE] = tmp
+        paths._cache = None
+        cache._site_conn = None
+        cache._site_ram = None
+
+        check("按 ID 取到", cache.site_detail_get([7, 8]) == {})
+        n = cache.site_detail_put({7: {"id": 7, "timems": 1234},
+                                   8: {"id": 8, "bv": 42}})
+        check("写了两条", n == 2)
+        got = cache.site_detail_get([7, 8, 9])
+        check("读回来对得上", got == {7: {"id": 7, "timems": 1234},
+                                      8: {"id": 8, "bv": 42}})
+        check("读到的是副本", (got[7].update({"x": 1}), cache.site_detail_get([7])[7])
+              == (None, {"id": 7, "timems": 1234}))
+
+        # 模拟重启：连接和内存都丢掉，只看磁盘
+        cache._site_conn.close()
+        cache._site_conn = None
+        cache._site_ram = None
+        check("重启后还在", cache.site_detail_get([7])[7]["timems"] == 1234)
+        check("行数对", cache.site_detail_rows() == 2)
+
+        cache.site_detail_clear()
+        check("清空后没了", cache.site_detail_get([7, 8]) == {})
+    finally:
+        try:
+            if cache._site_conn is not None:
+                cache._site_conn.close()
+        except Exception:                            # noqa: BLE001
+            pass
+        cache._site_conn = None
+        cache._site_ram = None
+        if old_env is None:
+            os.environ.pop(paths.ENV_OVERRIDE, None)
+        else:
+            os.environ[paths.ENV_OVERRIDE] = old_env
+        paths._cache = None
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------- 界面 ----------
 def pump(win, cond, timeout=30):
     end = time.time() + timeout
@@ -109,7 +217,8 @@ class SlowClient:
     def whoami(self):
         return {"id": 1, "username": "tester", "realname": "x"}
 
-    def videos(self, uid, progress=None):
+    def videos(self, uid, progress=None, cache=None):
+        self.cache_arg = cache          # 界面必须把明细缓存传下来
         for d in (0, 120, 260):
             if progress:
                 progress(d, self.total)
@@ -184,6 +293,7 @@ def test_ui():
         check("读完后收回",
               pump(win, lambda: not win.site_prog.winfo_ismapped(), 20))
         check("录像列表落到界面", len(win.oms_videos) == 260)
+        check("界面上读网站记录会带上缓存", win.oms.cache_arg is cache)
     finally:
         try:
             win.destroy()
@@ -193,6 +303,8 @@ def test_ui():
 
 def main():
     test_static_details_progress()
+    test_detail_cache()
+    test_realdb()
     test_ui()
 
     bad = [c for c in checks if not c[1]]

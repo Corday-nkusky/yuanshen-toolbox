@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.33.0"
+APP_VER = "0.34.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -5217,7 +5217,7 @@ class App(tk.Tk):
             details, detail_err = {}, ""
             if ids:
                 try:
-                    details = self.oms.static_details(ids)
+                    details = self.oms.static_details(ids, cache=cache)
                 except Exception as exc:             # noqa: BLE001
                     detail_err = "网站 Top5 明细读取失败"
                     diag.log.warning("读取网站 Top5 明细失败：%s", exc)
@@ -5227,7 +5227,7 @@ class App(tk.Tk):
         try:
             vids = self.oms.videos(
                 u["id"], progress=lambda done, total:
-                self._q.put(("site_prog", (seq, done, total))))
+                self._q.put(("site_prog", (seq, done, total))), cache=cache)
             lack = sum(1 for v in vids if not openms.server_key(v))
             diag.log.info("网站录像列表：%d 条，其中 %d 条缺上去重明细", len(vids), lack)
         except Exception as exc:                     # noqa: BLE001

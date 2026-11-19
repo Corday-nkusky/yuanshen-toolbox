@@ -8,6 +8,7 @@
         openms.json      openms.top 用户名 + DPAPI 密文（密码 / session_id）
         uploads.json     上传台账（断点续传用）
         scan-cache.db    录像解析结果缓存（几万个录像时靠它把重扫压到 1 秒）
+        site-cache.db    网站录像明细缓存（按录像 ID，避免每次重拉几十批）
         logs\\app.log     滚动日志（1 MB × 3）
         logs\\crash-*.txt  崩溃时的完整 traceback
 
