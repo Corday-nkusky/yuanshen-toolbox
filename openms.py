@@ -425,16 +425,19 @@ class Client:
         self.store.clear_session()
 
     # --- 数据 ---
-    def videos(self, user_id):
+    def videos(self, user_id, progress=None):
         """我的录像，每条都补齐去重三元组（timems / bv / file_size）。
 
         站点改版（2026-10）前，`videolist` 一次就能拿到完整明细；现在它只返回
         id / player / upload_time / state / ongoing_tournament，去重字段必须再走
         `staticdetailbatch` 批量取。少了这一步，「网站是否已有这条录像」永远判否。
+
+        `progress(done, total)` 逐批回调，供界面显示读取进度；列表本身没到之前
+        报不出总数，所以只在明细阶段回调。
         """
         status, p = self.get_json("/api/userprofile/videolist?user_id=%d" % int(user_id))
         if isinstance(p, list):
-            return self.attach_static_details(p)
+            return self.attach_static_details(p, progress=progress)
         raise OmsError("读取网站录像失败（HTTP %s）" % status, status, p)
 
     def get_json_retry(self, path, retries=3, timeout=None):
@@ -454,11 +457,14 @@ class Client:
                 continue
             return status, p
 
-    def static_details(self, ids):
+    def static_details(self, ids, progress=None):
         """按录像 ID 批量取解析字段，返回 {id: {...}}。
 
         读不到的 ID 不会出现在结果里（未公开、已删除、无权限），调用方按
         「没有解析数据」处理即可，不能当成空记录写入。
+
+        `progress(done, total)` 每批回调一次，参数是「已处理的 ID 数 / 待处理的
+        ID 数」。回调只做通知，异常吞掉 —— 界面出错不能把数据读取拖死。
         """
         uniq, seen = [], set()
         for i in ids or []:
@@ -470,7 +476,17 @@ class Client:
                 seen.add(i)
                 uniq.append(i)
 
+        def _tick(done):
+            if progress is None:
+                return
+            try:
+                progress(done, len(uniq))
+            except Exception:                        # noqa: BLE001
+                pass
+
+        _tick(0)
         out = {}
+        done = 0
         for start in range(0, len(uniq), DETAIL_MAX_IDS):
             chunk = uniq[start:start + DETAIL_MAX_IDS]
             if start:
@@ -483,9 +499,11 @@ class Client:
             for row in p:
                 if isinstance(row, dict) and row.get("id") is not None:
                     out[int(row["id"])] = row
+            done += len(chunk)
+            _tick(min(done, len(uniq)))
         return out
 
-    def attach_static_details(self, rows):
+    def attach_static_details(self, rows, progress=None):
         """给 videolist 的元信息补上解析字段，返回新的列表。
 
         `state` 一律以 videolist 为准（staticdetailbatch 不返回 state）；
@@ -495,7 +513,7 @@ class Client:
         ids = [r.get("id") for r in rows if r.get("id")]
         if not ids:
             return rows
-        det = self.static_details(ids)
+        det = self.static_details(ids, progress=progress)
         fields = ("timems", "bv", "file_size", "level", "software", "mode",
                   "identifier", "end_time")
         for r in rows:

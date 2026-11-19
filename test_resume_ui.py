@@ -61,7 +61,9 @@ class FakeClient:
     def whoami(self):
         return {"id": 1, "username": "tester", "realname": "x"}
 
-    def videos(self, uid):
+    def videos(self, uid, progress=None):
+        if progress:
+            progress(0, 0)
         return []
 
     def identifiers(self, uid):

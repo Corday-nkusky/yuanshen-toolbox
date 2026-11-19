@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.32.1"
+APP_VER = "0.33.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -3098,6 +3098,10 @@ class App(tk.Tk):
         st.configure("Oms.Horizontal.TProgressbar", troughcolor="#f6eaf5",
                      background=C_ACCENT, bordercolor=C_BG, lightcolor=C_ACCENT,
                      darkcolor=C_ACCENT, thickness=sc(7))
+        # 读网站记录那条：白底上要看得见槽，否则只剩一小块粉色像坏掉了
+        st.configure("Oms.Site.Horizontal.TProgressbar", troughcolor="#f1e0f0",
+                     background=C_ACCENT, bordercolor="#f1e0f0",
+                     lightcolor=C_ACCENT, darkcolor=C_ACCENT, thickness=sc(8))
 
     # ---------- 界面 ----------
     def _build_ui(self):
@@ -4488,6 +4492,20 @@ class App(tk.Tk):
         # 第二行：范围（可多选叠加）
         row = tk.Frame(page, bg=C_BG)
         row.pack(fill="x", pady=(0, sc(6)))
+        self.row_scope = row
+        # 读取网站记录的进度：几千条明细要分几十批取，十几秒里没动静像卡住了。
+        # 只在读的时候插到账号行下面（见 _on_site_prog），读完立刻收回。
+        self.site_prog = tk.Frame(page, bg=C_BG)
+        self.pb_site = ttk.Progressbar(self.site_prog,
+                                       style="Oms.Site.Horizontal.TProgressbar",
+                                       length=sc(220), mode="indeterminate",
+                                       maximum=100, value=0)
+        self.pb_site.pack(side="left")
+        self.lbl_site_prog = tk.Label(self.site_prog, text="", bg=C_BG,
+                                      fg=C_DIM, font=FONT_SMALL)
+        self.lbl_site_prog.pack(side="left", padx=(sc(8), 0))
+        self._site_prog_on = False
+        self._site_prog_det = False
         tk.Label(row, text="范围", bg=C_BG, fg=C_DIM,
                  font=FONT_UI).pack(side="left", padx=(0, sc(6)))
         self.scope_pills = {}
@@ -5082,6 +5100,7 @@ class App(tk.Tk):
         self.oms.logout()
         diag.log.info("退出登录，已清除本机会话")
         self._site_seq += 1                 # 让还在路上的网站请求作废
+        self._site_prog_hide()               # 那批请求的收尾事件已经被上面作废了
         self.oms_user = None
         self.oms_videos = []
         self.oms_idents = []
@@ -5138,6 +5157,17 @@ class App(tk.Tk):
                 self.render_recent()
 
     def _site_worker(self, seq=0):
+        """包一层，只负责在开头/结尾通知界面「开始读 / 读完了」。
+
+        读的过程有异常也不能把进度条留在屏幕上，所以收尾放 finally。
+        """
+        self._q.put(("site_prog", (seq, -1, 0)))
+        try:
+            self._site_load(seq)
+        finally:
+            self._q.put(("site_prog", (seq, -2, 0)))
+
+    def _site_load(self, seq=0):
         """读登录态 + 网站 PB + 我的录像 + 我的标识。
 
         网站 PB 单独成一个事件：它只有一次轻量请求，先到先显示；录像列表
@@ -5195,7 +5225,9 @@ class App(tk.Tk):
 
         vids, idents, err = [], [], ""
         try:
-            vids = self.oms.videos(u["id"])
+            vids = self.oms.videos(
+                u["id"], progress=lambda done, total:
+                self._q.put(("site_prog", (seq, done, total))))
             lack = sum(1 for v in vids if not openms.server_key(v))
             diag.log.info("网站录像列表：%d 条，其中 %d 条缺上去重明细", len(vids), lack)
         except Exception as exc:                     # noqa: BLE001
@@ -5206,6 +5238,53 @@ class App(tk.Tk):
         except Exception:                            # noqa: BLE001
             pass
         self._q.put(("acct", (seq, u, vids, idents, err)))
+
+    def _on_site_prog(self, seq, done, total):
+        """读取网站记录的进度条：-1 开始，-2 收尾，其余是「已读 / 总数」。
+
+        列表没到之前报不出总数，先来回跑；明细是几十批串行取的，每批报一次。
+        """
+        if seq != self._site_seq:
+            return                        # 退出/换号前发出的请求，结果作废
+        if done == -2:
+            self._site_prog_hide()
+            return
+        self._site_prog_show()
+        if done < 0 or total <= 0:
+            return
+        if not self._site_prog_det:
+            self._site_prog_det = True
+            try:
+                self.pb_site.stop()
+            except tk.TclError:
+                pass
+            self.pb_site.config(mode="determinate", maximum=100, value=0)
+        self.pb_site.config(value=min(100, done * 100 // total))
+        self.lbl_site_prog.config(text="%d / %d" % (done, total))
+
+    def _site_prog_show(self):
+        if self._site_prog_on:
+            return
+        self._site_prog_on = True
+        self._site_prog_det = False
+        self.lbl_site_prog.config(text="")
+        self.pb_site.config(mode="indeterminate", maximum=100, value=0)
+        try:
+            self.pb_site.start(14)
+        except tk.TclError:
+            pass
+        self.site_prog.pack(fill="x", pady=(0, sc(6)), before=self.row_scope)
+
+    def _site_prog_hide(self):
+        self._site_prog_on = False
+        self._site_prog_det = False
+        try:
+            self.pb_site.stop()
+        except tk.TclError:
+            pass
+        self.pb_site.config(mode="indeterminate", value=0)
+        self.lbl_site_prog.config(text="")
+        self.site_prog.pack_forget()
 
     def _on_site_pb(self, seq, uid, rows, err, counts=None):
         if seq != self._site_seq:
@@ -6311,6 +6390,8 @@ class App(tk.Tk):
                     self._on_account(*payload)
                 elif kind == "site_pb":
                     self._on_site_pb(*payload)
+                elif kind == "site_prog":
+                    self._on_site_prog(*payload)
                 elif kind == "site_top":
                     self._on_site_top(*payload)
                 elif kind == "lsf":
