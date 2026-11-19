@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.32.0"
+APP_VER = "0.32.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -4808,7 +4808,9 @@ class App(tk.Tk):
         self.tbl_auto.set_rows(rows)
         # 详情条的高度按「这批记录里理由最多的一条」定死：选中不同行时表格
         # 不会忽高忽低，也不会把详情条挤掉。理由最多几条是数得出来的。
-        self._auto_lines = max([len(_auto_reasons(r)) for r in rows] or [1])
+        # 至少留一行：全量模式不写理由，整屏都是空的时候也不能让这条塌掉，
+        # 否则一点某一行它又长出来，表格跟着跳。
+        self._auto_lines = max([1] + [len(_auto_reasons(r)) for r in rows])
         self._auto_detail_rows(self._auto_lines)
         self.frm_auto_detail.update_idletasks()
         self.tbl_auto.refit()

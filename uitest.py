@@ -109,3 +109,37 @@ def grab(win, path):
 
 def is_quiet():
     return os.environ.get("MS_PB_QUIET") == "1"
+
+
+def _mute_dialogs():
+    """把所有原生对话框哑掉。import 本模块即生效。
+
+    为什么要：透明窗口那套绕不过 messagebox / filedialog —— 它们是独立的
+    Toplevel，会直接盖在用户屏幕上、抢焦点、还可能响一声。以前每个测试自己
+    stub 一遍，漏一个就弹一个（2026-11-19 用户第二次投诉，弹的是
+    「这些目录里没有找到录像文件…要重新选择目录吗？」）。
+
+    返回「什么都不做」那一档：问句一律 False / None，文件选择一律空串。
+    想知道某个框有没有被要求弹出来，读 ``dialog_calls``。
+    """
+    from tkinter import filedialog, messagebox
+
+    def rec(kind, default):
+        def call(*a, **k):
+            dialog_calls.append((kind, a, k))
+            return default
+        return call
+
+    for name, default in (("showinfo", "ok"), ("showwarning", "ok"),
+                          ("showerror", "ok"), ("askyesno", False),
+                          ("askokcancel", False), ("askretrycancel", False),
+                          ("askyesnocancel", None)):
+        setattr(messagebox, name, rec("messagebox." + name, default))
+    for name, default in (("askdirectory", ""), ("askopenfilename", ""),
+                          ("asksaveasfilename", ""), ("askopenfilenames", ())):
+        setattr(filedialog, name, rec("filedialog." + name, default))
+
+
+dialog_calls = []
+_mute_dialogs()
+

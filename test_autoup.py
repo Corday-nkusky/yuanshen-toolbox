@@ -84,9 +84,8 @@ check("全量：不破 PB、不进 Top5 的局也入队",
                                        site_pb=[], site_top={})]
       == [plain["path"]])
 all_cands = autoup.judge([plain], ("all",), {plain["path"]})
-check("全量：理由写「新增完成局」",
-      all_cands[0]["why"] == ["新增完成局"]
-      and all_cands[0]["brief"] == ["新增完成局"])
+check("全量：不写理由（每局都一样，备注留空）",
+      all_cands[0]["why"] == [] and all_cands[0]["brief"] == [])
 check("全量：只有这次新出现的局才进候选",
       autoup.judge([plain], ("all",), set()) == [])
 check("全量：不认识的开关组合不变成全量",
@@ -95,8 +94,8 @@ check("全量 + 三项混着传也按全量算，不重复出候选",
       [c["path"] for c in autoup.judge([plain], ("all", "pb"),
                                        {plain["path"]}, site_pb=[])]
       == [plain["path"]])
-check("全量解释器也给「新增完成局」",
-      autoup.explain(plain, [plain], ("all",)) == ["新增完成局"])
+check("全量解释器也不编理由",
+      autoup.explain(plain, [plain], ("all",)) == [])
 
 # ---------------------------------------------------------------- 数据就绪
 check("涨分局缺网站 Top5 -> 拒绝判定",

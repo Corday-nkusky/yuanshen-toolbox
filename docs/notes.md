@@ -190,6 +190,12 @@ PyInstaller 默认清单不带 `dpiAware`，进程起来后再调会被系统拒
    （`winfo_id`），标志位用 `2`（`PW_RENDERFULLCONTENT`，Treeview / Canvas 都在
    里面）；全白时退回 `0`（`WM_PRINT`，Tk 自己实现的控件才有，表格会是空白）。
    外层带标题栏的句柄抓出来只有标题栏，客户区全白 —— 所以截图里没有标题栏。
+5. **`messagebox` / `filedialog` 也是窗口，透明那套绕不过它们**：它们是独立的
+   Toplevel，会实打实盖在用户屏幕上、抢焦点、还可能响一声。`import uitest` 现在
+   一次性把它们全换成「什么都不做」的桩（问句返回 False，选文件返回空串），
+   请求记录在 `uitest.dialog_calls`。所以脚本不必再逐个 stub；
+   **漏 stub 会直接弹到用户脸上**，这正是 2026-11-19 第二次投诉的原因
+   （弹的是「这些目录里没有找到录像文件…要重新选择目录吗？」）。
 
 
 

@@ -32,9 +32,9 @@ import openms
 # 按成绩筛的三个范围。'all'（全部完成局）单独走，见上面 docstring。
 AUTO_SCOPES = ("top", "top_nf", "pb", "pb_nf")
 
-# 「全部新增完成局」：新出现的标准完成局一律传，不看 PB / Top5。
+# 「所有新局」：新出现的完成局一律传，不看 PB / Top5。它没有「为什么是这局」
+# 可言 —— 每一局的答案都一样，所以不往备注里写东西。
 ALL = "all"
-ALL_WHY = "新增完成局"
 
 # 界面上的三个开关 -> 范围集合。涨分局 = 前端 std + 前端 NF，两项绑在一起：
 # 用户口径里它们是同一件事（排行榜上的显示值变好）。
@@ -167,8 +167,9 @@ def judge(games, scopes, new_paths, site_pb=None, site_top=None):
 
     if scopes == (ALL,):
         # 就绪由 App 保证：当前账号的录像列表已到齐，去重才有依据。
-        return [{"path": g["path"], "game": g, "why": [ALL_WHY],
-                 "brief": [ALL_WHY]}
+        # 理由留空：这一档「为什么传」的答案对每一局都一样（因为它是新局），
+        # 写进备注就是整列重复同一句话，没有信息。
+        return [{"path": g["path"], "game": g, "why": [], "brief": []}
                 for g in games if g.get("path") in new_paths]
 
     want = set()
@@ -221,7 +222,7 @@ def _explain(game, games, scopes, best=None, cut=None, board=None):
     cut = cut if cut is not None else {}
     board = board if board is not None else {}
     if ALL in (scopes or ()):
-        return [(ALL_WHY, ALL_WHY)]
+        return []                       # 全量没有「为什么是这局」，见 judge
     lv = game.get("level")
     bv = int(game.get("bv") or 0)
     ms = _ms(game)
