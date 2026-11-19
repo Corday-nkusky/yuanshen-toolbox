@@ -42,7 +42,9 @@ import base64
 import ctypes
 import http.cookiejar
 import json
+import logging
 import os
+import socket
 import ssl
 import sys
 import time
@@ -54,6 +56,8 @@ import uuid
 BASE = "https://openms.top"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) yuanshen-toolbox/0.11 Safari/537.36")
+# 和 diag.setup() 用的是同一个 logger，所以换路这类事会直接进 app.log
+_LOG = logging.getLogger("ms_pb")
 
 # /api/video/staticdetailbatch 的硬限制：实测传 101 个 ID 直接返回
 # 400 {"detail": "Expected 1 to 100 positive video IDs."}，所以必须自己切片。
@@ -96,10 +100,15 @@ REASON_CN = {
 
 
 class OmsError(Exception):
-    def __init__(self, msg, status=None, payload=None):
+    def __init__(self, msg, status=None, payload=None, kind=None):
         super().__init__(msg)
         self.status = status
         self.payload = payload or {}
+        # 网络层失败的性质（HTTP 状态错误不带）：
+        #   "conn"    根本没连上（拒绝连接 / DNS 失败）—— 请求确定没发出去，换路重试安全
+        #   "timeout" 连上了但没等到回应 —— 站点可能已经收到，POST 不能盲目重发
+        #   "other"   其它 OSError
+        self.kind = kind
 
 
 # ---------------------------------------------------------------- DPAPI
@@ -310,22 +319,51 @@ def server_key(video):
 
 # ---------------------------------------------------------------- 客户端
 class Client:
-    def __init__(self, base=BASE, timeout=30, store=None, proxy=None):
-        """proxy: None=沿用系统/环境变量代理；False=强制直连（排障用）。"""
+    def __init__(self, base=BASE, timeout=30, store=None, proxy="auto"):
+        """proxy 决定走不走系统代理（注册表 / 环境变量里那个）：
+
+        "auto"（默认）  先直连，连不上再走系统代理，并记住哪条通 —— 本机实测
+                        代理开着时直连 0.15 s、走代理 0.21 s，何况 Clash 这类软件
+                        关掉或重启时空有代理配置，请求会直接 WinError 10061。
+        None / True     只用系统代理（老行为）
+        False           只直连
+        """
         self.base = base.rstrip("/")
         self.timeout = timeout
         self.store = store if store is not None else Store()
         self.jar = http.cookiejar.CookieJar()
         self.ssl_ctx, self.ca_source = make_ssl_context()
-        handlers = [urllib.request.HTTPCookieProcessor(self.jar),
-                    urllib.request.HTTPSHandler(context=self.ssl_ctx)]
-        if proxy is False:
-            handlers.insert(0, urllib.request.ProxyHandler({}))
-        self.opener = urllib.request.build_opener(*handlers)
+        self.proxy_mode = proxy
+        self.route = None               # 最近一次成功的路线："direct" / "system"
+        self.route_note = ""            # 换路过一次就记一句，供日志
+        self._openers = {}
+        self.opener = self._opener(self._routes()[0])
         self.user = None
         sid = self.store.session()
         if sid:
             self.set_session_cookie(sid)
+
+    # --- 路线（直连 / 系统代理） ---
+    def _routes(self):
+        mode = self.proxy_mode
+        if mode == "auto":
+            return ("system", "direct") if self.route == "system" \
+                else ("direct", "system")
+        if mode is False:
+            return ("direct",)
+        return ("system",)
+
+    def _opener(self, route):
+        op = self._openers.get(route)
+        if op is not None:
+            return op
+        handlers = [urllib.request.HTTPCookieProcessor(self.jar),
+                    urllib.request.HTTPSHandler(context=self.ssl_ctx)]
+        if route == "direct":
+            handlers.insert(0, urllib.request.ProxyHandler({}))
+        op = urllib.request.build_opener(*handlers)
+        self._openers[route] = op
+        return op
 
     # --- Cookie ---
     def set_session_cookie(self, value):
@@ -346,6 +384,54 @@ class Client:
         return bool(self.session_id())
 
     # --- 底层请求 ---
+    @staticmethod
+    def _classify(reason):
+        """给网络层失败分个性质，决定能不能换条路重来。"""
+        if isinstance(reason, urllib.error.URLError):
+            reason = getattr(reason, "reason", reason)
+        if isinstance(reason, (ConnectionRefusedError, socket.gaierror)):
+            return "conn"
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return "timeout"
+        if isinstance(reason, OSError):
+            # 10061 连接被拒（Windows 上代理没开就是这个）、10051/10060/10065 等
+            if getattr(reason, "errno", None) == 10061:
+                return "conn"
+            if "积极拒绝" in str(reason):
+                return "conn"
+            return "other"
+        return "other"
+
+    def _open(self, route, req, timeout):
+        """按指定路线发一次；HTTP 错误照常返回，网络层失败抛 OmsError。"""
+        op = self._opener(route)
+        try:
+            with op.open(req, timeout=timeout or self.timeout) as r:
+                self._adopt(route)
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            # 站点答了话就说明这条路是通的，照样记下来
+            self._adopt(route)
+            try:
+                body = e.read()
+            except Exception:
+                body = b""
+            return e.code, dict(e.headers or {}), body
+        except (urllib.error.URLError, OSError) as e:
+            reason = getattr(e, "reason", e)
+            raise OmsError("网络错误：%s" % (reason,),
+                           kind=self._classify(reason)) from e
+
+    def _adopt(self, route):
+        """记住这条路通：下次从它开始，省掉每次先撞一遍死路。"""
+        self.route = route
+        self.opener = self._opener(route)
+
+    def _notice(self, route):
+        self.route_note = "网站请求改走%s" % (
+            "系统代理" if route == "system" else "直连")
+        _LOG.info("%s（另一条连不上）", self.route_note)
+
     def request(self, path, data=None, method=None, ctype=None, timeout=None):
         url = path if path.startswith("http") else self.base + path
         req = urllib.request.Request(url, data=data, method=method)
@@ -354,17 +440,25 @@ class Client:
         req.add_header("Accept", "*/*")
         if ctype:
             req.add_header("Content-Type", ctype)
-        try:
-            with self.opener.open(req, timeout=timeout or self.timeout) as r:
-                return r.status, dict(r.headers), r.read()
-        except urllib.error.HTTPError as e:
+        routes = self._routes()
+        for i, route in enumerate(routes):
             try:
-                body = e.read()
-            except Exception:
-                body = b""
-            return e.code, dict(e.headers or {}), body
-        except (urllib.error.URLError, OSError) as e:
-            raise OmsError("网络错误：%s" % (getattr(e, "reason", e),)) from e
+                got = self._open(route, req, timeout)
+            except OmsError as e:
+                next_route = routes[i + 1] if i + 1 < len(routes) else None
+                # 换路只在「请求确定没发出去」时安全；POST 超时可能站点已经收下了，
+                # 换条路重发就是重复上传，宁可直接报错（上传自己有退避重试）
+                retriable = e.kind == "conn" or (
+                    e.kind == "timeout" and (method or "GET") == "GET")
+                if next_route is None or not retriable:
+                    raise
+                _LOG.info("网站请求走%s失败：%s，改试%s", route, e,
+                          "系统代理" if next_route == "system" else "直连")
+                continue
+            if i:
+                self._notice(route)     # 第一条路不通才有 i > 0
+            return got
+        raise OmsError("网络错误：没有可用的连接方式", kind="conn")
 
     def get_json(self, path, timeout=None):
         status, _h, raw = self.request(path, timeout=timeout)
@@ -406,11 +500,12 @@ class Client:
         return False, p
 
     def whoami(self):
-        """登录态校验。匿名时返回 None（站点返回 {"user": null}）。"""
-        try:
-            status, p = self.get_json("/api/common/loginauto")
-        except OmsError:
-            return None
+        """登录态校验。匿名时返回 None（站点返回 {"user": null}）。
+
+        网络失败**不再**吞成 None：那样一次抖动就会被当成「未登录」，界面把网站
+        记录清空、还提示去登录。现在抛给调用方，让它报「连不上」而不是「没登录」。
+        """
+        status, p = self.get_json("/api/common/loginauto")
         user = p.get("user") if isinstance(p, dict) else None
         self.user = user or None
         return self.user
@@ -435,7 +530,8 @@ class Client:
         `progress(done, total)` 逐批回调，供界面显示读取进度；列表本身没到之前
         报不出总数，所以只在明细阶段回调。`cache` 见 `static_details`。
         """
-        status, p = self.get_json("/api/userprofile/videolist?user_id=%d" % int(user_id))
+        status, p = self.get_json_retry(
+            "/api/userprofile/videolist?user_id=%d" % int(user_id))
         if isinstance(p, list):
             return self.attach_static_details(p, progress=progress, cache=cache)
         raise OmsError("读取网站录像失败（HTTP %s）" % status, status, p)
@@ -547,7 +643,8 @@ class Client:
         return rows
 
     def identifiers(self, user_id):
-        status, p = self.get_json("/api/userprofile/identifier?user_id=%d" % int(user_id))
+        status, p = self.get_json_retry(
+            "/api/userprofile/identifier?user_id=%d" % int(user_id))
         if isinstance(p, list):
             return p
         raise OmsError("读取标识失败（HTTP %s）" % status, status, p)

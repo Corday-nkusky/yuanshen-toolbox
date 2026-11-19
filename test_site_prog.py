@@ -70,7 +70,9 @@ def test_static_details_progress():
 
         # videos 要把它透传下去
         o4, _ = fake_oms()
-        o4.get_json = lambda path, timeout=None: (200, [{"id": 7}, {"id": 8}])
+        o4.get_json_retry = lambda path, retries=3, timeout=None: (
+            200, [{"id": 7}, {"id": 8}])
+        o4.get_json = o4.get_json_retry
         seen4 = []
         rows = o4.videos(9, progress=lambda d, t: seen4.append((d, t)))
         check("videos 透传回调", seen4 and seen4[-1] == (2, 2) and len(rows) == 2)
@@ -242,6 +244,10 @@ class SlowClient:
 
 
 def test_ui():
+    # 启动 700 ms 后会自己跑一次「恢复会话」，它会推进 _site_seq、让下面手写的
+    # 进度事件全被判成过期。测试里先把它按掉，读网站记录由我们自己触发。
+    saved_restore = A.App._restore_session
+    A.App._restore_session = lambda self: None
     win = A.App()
     try:
         assert pump(win, lambda: not win._scanning and bool(win.games)), "首次扫描没完成"
@@ -250,14 +256,9 @@ def test_ui():
         win._rebuild_up_rows()
         win.show_tab("upload")          # 进度条挂在上传页里，页面不显示就看不见
         win.update()
-        # 启动时那次「恢复会话」是定时器里发起的，等它跑完再动手，
-        # 否则它会把 _site_seq 推进一格，让下面的手写事件全被判成过期
-        assert pump(win, lambda: win.oms_loaded, 30), "启动时的会话恢复没跑完"
-        assert pump(win, lambda: not win._site_prog_on, 10), "启动时的进度条没收起"
 
         check("平时不占地方", not win.site_prog.winfo_ismapped())
 
-        win._site_seq += 1
         seq = win._site_seq
         win._on_site_prog(seq, -1, 0)
         win.update()
@@ -294,7 +295,24 @@ def test_ui():
               pump(win, lambda: not win.site_prog.winfo_ismapped(), 20))
         check("录像列表落到界面", len(win.oms_videos) == 260)
         check("界面上读网站记录会带上缓存", win.oms.cache_arg is cache)
+
+        # 连不上网站：保留上次的数据、说清原因、别把进度条留在屏幕上
+        before = list(win.oms_videos)
+
+        class DeadSite(SlowClient):
+            def whoami(self):
+                raise openms.OmsError("网络错误：[WinError 10061] 拒绝连接")
+
+        win.oms = DeadSite()
+        win.oms_err = ""
+        win.refresh_site()
+        ok = pump(win, lambda: "连不上" in win.lbl_quota.cget("text"), 15)
+        check("连不上要明说", ok)
+        check("连不上不清空已有记录", win.oms_videos == before)
+        check("连不上时进度条收起", not win.site_prog.winfo_ismapped())
+        check("连不上时不算「已同步」", not win.oms_synced)
     finally:
+        A.App._restore_session = saved_restore
         try:
             win.destroy()
         except Exception:                            # noqa: BLE001
