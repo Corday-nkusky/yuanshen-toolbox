@@ -465,15 +465,40 @@ class Client:
         return status, _json(raw)
 
     # --- 登录链 ---
+    CAPTCHA_TRIES = 3
+
     def refresh_captcha(self):
-        """返回 {"hashkey": str, "png": bytes}。"""
+        """返回 {"hashkey": str, "png": bytes}。
+
+        站点后端偶尔会在几秒内抽风（网关 502 / 上游超时），这类错多半自己会好，
+        重取一次就正常。以前只发一次请求，赶上这一下就把登录窗卡在「加载失败」，
+        所以这里按 0.6s、1.2s 退避重取三次；还是不行才算真的连不上。
+        """
+        for attempt in range(1, self.CAPTCHA_TRIES + 1):
+            try:
+                return self._fetch_captcha()
+            except OmsError as e:
+                _LOG.info("取验证码第 %d 次失败（HTTP %s）：%s",
+                          attempt, e.status, e)
+                # 只有「站点一时没答上来」值得重试：网络层失败、5xx、429。
+                # 4xx 是请求本身不对，重发也是同样的结果。
+                transient = e.kind is not None or (e.status or 0) >= 500 \
+                    or e.status == 429
+                if not transient or attempt == self.CAPTCHA_TRIES:
+                    raise
+                time.sleep(0.6 * attempt)
+        raise OmsError("网站暂时没能响应")
+
+    def _fetch_captcha(self):
         status, p = self.get_json("/userprofile/refresh_captcha/")
         hk = p.get("hashkey")
         if not hk:
-            raise OmsError("取验证码失败（HTTP %s）" % status, status, p)
+            _LOG.info("取验证码：HTTP %s，返回 %r", status, p)
+            raise OmsError("网站暂时没能响应", status, p)
         status, _h, png = self.request("/userprofile/captcha/image/%s/" % hk)
         if not png:
-            raise OmsError("验证码图片为空（HTTP %s）" % status, status)
+            _LOG.info("验证码图片为空：HTTP %s", status)
+            raise OmsError("网站暂时没能响应", status)
         return {"hashkey": hk, "png": png}
 
     def login(self, username, password, captcha, hashkey, days=90):

@@ -137,6 +137,12 @@ Beg_NF_1.06_3BV=5_3BVs=4.71_Anonymous.avf
 `videolist` / `identifier` 改成走 `get_json_retry`：2026-11-17 21:01 那次
 `读取网站录像列表失败（HTTP 429）` 就是因为这条链路一次失败就报错。
 
+**取验证码同样会退避重试**（`refresh_captcha`，2026-11-20）：openms.top 短暂维护时
+`/userprofile/refresh_captcha/` 被网关回 502（`Server: nginx/1.24.0` 正常时是 200 +
+`{"hashkey": ...}`）。这类 5xx / 429 / 网络层失败按 0.6 s、1.2 s 再取两次，仍失败才报。
+判据与 `get_json_retry` 一致：**4xx 不重试**（请求本身不对，重发没意义）。失败文案走
+「网站暂时没能响应」，具体的 HTTP 状态只进日志 —— 登录窗不再显示状态码。
+
 ## 自动上传：按成绩筛，还是一律传
 
 界面上四个范围开关，前三个（涨分局 / 全PB / NF PB）是**按成绩筛**，第四个

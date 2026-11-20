@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.34.1"
+APP_VER = "0.34.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1942,6 +1942,7 @@ class LoginDialog(tk.Toplevel):
             return
         self.lbl_cap.config(text="加载中…", image="", fg=C_DIM)
         self._img = None
+        self.hashkey = ""          # 旧的那张已经失效，别拿它去提交
         threading.Thread(target=self._cap_worker, daemon=True).start()
 
     def _cap_worker(self):
@@ -2025,7 +2026,8 @@ class LoginDialog(tk.Toplevel):
                     self._show_captcha(payload)
                 elif kind == "cap_err":
                     self.lbl_cap.config(text="加载失败", image="")
-                    self.lbl_msg.config(text="取验证码失败：" + payload, fg=C_ERR)
+                    self.lbl_msg.config(
+                        text="验证码没取到，点「换一张」重试", fg=C_ERR)
                 else:
                     self._finish(kind == "login_ok", payload)
         except queue.Empty:
