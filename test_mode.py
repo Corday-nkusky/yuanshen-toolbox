@@ -38,6 +38,11 @@ for mode, label in (("5", "竞速无猜"), ("6", "强无猜"), ("7", "弱无猜"
 check("自定义盘面 c_ 前缀认不出级别",
       core.parse_filename("c_0_1.000_10_10.000_X.evf") is None)
 
+check("nan / inf 文件名不穿透过滤",
+      core.parse_filename("b_0_nan_5_1.0_X.evf") is None
+      and core.parse_filename("b_0_inf_5_1.0_X.evf") is None
+      and core.parse_filename("b_0_1.0_5_nan_X.evf") is None)
+
 
 # ---------- 扫描：非标准局一条都不留 ----------
 tmp = tempfile.mkdtemp(prefix="mode-test-")
@@ -63,9 +68,18 @@ kept = sorted(os.path.basename(g["path"]) for g in games)
 
 check("只留下两条标准局", kept == ["b_0_1.000_10_10.000_X.evf",
                               "i_0_30.000_60_2.000_X.evf"])
-check("8 条非标准局计入 non_std", info["non_std"] == 8)
+check("7 条非标准局计入 non_std（强无猜另收）", info["non_std"] == 7)
 check("没打完的仍单独计数", info["fail_skipped"] == 1)
 check("非标准局不算「读不出」", not info["unparsed"])
+
+# 强无猜单独收一桶：不进 games（不统计），但留在 ng_games 里供上传。
+ng = info.get("ng_games") or []
+check("强无猜局收进 ng_games", info.get("ng_count") == 1
+      and [os.path.basename(g["path"]) for g in ng]
+      == ["b_6_1.000_10_10.000_X.evf"])
+check("强无猜局不在统计池里",
+      all(g["path"] not in {x["path"] for x in games} for g in ng))
+check("强无猜模式常量是 6", core.NG_MODE == 6)
 
 shutil.rmtree(tmp, ignore_errors=True)
 

@@ -67,7 +67,6 @@ def _load():
     global _loaded
     if _loaded:
         return
-    _loaded = True
     db = _db()
     if db is None:
         return
@@ -80,7 +79,10 @@ def _load():
             except ValueError:
                 continue
     except sqlite3.Error:
-        pass
+        # 读失败保持「未加载」：下次调用重试。先置标志会把空缓存
+        # 永久认定成已加载，本进程内全部 miss。
+        return
+    _loaded = True
 
 
 def begin():
@@ -117,10 +119,10 @@ def put(path, mtime_ns, size, data):
 
 def sha_get(path, mtime_ns, size):
     """取上次算过的文件哈希；文件没变才有意义（mtime / size 都要对得上）。"""
-    db = _db()
-    if db is None:
-        return None
     with _lock:
+        db = _db()
+        if db is None:
+            return None
         try:
             row = db.execute("SELECT mtime, size, sha FROM file_sha WHERE path=?",
                              (path,)).fetchone()

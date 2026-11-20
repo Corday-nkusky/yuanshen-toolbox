@@ -158,17 +158,20 @@ def main():
     win.update()
     checks.append(("连续断网只试 3 条就停", win._up_fail == 3))
 
-    # 上传期间的互斥：重扫 / 退出登录应被挡下，相关按钮应禁用
+    # 上传期间的互斥：重扫 / 退出登录 / 改路径应被挡下，相关按钮应禁用
     win._up_running = True
     win.start_scan()
     win.do_logout()
     guards = ("上传进行中" in win.lbl_status.cget("text") and not win._scanning)
+    win.open_paths()
+    paths_guard = "上传进行中" in win.lbl_status.cget("text")
     win._set_up_enabled(False)
-    buttons = not win.btn_logout._enabled and not win.btn_paths._enabled
+    buttons = not win.btn_logout._enabled
     win._set_up_enabled(True)
     win._up_running = False
     checks += [("上传中禁止重扫/退出登录", guards),
-               ("上传中禁用退出登录/路径按钮", buttons)]
+               ("上传中设置菜单里的改路径同样被挡", paths_guard),
+               ("上传中禁用退出登录按钮", buttons)]
 
     # 横幅上的「启动元扫雷」：点击有绑定；已经在跑时点了不重复启动
     bound = bool(win.banner.tag_bind("b_play", "<Button-1>"))
@@ -308,6 +311,7 @@ def main():
     class _Menu:
         def __init__(self, master=None, tearoff=0):
             self.items = []
+            self.destroyed = False
             made.append(self)
 
         def add_command(self, label, command):
@@ -331,6 +335,9 @@ def main():
         def grab_release(self):
             pass
 
+        def destroy(self):
+            self.destroyed = True
+
     class _Evt:
         x_root = y_root = 100
         y = 0
@@ -346,10 +353,85 @@ def main():
     finally:
         rec.tv.identify_row = real_identify
         A.tk.Menu = real_menu
+    checks += [("右键菜单弹完就 destroy（不漏控件）",
+                bool(made) and all(m.destroyed for m in made))]
+    import inspect
+    sig = inspect.signature(A.DailyDialog.set_status)
+    checks += [("明细对话框 set_status 接得住 hold / transient（复制路径不崩）",
+                "hold" in sig.parameters and "transient" in sig.parameters)]
     labels = made[0].items if made else []
     checks += [("右键菜单：详细信息 / 播放 / 复制路径 / 打开所在文件夹",
                 labels[:3] == ["详细信息", "-", "用元扫雷播放"]
                 and "复制路径" in labels and "打开所在文件夹" in labels)]
+
+    # 设置菜单：不常用操作收进去，强无猜 / 固定基准两个偏好项要在
+    real_menu2, made2 = A.tk.Menu, []
+
+    class _Menu2:
+        def __init__(self, master=None, tearoff=0):
+            self.items = []
+            made2.append(self)
+
+        def add_command(self, label, command, state=None):
+            self.items.append(label)
+
+        def add_checkbutton(self, label, variable=None, command=None):
+            self.items.append(label)
+
+        def add_radiobutton(self, label, variable=None, value=None, command=None):
+            self.items.append(label)
+
+        def add_cascade(self, label, menu=None):
+            self.items.append(label)
+
+        def add_separator(self):
+            self.items.append("-")
+
+        def tk_popup(self, x, y):
+            pass
+
+        def grab_release(self):
+            pass
+
+        def destroy(self):
+            pass
+
+    A.tk.Menu = _Menu2
+    try:
+        win.open_settings()
+    finally:
+        A.tk.Menu = real_menu2
+    slabels = made2[0].items if made2 else []
+    ng_labels = made2[1].items if len(made2) > 1 else []
+    checks += [("设置菜单收进了强无猜子菜单",
+                any("强无猜" in s for s in slabels)),
+               ("强无猜子菜单有关闭/进榜才传/全部上传",
+                ng_labels == ["关闭", "进榜才传", "全部上传"]),
+               ("设置菜单收进了固定 LSF 基准",
+                any("固定 LSF 基准" in s for s in slabels)),
+               ("设置菜单弹完就 destroy", bool(made2))]
+
+    # 强无猜范围：选择要落盘，且不动标准模式的范围
+    ng_before = A.load_config().get("ng_scope", None)
+    real_tick2 = win._auto_tick
+    win._auto_tick = lambda: None
+    win.ng_scope_var.set("all")
+    win.toggle_ng_scope()
+    ng_all = win._ng_scope == "all" and A.load_config().get("ng_scope") == "all"
+    win.ng_scope_var.set("top")
+    win.toggle_ng_scope()
+    ng_top = win._ng_scope == "top" and A.load_config().get("ng_scope") == "top"
+    win.ng_scope_var.set("")
+    win.toggle_ng_scope()
+    ng_off = win._ng_scope == "" and A.load_config().get("ng_scope") == ""
+    win._auto_tick = real_tick2
+    if ng_before is None:
+        A.save_config(ng_scope="")
+    else:
+        A.save_config(ng_scope=ng_before)
+    checks += [("强无猜「全部上传」会记住", ng_all),
+               ("强无猜「进榜才传」会记住", ng_top),
+               ("强无猜「关闭」会记住", ng_off)]
 
     win.destroy()
     journal.clear()

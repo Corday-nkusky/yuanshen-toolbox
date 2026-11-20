@@ -222,7 +222,7 @@ def test_detail():
     check("详细版与总结卡同宽（手机上缩放比一致）",
           img.size[0] == plain.size[0] ==
           int((summary.D_W + 2 * summary._Sheet.MARGIN) * summary.SCALE))
-    check("详细版比总结卡高（多了分布与极值两块）",
+    check("详细版比总结卡高（多了状态与散点等块）",
           img.size[1] > plain.size[1] + 300)
     m = summary._Sheet.MARGIN * summary.SCALE
     check("详细版四角仍是页底色", img.getpixel((0, 0)) == _rgb(summary.PAGE_BG)
@@ -265,16 +265,17 @@ def test_meta_text():
 
 def test_helpers():
     check("中位数取中间两个的平均", abs(summary._median([1, 2, 3, 10]) - 2.5) < 1e-9)
-    check("空列表的中位数是 0", summary._median([]) == 0.0)
-    # 走势图必须按时间正序画，而 daily_games 给的是倒序
+    check("空列表的中位数是 None（调用方写「—」）", summary._median([]) is None)
+    check("中位数不过滤 0（相对平时的 0 是合法值）",
+          summary._median([-0.1, 0.0, 0.5]) == 0.0)
+    # 逐局列表与节奏必须按时间正序，而 daily_games 给的是倒序
     g = [{"t0": 300.0}, {"t0": 100.0}, {"t0": 200.0}]
     check("走势按开始时刻升序", [x["t0"] for x in summary._by_time(g)]
           == [100.0, 200.0, 300.0])
 
 
-def test_detail_blocks():
-    """详细版真的多画了东西 —— 数调用，不数像素：版式改了也不会误红。"""
-    names = ("_trend", "_hist_bars", "_rows_fast", "_rows_stnb")
+def _wrap_calls(names, fn):
+    """数绘图件被调了几次：版式改了也不会误红（不数像素）。"""
     calls = dict((n, 0) for n in names)
     orig = dict((n, getattr(summary, n)) for n in names)
     for n in names:
@@ -283,42 +284,323 @@ def test_detail_blocks():
             return orig[_n](*a, **kw)
         setattr(summary, n, wrap)
     try:
-        summary.levels_detail_png([("e", "高级", row(games=12))],
-                                  {"e": _games(12)}, "0.28.0", "2026-11-15")
+        fn()
     finally:
         for n in names:
             setattr(summary, n, orig[n])
-    check("详细版画了两张走势（用时 + stnb）", calls["_trend"] == 2)
-    check("详细版画了分布", calls["_hist_bars"] == 1)
-    check("详细版两栏极值：最快 5 局 + stnb 最低 5 局",
-          calls["_rows_fast"] == 1 and calls["_rows_stnb"] == 1)
+    return calls
 
-    # 只有一局：走势与分布都画不出来，只剩「全部 N 局」那一栏，别硬凑两栏
-    calls = dict((n, 0) for n in names)
-    for n in names:
-        def wrap2(*a, _n=n, **kw):
-            calls[_n] += 1
-            return orig[_n](*a, **kw)
-        setattr(summary, n, wrap2)
+
+def _seen_texts(fn):
+    """收集一张卡上写过的所有字符串（查块在不在、口径红线用）。"""
+    seen = []
+    orig = summary._Sheet.text
+
+    def rec(self, x, y, s, *a, **kw):
+        seen.append(s)
+        return orig(self, x, y, s, *a, **kw)
+    summary._Sheet.text = rec
     try:
-        summary.levels_detail_png([("e", "高级", row(games=1))],
-                                  {"e": _games(1)}, "0.28.0", "2026-11-15")
+        fn()
     finally:
-        for n in names:
-            setattr(summary, n, orig[n])
-    check("只有一局时不画走势（分布试了一下也放弃）",
-          calls["_trend"] == 0 and calls["_hist_bars"] <= 1)
-    check("只有一局时只出一栏（不重复列同一局）",
-          calls["_rows_fast"] == 1 and calls["_rows_stnb"] == 0)
+        summary._Sheet.text = orig
+    return seen
 
-    # stnb 那一栏按 stnb 升序挑，不是按用时挑
-    games = [{"time": 10.0, "stnb": 90.0}, {"time": 30.0, "stnb": 10.0},
-             {"time": 20.0, "stnb": 50.0}]
-    check("stnb 最低 5 局按 stnb 升序挑",
-          [g["stnb"] for g in summary._pick(games, "stnb")] == [10.0, 50.0, 90.0])
-    check("缺 stnb 的局直接跳过",
-          summary._pick([{"time": 1.0}, {"time": 2.0, "stnb": 3.0}], "stnb") ==
-          [{"time": 2.0, "stnb": 3.0}])
+
+def _day_games(n, day="2026-11-15", bv0=100, base=20.0, step=0.5):
+    """造 n 局当天局（e 级门槛 100 BV 起）。"""
+    t0 = datetime.strptime(day, "%Y-%m-%d").timestamp() + 21 * 3600
+    return [{"time": base + step * i, "bv": bv0 + 3 * i, "style": "nf",
+             "t0": t0 + i * 60, "level": "e"} for i in range(n)]
+
+
+def _hist_games(gs, day="2026-11-01", copies=(1.15, 1.25, 1.3)):
+    """每个 BV 造几局更慢的历史局：中位线 / PB / 纪录都有得算。"""
+    t0 = datetime.strptime(day, "%Y-%m-%d").timestamp() + 21 * 3600
+    out = []
+    for i, g in enumerate(gs):
+        for k, mul in enumerate(copies):
+            out.append(dict(g, time=g["time"] * mul,
+                            t0=t0 + (i * len(copies) + k) * 60))
+    return out
+
+
+def test_detail_blocks():
+    """v4 的块：散点 / 最快榜 / 指标最佳 / 逐局 / 节奏，按局数退化。"""
+    names = ("_scatter", "_rows_fast", "_highlights", "_rows_all", "_segments")
+    games = _day_games(12)
+    calls = _wrap_calls(names, lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=12))], {"e": games}, "0.36.0", "2026-11-15"))
+    check("12 局无历史：散点 + 逐局列表，没有榜与节奏",
+          calls["_scatter"] == 1 and calls["_rows_all"] == 1
+          and calls["_rows_fast"] == 0 and calls["_highlights"] == 0
+          and calls["_segments"] == 0)
+
+    games = _day_games(16)
+    hist = games + _hist_games(games)
+    calls = _wrap_calls(names, lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=16))], {"e": games}, "0.36.0", "2026-11-15",
+        all_games=hist))
+    check("16 局有历史：散点 + 最快榜 + 指标最佳 + 节奏，不逐局列",
+          calls["_scatter"] == 1 and calls["_rows_fast"] == 1
+          and calls["_highlights"] == 1 and calls["_segments"] == 1
+          and calls["_rows_all"] == 0)
+
+    games = _day_games(1)
+    calls = _wrap_calls(names, lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=1))], {"e": games}, "0.36.0", "2026-11-15"))
+    check("只有一局：不画散点，只逐局列一次",
+          calls["_scatter"] == 0 and calls["_rows_all"] == 1
+          and calls["_rows_fast"] == 0 and calls["_highlights"] == 0)
+
+
+def test_detail_v4():
+    """v4 的口径：三指标、扫雷日窗口、门槛、往日不偷看未来、红线。"""
+    pool = [{"bv": 100, "time": 10.0, "stnb": 50.0},
+            {"bv": 120, "time": 15.0, "stnb": 40.0}]
+    check("_best：time 取最小，bvs / stnb 取最大",
+          summary._best(pool, "time") == 10.0
+          and summary._best(pool, "bvs") == 10.0
+          and summary._best(pool, "stnb") == 50.0)
+    check("_best 空池返回 None（调用方写「—」）", summary._best([], "time") is None)
+    check("_mean 跳过 None、空列表返回 None",
+          summary._mean([1.0, None, 3.0]) == 2.0 and summary._mean([]) is None)
+    check("_metric：bvs = BV ÷ 用时", summary._metric(pool[0], "bvs") == 10.0)
+    gs = [{"bv": 100, "time": 10.0 + d,
+           "t0": datetime(2026, 11, 1 + d, 21, 0, 0).timestamp()}
+          for d in range(9)]
+    w = summary._play_window(gs)
+    check("窗口只取最近 7 个扫雷日（第 8、9 天不进）",
+          len(w) == 7 and min(core.day_text(g["t0"]) for g in w) == "2026-11-03")
+    check("中位线按 BV 取中位", summary._med_curve(
+        [{"bv": 100, "time": t} for t in (10.0, 12.0, 14.0)])[100] == 12.0)
+    # 纪录门槛：该 BV 累计不足 3 局不算纪录（第一次打这个 BV 不算破纪录）
+    today = [{"bv": 100, "time": 9.0}]
+    past2 = [{"bv": 100, "time": 10.0}]
+    hist2 = today + past2
+    hist3 = hist2 + [{"bv": 100, "time": 11.0}]
+    check("BV 累计不足 3 局不算纪录",
+          not summary._record_bvs(today, summary._pb_curve(past2), hist2))
+    check("BV 累计 ≥3 局且今天最快才算纪录",
+          summary._record_bvs(today, summary._pb_curve(past2), hist3) == {100})
+    tie = [{"bv": 100, "time": 10.0}]
+    check("平历史最快不算刷新纪录",
+          not summary._record_bvs(tie, summary._pb_curve(past2),
+                                  tie + past2 + past2))
+    first = [{"bv": 100, "time": 9.0 + i} for i in range(3)]
+    check("首日打这个 BV 满 3 局也不算纪录（没有历史可破）",
+          not summary._record_bvs(first, {}, first))
+    check("中位局保留 0（正好等于平时）",
+          summary._typical([{"bv": 100, "time": t}
+                            for t in (9.0, 10.0, 15.0)], {100: 10.0}) == 0.0)
+
+    # 退化边界：2/7 逐局、8/14 散点无节奏、15 全块
+    for n, want_scatter, want_rhythm in ((2, False, False), (7, False, False),
+                                         (8, True, False), (14, True, False),
+                                         (15, True, True)):
+        gs = _day_games(n)
+        seen = _seen_texts(lambda: summary.levels_detail_png(
+            [("e", "高级", row(games=n))], {"e": gs}, "0.36.0", "2026-11-15"))
+        check("%d 局：散点%s、节奏%s" % (n, "出" if want_scatter else "不出",
+                                        "出" if want_rhythm else "不出"),
+              ("BV × 用时" in seen) == want_scatter
+              and ("节奏" in seen) == want_rhythm)
+        check("%d 局：hero 位一直在" % n, "今天最好一局" in seen)
+
+    # 无历史 vs 有历史：状态表与摘要差的有无
+    gs = _day_games(12)
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=12))], {"e": gs}, "0.36.0", "2026-11-15"))
+    check("不传全量历史：不出状态表，也不炸", "近 7 扫雷日" not in seen)
+    hist = gs + _hist_games(gs)
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=12))], {"e": gs}, "0.36.0", "2026-11-15",
+        all_games=hist))
+    check("有历史：三指标表与中位局摘要差都出",
+          "近 7 扫雷日" in seen and "3BV/s" in seen and "stnb" in seen
+          and any("中位局比近 7 扫雷日" in s for s in seen))
+    check("有纪录时散点图例带空心环说明",
+          any("○ 新纪录" in s for s in seen))
+    check("小字红线：整卡没有「跨度 / 小时 / 分 / 历时」",
+          not any(w in s for s in seen for w in ("跨度", "小时", "分", "历时")))
+
+    # 慢榜已删：16 局出指标最佳，不再列「离自己 PB 最远」
+    gs = _day_games(16)
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=16))], {"e": gs}, "0.36.0", "2026-11-15",
+        all_games=gs + _hist_games(gs)))
+    check("16 局：bvs / stnb 今日最佳在，慢榜不在",
+          "bvs 最佳" in seen and "stnb 最佳" in seen
+          and not any("离自己 PB 最远" in s for s in seen)
+          and not hasattr(summary, "_rows_slow"))
+
+    # 指标 PB：三个指标各算各的，摘要行报刷新了哪几个
+    today = [dict(_day_games(1, bv0=150, base=55.0)[0], stnb=60.0)]
+    hist = today + [dict(today[0], time=60.0, stnb=50.0,
+                         t0=today[0]["t0"] - 86400 * 14)]
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=1))], {"e": today}, "0.36.0", "2026-11-15",
+        all_games=hist))
+    check("三指标 PB 各算各的（time / bvs / stnb 都刷新就都报）",
+          "刷新全期 PB：time / bvs / stnb" in seen)
+
+    # 往日的卡不偷看未来：明天更快的局不许进 PB 徽章 / 窗口
+    future = dict(today[0], time=50.0, t0=today[0]["t0"] + 86400)
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=1))], {"e": today}, "0.36.0", "2026-11-15",
+        all_games=hist + [future]))
+    check("往日卡 PB 徽章用今天之前的原 PB（60.000，不是未来的 50.000）",
+          "新级别 PB · 原 60.000" in seen
+          and not any("50.000" in s for s in seen))
+
+    # 级别 PB 门槛：4 BV 的 0.8 s 不许当参照
+    today = _day_games(1, bv0=150, base=55.0)
+    hist = today + [dict(today[0], bv=4, time=0.8,
+                         t0=today[0]["t0"] - 86400 * 14),
+                    dict(today[0], time=60.0,
+                         t0=today[0]["t0"] - 86400 * 14)]
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=1))], {"e": today}, "0.36.0", "2026-11-15",
+        all_games=hist))
+    check("新级别 PB 徽章用 ≥门槛的原 PB（60.000，不是 0.800）",
+          "新级别 PB · 原 60.000" in seen and "0.800" not in seen)
+    today = _day_games(1, bv0=50, base=20.0)
+    hist = today + [dict(today[0], bv=150, time=60.0,
+                         t0=today[0]["t0"] - 86400 * 14)]
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=1))], {"e": today}, "0.36.0", "2026-11-15",
+        all_games=hist))
+    check("最好一局低于门槛时只标 PB 与门槛，不报跨盘面差",
+          "级别 PB 60.000（≥100 BV）" in seen)
+
+    # 节奏段间比中位（不是平均）：一段里 [-10%, -10%, +90%] 应报快 10%
+    sh = summary._Sheet(summary.D_W, with_mascot=False)
+    gs = []
+    t0 = datetime(2026, 11, 15, 21, 0, 0).timestamp()
+    ratios = [-0.1, -0.1, 0.9] + [0.0] * 9
+    for i, d in enumerate(ratios):
+        gs.append({"bv": 100, "time": 10.0 * (1 + d), "t0": t0 + i * 60})
+    seen = _seen_texts(lambda: summary._segments(
+        sh, 30, 0, 480, gs, "#8f6ce8", {100: 10.0}))
+    check("节奏段内取中位（离群局不带偏整段）",
+          "比平时快 10%" in seen and "比平时慢 23%" not in seen)
+
+    # 有历史的整卡：宽度不变、字不溢边
+    gs = _day_games(16)
+    img = summary.levels_detail_png(
+        [("e", "高级", row(games=16))], {"e": gs}, "0.36.0", "2026-11-15",
+        all_games=gs + _hist_games(gs), with_mascot=False)
+    check("v4 整卡与总结卡同宽",
+          img.size[0] == int((summary.D_W + 2 * summary._Sheet.MARGIN)
+                             * summary.SCALE))
+    check("v4 整卡边缘没有字溢出去", not _ink_near_edge(img, 3))
+
+
+def test_pb_line():
+    """散点上的 PB 折线：只含今天之前的局，新纪录点落在线下方。"""
+    def scatter_args(fn):
+        got = {}
+        orig = summary._scatter
+
+        def wrap(*a, **kw):
+            got["a"] = a
+            return orig(*a, **kw)
+        summary._scatter = wrap
+        try:
+            fn()
+        finally:
+            summary._scatter = orig
+        return got.get("a")
+
+    gs = _day_games(16)
+    hist = gs + _hist_games(gs)
+    seen = []
+    orig_text = summary._Sheet.text
+
+    def rec(self, x, y, s, *a, **kw):
+        seen.append(s)
+        return orig_text(self, x, y, s, *a, **kw)
+    summary._Sheet.text = rec
+    try:
+        args = scatter_args(lambda: summary.levels_detail_png(
+            [("e", "高级", row(games=16))], {"e": gs}, "0.36.0", "2026-11-15",
+            all_games=hist))
+    finally:
+        summary._Sheet.text = orig_text
+    pb_ref, recs = args[9], args[8]
+    legend = next(s for s in seen if s.startswith("● 今天"))
+    check("有历史：图例写「PB 线」（不写「今天之前」）",
+          "━ PB 线" in legend and "今天之前" not in legend)
+    check("PB 线逐 BV 等于今天之前的全期最快",
+          pb_ref and all(
+              abs(pb_ref[int(g["bv"])][0] - g["time"] * 1.15) < 1e-9
+              for g in gs))
+    check("新纪录点都在 PB 线下方（破墙看得见）",
+          recs and all(pb_ref[bv][0] > min(
+              g["time"] for g in gs if int(g["bv"]) == bv) for bv in recs))
+    check("脚注写明 PB 线口径", any("PB 线 = 今天之前" in s for s in seen))
+
+    seen = _seen_texts(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=16))], {"e": gs}, "0.36.0", "2026-11-15"))
+    args = scatter_args(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=16))], {"e": gs}, "0.36.0", "2026-11-15"))
+    legend = next(s for s in seen if s.startswith("● 今天"))
+    check("无历史：不画 PB 线，图例也不提",
+          not args[9] and "PB 线" not in legend)
+
+    future = dict(gs[0], time=1.0, t0=gs[0]["t0"] + 86400 * 2)
+    args = scatter_args(lambda: summary.levels_detail_png(
+        [("e", "高级", row(games=16))], {"e": gs}, "0.36.0", "2026-11-15",
+        all_games=hist + [future]))
+    check("未来的更快局不进 PB 线",
+          abs(args[9][int(gs[0]["bv"])][0] - gs[0]["time"] * 1.15) < 1e-9)
+
+
+def test_clipboard_free():
+    """剪贴板失败路径必须 GlobalFree，否则一次漏整张 DIB。"""
+    import ctypes
+    from types import SimpleNamespace
+    img = summary.daily_png(row(), "e", "高级", "t")
+    real_windll, real_memmove = ctypes.WinDLL, ctypes.memmove
+    for lock_ok, set_ok, want_free in ((False, True, 1), (True, False, 1),
+                                       (True, True, 0)):
+        calls = []
+
+        def fn(tag, ret):
+            def f(*a):
+                calls.append(tag)
+                return ret
+            return f
+        k = SimpleNamespace(GlobalAlloc=fn("alloc", 7),
+                            GlobalLock=fn("lock", 1 if lock_ok else 0),
+                            GlobalUnlock=fn("unlock", 1),
+                            GlobalFree=fn("free", 1))
+        u = SimpleNamespace(OpenClipboard=fn("open", 1),
+                            EmptyClipboard=fn("empty", 1),
+                            SetClipboardData=fn("set", 1 if set_ok else 0),
+                            CloseClipboard=fn("close", 1))
+        ctypes.WinDLL = lambda name, use_last_error=False: (
+            k if name == "kernel32" else u)
+        ctypes.memmove = fn("memmove", 0)
+        try:
+            ok = summary.copy_image(img)
+        finally:
+            ctypes.WinDLL, ctypes.memmove = real_windll, real_memmove
+        check("lock=%s set=%s：返回%s且 GlobalFree %d 次"
+              % (lock_ok, set_ok, lock_ok and set_ok, want_free),
+              ok == (lock_ok and set_ok) and calls.count("free") == want_free)
+
+
+def test_sheet_off():
+    """排版坐标相对卡片左上角：x 与 y 一样要加左边距，不能整卡左移。"""
+    sh = summary._Sheet(summary.D_W, with_mascot=False)
+    sh.rect(0, 0, 10, 10, (255, 0, 0))
+    img = sh.render(40)
+    m = summary._px(summary._Sheet.MARGIN)
+    from PIL import ImageColor
+    check("卡片原点落在左边距上（x 不漏 off）",
+          img.getpixel((m + 2, m + 2)) == (255, 0, 0)
+          and img.getpixel((2, m + 2)) == ImageColor.getrgb(summary.PAGE_BG))
 
 
 def test_none_hooks():
@@ -333,6 +615,10 @@ def main():
     test_mascot()
     test_accent()
     test_detail_blocks()
+    test_detail_v4()
+    test_pb_line()
+    test_clipboard_free()
+    test_sheet_off()
     test_none_hooks()
     test_clipboard()
     bad = sum(1 for _l, ok in checks if not ok)

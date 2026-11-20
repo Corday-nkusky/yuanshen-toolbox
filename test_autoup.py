@@ -106,6 +106,12 @@ check("只传全PB 缺网站 PB -> 拒绝判定",
       autoup.ready(("pb",), site_pb=[], site_top={}) is False)
 check("只传全PB 有网站 PB -> 可以判定",
       autoup.ready(("pb",), site_pb=[site_pb("i", 34, 5310)]))
+check("新账号成绩合法为空：读成功就可判（不被真值判断卡死）",
+      autoup.ready(("pb", "top"), site_pb=[], site_top={},
+                   pb_ok=True, top_ok=True) is True)
+check("读失败 / 没读到：ok=False 仍拒绝判定",
+      autoup.ready(("pb", "top"), site_pb=[], site_top={},
+                   pb_ok=False, top_ok=False) is False)
 
 # ---------------------------------------------------------------- 新局识别
 g_old = game("i", 34, 5500)

@@ -45,6 +45,37 @@ def test_wall_epoch():
           core.clock_text(core._wall_epoch(int(want * 1e6), "ms")) == "17:33:18")
     check("坏值一律 None（0 / None / 非数字）",
           [core._wall_epoch(v, "arb") for v in (0, None, "", "x")] == [None] * 4)
+    v = core._wall_epoch(1e6, "arb")
+    check("1970 年初的损坏墙钟不抛 OSError（退回 None 或负 epoch）",
+          v is None or v < 0)
+
+
+def test_cache_load_flag():
+    """读库失败不能把空缓存永久认定成「已加载」。"""
+    import sqlite3
+    import cache
+    saved_loaded, saved_ram = cache._loaded, cache._ram
+    real_db = cache._db
+
+    class Boom:
+        def execute(self, *a):
+            raise sqlite3.Error("busy")
+
+    class Ok:
+        def execute(self, *a):
+            return iter(())
+    try:
+        cache._loaded, cache._ram = False, {}
+        cache._db = lambda: Boom()
+        cache._load()
+        first = cache._loaded
+        cache._db = lambda: Ok()
+        cache._load()
+        check("缓存读失败保持未加载，下次重试成功",
+              first is False and cache._loaded is True)
+    finally:
+        cache._db = real_db
+        cache._loaded, cache._ram = saved_loaded, saved_ram
 
 
 def test_samples():
@@ -127,6 +158,7 @@ def test_daily_rows():
 
 def main():
     test_wall_epoch()
+    test_cache_load_flag()
     test_samples()
     test_daily_rows()
     bad = sum(1 for _l, ok in checks if not ok)

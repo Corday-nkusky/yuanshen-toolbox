@@ -23,7 +23,7 @@ import hashlib
 import heapq
 import math
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import cache as _cache
 
@@ -56,6 +56,9 @@ VIDEO_LEVEL = {3: "b", 4: "i", 5: "e"}
 # 与元扫雷自己写进文件名的那个数字同源（见 Metasweeper 的 cal_evf_filename）。
 # 本工具只统计标准模式：别的玩法难度不可比，混进 PB 就是把账算错。
 STD_MODE = 0
+
+# 强无猜（QWC）：不参与任何统计，但网站有独立的榜，可以单独上传。
+NG_MODE = 6
 
 # 自定义盘面在元扫雷录像文件名里的级别前缀（b_ / i_ / e_ 之外的那个）
 CUSTOM_PREFIX = "c_"
@@ -146,9 +149,11 @@ def _wall_epoch(us, src):
             dt = datetime.fromtimestamp(us / 1e6, timezone.utc).replace(tzinfo=None)
         else:
             dt = datetime.fromtimestamp(us / 1e6)
+        # naive 墙钟转 epoch 走本机 mktime：1970 年初的损坏时间戳在 Windows
+        # 上会抛 OSError，也要兜住退回 mtime，不能整局丢。
+        return dt.timestamp()
     except (OverflowError, OSError, ValueError):
         return None
-    return dt.timestamp()
 
 
 def day_text(t0):
@@ -259,6 +264,10 @@ def parse_filename(fn):
         bv = int(raw_bv)
         bvs_file = float(raw_bvs)
     except ValueError:
+        return None
+    # float("nan") / float("inf") 不抛 ValueError，而 nan <= 0 恒 False，
+    # 会穿透扫描过滤污染均值与排序。
+    if not (math.isfinite(time) and math.isfinite(bvs_file)):
         return None
     fail = rest.endswith("_fail")
     if fail:
@@ -498,6 +507,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
 
     t0 = _time.perf_counter()
     games = []
+    ng_games = []                       # 强无猜：单独收，不进任何统计
     seen_paths = set()
     _cache.begin()
     info = {
@@ -565,6 +575,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     newest_ms = mt_ns
 
                 vid = None
+                is_ng = False
                 if deep:
                     vid = _cache.get(path, mt_ns, size)
                     stale = vid is not None and "t0" not in vid
@@ -592,8 +603,11 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                         info["fail_skipped"] += 1
                         continue
                     if rec["mode"] != str(STD_MODE):
-                        info["non_std"] += 1     # 无猜、可猜、win7 这类变体玩法
-                        continue
+                        if rec["mode"] == str(NG_MODE):
+                            is_ng = True         # 强无猜：照常解析，只是另收一桶
+                        else:
+                            info["non_std"] += 1  # 无猜、可猜、win7 这类变体玩法
+                            continue
                 else:
                     # 阿比特：能读内容就以内容为准，读不出才退回文件名。
                     # 内容里已经有 level 时不必再跑文件名正则 —— 2 万局实测省
@@ -690,7 +704,10 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                             info["level_conflict"].append(fn)
 
                 info["by_src"][src] += 1
-                games.append(rec)
+                if is_ng:
+                    ng_games.append(rec)
+                else:
+                    games.append(rec)
             if hit:
                 info["dirs"].add(dirpath)
 
@@ -703,6 +720,9 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
         info["by_src"] = {"ms": 0, "arb": 0}
         for rec in games:
             info["by_src"][rec["src"]] = info["by_src"].get(rec["src"], 0) + 1
+        ng_games, _ng_dup = dedupe_games(ng_games)
+    info["ng_games"] = ng_games
+    info["ng_count"] = len(ng_games)
     if deep:
         info["cache_written"] = _cache.commit()
         info["cache"] = _cache.stats()
@@ -1296,14 +1316,14 @@ def lsf_row_value(row, level, metric):
         return 0.0
 
 
-def _lsf_mean(rows, level, metric):
-    """前五均值。Time 缺项补 999999 毫秒，Bvs/Stnb 补 0，始终除以五。"""
+def _lsf_mean(rows, level, metric, top_n=LSF_TOP):
+    """前 N 均值。Time 缺项补 999999 毫秒，Bvs/Stnb 补 0，始终除以 N。"""
     vals = [v for v in (lsf_row_value(r, level, metric)
-                        for r in (rows or [])[:LSF_TOP]) if v > 0]
-    miss = LSF_TOP - len(vals)
+                        for r in (rows or [])[:top_n]) if v > 0]
+    miss = top_n - len(vals)
     if metric == "time":
-        return (sum(vals) + miss * LSF_MISS_TIMEMS) / LSF_TOP
-    return sum(vals) / LSF_TOP
+        return (sum(vals) + miss * LSF_MISS_TIMEMS) / top_n
+    return sum(vals) / top_n
 
 
 def lsf_counts(rows, level, metric):
@@ -1312,8 +1332,8 @@ def lsf_counts(rows, level, metric):
                if lsf_row_value(r, level, metric) > 0)
 
 
-def _lsf_push(keep, seq, game, bv_min):
-    """把一局塞进它该进的几个「前五」小顶堆，返回新的序号。
+def _lsf_push(keep, seq, game, bv_min, cap=LSF_TOP):
+    """把一局塞进它该进的几个「前 N」小顶堆，返回新的序号。
 
     序号只用来在同分时给堆一个稳定的先后，必须单调递增 —— 撞号会让
     heapq 退化到比较第三项（局本身），那是个 dict，直接 TypeError。
@@ -1332,22 +1352,22 @@ def _lsf_push(keep, seq, game, bv_min):
             heap = keep.setdefault((mode, level, metric), [])
             seq += 1
             item = (-score, seq, game)
-            if len(heap) < LSF_TOP:
+            if len(heap) < cap:
                 heapq.heappush(heap, item)
             elif score < -heap[0][0]:
                 heapq.heapreplace(heap, item)
     return seq
 
 
-def _lsf_heaps(games, bv_min):
-    """每项维护一个「前五」小顶堆。堆顶是当前最差的一局（-score 最小）。
+def _lsf_heaps(games, bv_min, cap=LSF_TOP):
+    """每项维护一个「前 N」小顶堆。堆顶是当前最差的一局（-score 最小）。
 
     返回 ``(keep, seq)``；seq 是最后用掉的序号，接着往里塞局时要往后接。
     """
     keep = {}
     seq = 0
     for game in games or ():
-        seq = _lsf_push(keep, seq, game, bv_min)
+        seq = _lsf_push(keep, seq, game, bv_min, cap)
     return keep, seq
 
 
@@ -1389,15 +1409,15 @@ def lsf_gains(games, anchors, rows, bv_min=None):
     return out
 
 
-def lsf_top5(games, site_top=None, site_details=None, bv_min=None):
-    """18 项各自的前五局（本地 + 网站合并，按指标排好序，好的在前）。
+def lsf_top5(games, site_top=None, site_details=None, bv_min=None, top_n=LSF_TOP):
+    """18 项各自的前 N 局（本地 + 网站合并，按指标排好序，好的在前）。
 
     返回 ``{(mode, level, metric): [局, ...]}``；每行带 ``source`` 标来源。
     准入与站点一致：官方 3BV 门槛（不受页面上「BV 下限」输入框影响）。
     """
     bv_min = bv_min or BV_MIN_DEFAULT
     site_map = site_top_rows(site_top, site_details) if site_top else {}
-    keep, _seq = _lsf_heaps(games, bv_min)
+    keep, _seq = _lsf_heaps(games, bv_min, top_n)
     tops = {}
     for mode in ("std", "nf"):
         cat = "nf" if mode == "nf" else "all"
@@ -1409,7 +1429,7 @@ def lsf_top5(games, site_top=None, site_details=None, bv_min=None):
                              if r.get("bv") is None
                              or r["bv"] >= bv_min.get(level, 0)]
                 tops[(mode, level, metric)] = merge_top_rows(
-                    local_rows, site_rows, metric)
+                    local_rows, site_rows, metric, limit=top_n)
     return tops
 
 
@@ -1495,6 +1515,41 @@ def lsf_report(games, site_top=None, site_details=None, anchors=None):
     }
 
 
+def lsf_sensitivity(games, site_top=None, site_details=None, anchors=None,
+                    windows=(1, 5, 25)):
+    """三档窗口的 LSF：只取最好 1 / 5 / 25 局，回答「分是靠几局运气撑的吗」。
+
+    顶档窗口建一次堆，小窗口从它的前缀切（merge_top_rows 已按指标排好序，
+    好的在前）；缺项按各窗口自己的大小补最差，与 top5 口径同规则。
+    返回 ``{窗口: {lsf, soft, et, grade, levels, nf_levels}}``；缺锚点返回 {}。
+    """
+    if not anchors:
+        return {}
+    windows = tuple(sorted({int(w) for w in windows if int(w) >= 1}))
+    if not windows:
+        return {}
+    tops = lsf_top5(games, site_top, site_details, top_n=max(windows))
+    et_std = anchor_value(anchors, "std:et")
+    et_nf = anchor_value(anchors, "nf:et")
+    out = {}
+    for n in windows:
+        means = {key: _lsf_mean(rows[:n], key[1], key[2], n)
+                 for key, rows in tops.items()}
+        soft = lsf_soft(means, anchors)
+        levels, nf_levels = {}, {}
+        for lv in LEVELS:
+            one, nf = soft["std:" + lv], soft["nf:" + lv]
+            levels[lv] = {"soft": one, "et": lsf_et(one, et_std, 100.0),
+                          "grade": lsf_grade(one, et_std, 100.0)}
+            nf_levels[lv] = {"soft": nf, "et": lsf_et(nf, et_nf, 100.0),
+                             "grade": lsf_grade(nf, et_nf, 100.0)}
+        out[n] = {"lsf": soft["lsf"], "soft": soft,
+                  "et": lsf_et(soft["lsf"], et_std),
+                  "grade": lsf_grade(soft["lsf"], et_std),
+                  "levels": levels, "nf_levels": nf_levels}
+    return out
+
+
 def summary(games, style=None):
     """每级汇总。"""
     out = {}
@@ -1516,6 +1571,38 @@ def summary(games, style=None):
             "fl": sum(1 for g in sub if g.get("nf") is False),
         }
     return out
+
+
+def pb_streak(games, level, bv, nf_only=False, today=None):
+    """这个 BV 的当前 PB 保持了几天、破上一条纪录用了几天。
+
+    返回 ``{"best", "set_date", "held", "gap"}``；没有局返回 None。
+    gap=None 表示这是该 BV 的第一条纪录。创纪录者 = 最早达到最快时间的那局；
+    日期用录像内录制时刻，缺时退回文件 mtime（与 daily_rows 同源）。
+    """
+    sub = [g for g in games or ()
+           if g.get("level") == level and int(g.get("bv") or 0) == int(bv)
+           and (not nf_only or g.get("nf") is True)
+           and (g.get("t0") or g.get("mtime") or 0) > 0]
+    if not sub:
+        return None
+    sub.sort(key=lambda g: (g.get("t0") or g.get("mtime") or 0))
+    best = min(float(g["time"]) for g in sub)
+    setter = next(g for g in sub if float(g["time"]) <= best + 1e-9)
+    d_set = datetime.fromtimestamp(setter.get("t0") or setter["mtime"]).date()
+    today = today or date.today()
+    prev = [g for g in sub
+            if (g.get("t0") or g.get("mtime") or 0)
+            < (setter.get("t0") or setter["mtime"])]
+    gap = None
+    if prev:
+        pbest = min(float(g["time"]) for g in prev)
+        psetter = next(g for g in prev if float(g["time"]) <= pbest + 1e-9)
+        d_prev = datetime.fromtimestamp(
+            psetter.get("t0") or psetter["mtime"]).date()
+        gap = (d_set - d_prev).days
+    return {"best": best, "set_date": d_set.isoformat(),
+            "held": (today - d_set).days, "gap": gap}
 
 
 def daily_rows(games, level=None):

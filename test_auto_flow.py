@@ -236,9 +236,16 @@ def main():
     before = win.lbl_auto_status.cget("text")
     win.site_pb = [{"level": 0, "bv": 1, "timems": 99999}]
     win.site_top = {"b": {"time": [99999]}}
+    # 与 _on_site_pb / _on_site_top 的落盘契约一致：读成功才有 uid 且 err 空
+    win.site_pb_uid = win.site_top_uid = 1
+    win.site_pb_err = win.site_top_err = ""
     win._auto_tick_once()
     check("成绩到了，状态行自己消失（不用切页）",
           bool(before) and not win.lbl_auto_status.cget("text"))
+    win.site_pb, win.site_top = [], {}
+    win._auto_tick_once()
+    check("新账号成绩合法为空：算读到，不永久卡「还没读到」",
+          not win.lbl_auto_status.cget("text"))
 
     win.destroy()
     print()

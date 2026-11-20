@@ -68,6 +68,30 @@ def test_classify():
     check("超时算 timeout", c(socket.timeout("timed out")) == "timeout")
     check("TimeoutError 也算 timeout", c(TimeoutError("x")) == "timeout")
     check("其它 OSError 不换路", c(OSError(13, "denied")) == "other")
+    check("10051 / 10065 不可达算 conn（请求没发出，可换路）",
+          c(OSError(10051, "x")) == "conn" and c(OSError(10065, "x")) == "conn")
+
+
+def test_store_atomic():
+    st = tmp_store()
+    st.data = {"session": "keep"}
+    st.save()
+    with open(st.path, encoding="utf-8") as fh:
+        before = fh.read()
+    real_replace = openms.os.replace
+
+    def boom(*a):
+        raise OSError("disk full")
+    openms.os.replace = boom
+    try:
+        st.data = {"session": "new"}
+        st.save()
+    finally:
+        openms.os.replace = real_replace
+    with open(st.path, encoding="utf-8") as fh:
+        after = fh.read()
+    check("写盘失败不毁原凭据（原子替换 + 清临时文件）",
+          after == before and not os.path.exists(st.path + ".tmp"))
 
 
 # ---------- 换路 ----------
@@ -192,6 +216,7 @@ def test_real():
 
 def main():
     test_classify()
+    test_store_atomic()
     test_switch()
     test_timeout_rules()
     test_modes()

@@ -172,12 +172,20 @@ class Store:
             return {}
 
     def save(self):
+        # 先写临时文件再原子替换：直接截断原文件的话，写一半断电 / 抛错
+        # 会把凭据毁成半截 json，load 得 {} 后再 save 就永久丢了。
+        tmp = self.path + ".tmp"
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as fh:
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self.data, fh, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+            os.replace(tmp, self.path)
+        except Exception as exc:
+            _LOG.warning("登录态写盘失败 %s：%s", self.path, exc)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     # --- 字段访问 ---
     def username(self):
@@ -394,8 +402,9 @@ class Client:
         if isinstance(reason, (TimeoutError, socket.timeout)):
             return "timeout"
         if isinstance(reason, OSError):
-            # 10061 连接被拒（Windows 上代理没开就是这个）、10051/10060/10065 等
-            if getattr(reason, "errno", None) == 10061:
+            # 10061 连接被拒（Windows 上代理没开就是这个）、
+            # 10051 网络不可达 / 10065 主机不可达：请求确定没发出，可以换路
+            if getattr(reason, "errno", None) in (10061, 10051, 10065):
                 return "conn"
             if "积极拒绝" in str(reason):
                 return "conn"
@@ -711,6 +720,19 @@ class Client:
         if isinstance(p, dict):
             return p
         raise OmsError("读取网站 Top5 失败（HTTP %s）" % status, status, p)
+
+    def ng_records(self, user_id):
+        """读该账号在站点的强无猜榜（mode=6）：普通 / NF 两个大榜的个人纪录。
+
+        返回 ``{"strict_ng": {bt, bb, it, ib, et, eb, sumt, sumb, ranks, ...},
+        "strict_ng_nf": {...}}``。六个单项 bt/it/et 是毫秒、bb/ib/eb 是 3BV/s，
+        没有成绩为 None。接口公开、限流 5 次/秒，一个请求拿全两榜。
+        """
+        status, p = self.get_json_retry(
+            "/api/speedranking/strict_ng/player/%d" % int(user_id))
+        if isinstance(p, dict):
+            return p
+        raise OmsError("读取强无猜榜失败（HTTP %s）" % status, status, p)
 
     def top_anchors(self):
         """读 18 个锚点：每个小榜前二十名 top5 均值的平均。

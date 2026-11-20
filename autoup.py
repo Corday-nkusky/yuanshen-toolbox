@@ -94,12 +94,16 @@ def pool(games, include_arb=True):
     return [g for g in (games or ()) if (g.get("src") or "ms") != "arb"]
 
 
-def ready(scopes, site_pb=None, site_top=None):
+def ready(scopes, site_pb=None, site_top=None, pb_ok=None, top_ok=None):
     """判定需要的**成绩对照数据**齐了没有；账号与录像列表不归这里管。
 
     涨分局缺网站 Top5 就**不能**判：``top_beats`` 在没有阈值时一律返回 True，
     会把「本地前五」全当成「新上榜」一口气传一堆。PB 两榜缺网站 PB 只是可能
     传了比网站慢的，但既然读 PB 只要一个请求，就一并要求，省额度。
+
+    「齐」= 读成功，**不是非空**：新账号网站成绩合法为空，用真值判断会把
+    自动上传永久卡死。调用方传 pb_ok / top_ok（读成功且无 err）；不传就退回
+    真值判断（老调用方 / 单测）。
 
     全量不对照任何成绩，所以这里恒为可判。它要等的是「当前账号的录像列表
     已到齐」，那是 App 的状态（``oms_loaded`` / ``oms_synced`` / 请求代次），
@@ -108,10 +112,14 @@ def ready(scopes, site_pb=None, site_top=None):
     scopes = set(normalize_scopes(scopes))
     if ALL in scopes:
         return True
-    if scopes & {"top", "top_nf"} and not site_top:
-        return False
-    if scopes & {"pb", "pb_nf"} and not site_pb:
-        return False
+    if scopes & {"top", "top_nf"}:
+        ok = bool(site_top) if top_ok is None else top_ok
+        if not ok:
+            return False
+    if scopes & {"pb", "pb_nf"}:
+        ok = bool(site_pb) if pb_ok is None else pb_ok
+        if not ok:
+            return False
     return True
 
 
@@ -375,6 +383,89 @@ def _top_text(prefix, lv_cn, metric, game, ms, rank, edge=None):
         bits.append("边缘 " + _val_text(metric, edge))
     tail = ("（%s）" % " · ".join(bits)) if bits else ""
     return "%s · %s %s %s%s" % (prefix, lv_cn, METRIC_CN[metric], val, tail)
+
+
+# ---------------------------------------------------------------- 强无猜
+# 强无猜（mode=6）在站点只有 strict_ng / strict_ng_nf 两个大榜，每榜六格
+# （初/中/高各自的最快 time + 最高 3BV/s）+ 总和，没有逐 BV 的 PB 榜。
+# 所以「全PB」落不了地，改成「进榜才传」：新局能刷新自己某一格的最好成绩
+# （或填上空格）才传。规则与标准大榜同口径（前端 SpeedRanking 的 saolei 条）：
+# 初级 time 需 3BV≥2、初级 3BV/s 需 ≥4，中级 ≥30，高级 ≥100。
+NG_ALL = "all"
+NG_TOP = "top"
+NG_BOARDS = ("strict_ng", "strict_ng_nf")
+# (级别, 指标) -> (榜内字段, 最低 3BV)
+NG_SLOTS = {
+    ("b", "time"): ("bt", 2), ("b", "bvs"): ("bb", 4),
+    ("i", "time"): ("it", 30), ("i", "bvs"): ("ib", 30),
+    ("e", "time"): ("et", 100), ("e", "bvs"): ("eb", 100),
+}
+
+
+def judge_ng(games, new_paths, scope, site_ng=None):
+    """强无猜新局里哪些值得传。scope: 'all' 全传 / 'top' 进榜才传。
+
+    返回 ``[{"path", "game", "why", "brief"}]``，结构与 ``judge`` 一致。
+    进榜才传：新局严格优于自己该格当前最好（同值不算 —— 站点同分优先更早
+    上传），或该格还空着。NF 局额外比 strict_ng_nf 榜。
+    """
+    if not new_paths or scope not in (NG_ALL, NG_TOP):
+        return []
+    games = [g for g in (games or ()) if g.get("path") in new_paths]
+    if scope == NG_ALL:
+        return [{"path": g["path"], "game": g,
+                 "why": ["强无猜 · 新局全部上传"], "brief": ["强无猜"]}
+                for g in games]
+    site_ng = site_ng or {}
+    out = []
+    for g in games:
+        pairs = _ng_explain(g, site_ng)
+        if pairs:
+            out.append({"path": g["path"], "game": g,
+                        "why": [full for _s, full in pairs],
+                        "brief": [short for short, _f in pairs]})
+    return out
+
+
+def _ng_explain(game, site_ng):
+    """进榜才传的理由：刷新了哪一格、原成绩多少。空列表 = 不值得传。"""
+    lv = game.get("level")
+    bv = int(game.get("bv") or 0)
+    ms = _ms(game)
+    bvs = _ms_value(game.get("bvs")) or 0.0
+    nf = bool(game.get("nf"))
+    lv_cn = core.LEVEL_CN.get(lv, lv or "?")
+    boards = ("strict_ng", "strict_ng_nf") if nf else ("strict_ng",)
+    out = []
+    for metric in ("time", "bvs"):
+        slot = NG_SLOTS.get((lv, metric))
+        if not slot:
+            continue
+        field, min_bv = slot
+        if bv < min_bv:
+            continue
+        val = ms if metric == "time" else bvs
+        # 普通榜优先；只有 NF 榜能进时标「强无猜·NF」
+        hit_board, cur = None, None
+        for board in boards:
+            c = (site_ng.get(board) or {}).get(field)
+            better = c is None or (val < c if metric == "time" else val > c)
+            if better:
+                hit_board, cur = board, c
+                break
+        if hit_board is None:
+            continue
+        prefix = "强无猜·NF" if hit_board == "strict_ng_nf" else "强无猜"
+        m_cn = METRIC_CN[metric]
+        v_txt = _val_text(metric, val)
+        if cur is None:
+            out.append(("%s %s 首次" % (prefix, m_cn),
+                        "%s · %s %s 首次进榜（%s）" % (prefix, lv_cn, m_cn, v_txt)))
+        else:
+            out.append(("%s %s" % (prefix, m_cn),
+                        "%s · %s %s %s（原 %s）"
+                        % (prefix, lv_cn, m_cn, v_txt, _val_text(metric, cur))))
+    return out
 
 
 # ---------------------------------------------------------------- 新局识别

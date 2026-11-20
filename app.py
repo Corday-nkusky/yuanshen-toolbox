@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.34.2"
+APP_VER = "0.37.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -256,6 +256,38 @@ def save_lsf_anchors(anchors):
     try:
         import json
         p = lsf_anchor_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"saved_at": int(time.time()), "anchors": anchors},
+                      fh, ensure_ascii=False)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
+def lsf_fixed_path():
+    return os.path.join(paths.data_dir(), "lsf-anchors-fixed.json")
+
+
+def load_lsf_fixed():
+    """固定基准：启用「固定 LSF 基准」那一刻冻结的锚点快照。"""
+    try:
+        import json
+        with open(lsf_fixed_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        anchors = data.get("anchors")
+        if isinstance(anchors, dict) and anchors:
+            return anchors, int(data.get("saved_at") or 0)
+    except Exception:
+        pass
+    return {}, 0
+
+
+def save_lsf_fixed(anchors):
+    try:
+        import json
+        p = lsf_fixed_path()
         os.makedirs(os.path.dirname(p), exist_ok=True)
         tmp = p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -727,6 +759,9 @@ class LsfCard(tk.Frame):
         self.lbl_grade = tk.Label(left, text="", bg=C_PANEL, fg=C_ACCENT3,
                                   font=FONT_UI_B)
         self.lbl_grade.pack(anchor="w")
+        self.lbl_sens = tk.Label(left, text="", bg=C_PANEL, fg=C_DIM,
+                                 font=FONT_SMALL)
+        self.lbl_sens.pack(anchor="w", pady=(sc(2), 0))
         self.pill_detail = Pill(left, "明细", command=self.open_detail,
                                 accent=C_ACCENT2, bg=C_PANEL, font=FONT_SMALL,
                                 padx=12, height=24)
@@ -771,6 +806,7 @@ class LsfCard(tk.Frame):
         if not local:
             self.lbl_value.config(text="—", fg=C_DIM)
             self.lbl_grade.config(text="")
+            self.lbl_sens.config(text="")
             for line in self.cells:
                 for val, sub in line:
                     val.config(text="—", fg=C_DIM)
@@ -787,6 +823,13 @@ class LsfCard(tk.Frame):
         if et:
             bits.append("et %.1f s" % et)
         self.lbl_grade.config(text=" · ".join(bits))
+        sens = local.get("sens") or {}
+        if 1 in sens and 25 in sens:
+            self.lbl_sens.config(
+                text="单局上限 %.1f · 25 局均值 %.1f"
+                     % (sens[1]["lsf"], sens[25]["lsf"]))
+        else:
+            self.lbl_sens.config(text="")
 
         for line, levels, total in (
                 (self.cells[0], local["levels"], soft["std:sum"]),
@@ -1239,6 +1282,7 @@ class Table(ttk.Frame):
             m.tk_popup(event.x_root, event.y_root)
         finally:
             m.grab_release()
+            m.destroy()
 
     def _copy_path_text(self, path):
         self.clipboard_clear()
@@ -1619,6 +1663,25 @@ class LsfDetailDialog(tk.Toplevel):
         Pill(foot, "关闭", command=self.destroy, accent=C_DIM,
              padx=18, height=30).pack(side="right")
 
+        sens = self._report.get("sens") or {}
+        if sens:
+            sf = tk.Frame(wrap, bg=C_PANEL)
+            sf.pack(fill="x", pady=(0, sc(10)))
+            for n in sorted(sens):
+                cell = tk.Frame(sf, bg=C_PANEL)
+                cell.pack(side="left", padx=(sc(14), sc(22)), pady=sc(8))
+                tk.Label(cell, text="只取最好 %d 局" % n, bg=C_PANEL,
+                         fg=C_DIM, font=FONT_SMALL).pack(anchor="w")
+                tk.Label(cell, text="%.1f" % sens[n]["lsf"], bg=C_PANEL,
+                         fg=C_TEXT, font=FONT_UI_B).pack(anchor="w")
+                g = sens[n].get("grade")
+                tk.Label(cell, text=("%s %.1f 阶" % g) if g else "",
+                         bg=C_PANEL, fg=C_DIM,
+                         font=FONT_SMALL).pack(anchor="w")
+            tk.Label(sf, text="三档越接近，水平越稳；\n上限明显更高 = 有爆发、缺稳定。",
+                     bg=C_PANEL, fg=C_DIM, font=FONT_SMALL,
+                     justify="left").pack(side="left", padx=(sc(6), sc(14)))
+
         cols = [
             ("level_cn", "级别", 90, "center", "str"),
             ("metric_cn", "项目", 110, "center", "str"),
@@ -1815,8 +1878,8 @@ class DailyDialog(tk.Toplevel):
     def open_replay(self, path):
         self.app.open_replay(path)
 
-    def set_status(self, text, kind="dim"):
-        self.app.set_status(text, kind)
+    def set_status(self, text, kind="dim", hold=None, transient=False):
+        self.app.set_status(text, kind, hold=hold, transient=transient)
 
     def _fit_on_screen(self):
         self.update_idletasks()
@@ -2809,6 +2872,7 @@ class App(tk.Tk):
                       " ; ".join("%s%s" % ("" if r["on"] else "(停用)", r["path"])
                                  for r in self.roots) or "（未确定）")
         self.games = []
+        self.ng_games = []             # 强无猜：只用于上传，不进任何统计
         self.info = {}
         self.pb_local_rows = []
         self.pb_rows = []
@@ -2821,8 +2885,14 @@ class App(tk.Tk):
         self.site_top_uid = None
         self.site_top_err = ""
         self.site_top_detail_err = ""
+        self.site_ng = {}              # 强无猜两榜的个人纪录（进榜才传用）
+        self.site_ng_uid = None
+        self.site_ng_err = ""
         # LSF：锚点是全站前二十名的水平，只能联网取一次；断网时用上次存下来的。
         self.lsf_anchors, self.lsf_anchors_at = load_lsf_anchors()
+        self.lsf_fixed, self.lsf_fixed_at = load_lsf_fixed()
+        self.var_lsf_fixed = tk.BooleanVar(
+            value=bool(load_config().get("lsf_fixed")) and bool(self.lsf_fixed))
         self._lsf_cache = None         # (数据指纹, 报告)
         self._gain_cache = None        # (数据指纹, {path: 涨分})
         self._site_seq = 0             # 网站请求代次：退出/换号后旧结果直接丢弃
@@ -2909,6 +2979,14 @@ class App(tk.Tk):
         except (TypeError, ValueError):
             self._rank_n = 10
         self._auto_tracker = autoup.Tracker(self._auto_watermark)
+        # 强无猜上传：小众选项，收在设置里。它复用自动上传的总开关与队列，
+        # 只是候选池换成 ng_games，不碰标准模式的任何统计。
+        # ng_scope: "" 关 / "top" 进榜才传 / "all" 全部上传（老配置 ng_all 迁过来）。
+        self._ng_scope = str(_cfg.get("ng_scope")
+                             or ("all" if _cfg.get("ng_all") else ""))
+        self._ng_watermark = int(_cfg.get("ng_watermark") or 0)
+        self._ng_tracker = autoup.Tracker(self._ng_watermark)
+        self.ng_scope_var = tk.StringVar(value=self._ng_scope)
         self._auto_stop = ""       # 需要用户动手才能恢复（额度 / 登录 / 封禁）
         self._auto_backoff = 0.0   # 网络类临时失败：到这个时间点再试
         self._auto_session = 0     # 本次会话自动传成功几条
@@ -3111,10 +3189,7 @@ class App(tk.Tk):
                                 highlightthickness=0, bd=0)
         self.banner.pack(fill="x")
         self.banner.bind("<Configure>", self._draw_banner)
-        for tag, cmd in (("b_rescan", self.start_scan),
-                         ("b_dir", lambda: self.pick_dir()),
-                         ("b_csv", self.export_csv),
-                         ("b_diag", self.open_diagnostics),
+        for tag, cmd in (("b_settings", self.open_settings),
                          ("b_play", self.launch_game)):
             self.banner.tag_bind(tag, "<Button-1>", lambda _e, c=cmd: c())
 
@@ -3132,9 +3207,6 @@ class App(tk.Tk):
             self.tab_pills[key] = p
         self.lbl_meta = tk.Label(nav, text="", bg=C_BG, fg=C_DIM, font=FONT_SMALL)
         self.lbl_meta.pack(side="right")
-        self.btn_paths = Pill(nav, "路径…", command=self.open_paths,
-                              accent=C_ACCENT3, padx=14, height=30)
-        self.btn_paths.pack(side="right", padx=(sc(10), 0))
 
         # 状态栏先于内容 pack（side=bottom），保证窗口再小也不会被挤出去
         bar = tk.Frame(self, bg=C_BG)
@@ -3237,6 +3309,7 @@ class App(tk.Tk):
 
         # 右侧按钮（白底粉字）。画法是「从右往左」，所以列表最后一项在最左边：
         # 启动元扫雷放最后 —— 它在阅读顺序上最先被看到，位置也固定不随其他按钮增减。
+        # 不常用的操作（重扫 / 换目录 / 路径 / 导出 / 诊断 / 偏好）收进「设置」菜单。
         font_m = tkfont.Font(family=FAM_UI, size=9, weight="bold")
         # 三态：没在跑 / 刚点过启动、等它起来 / 确认在跑。宽度按最长那句
         # 算死，所以整排按钮不会因为状态变化而左右跳。
@@ -3246,8 +3319,7 @@ class App(tk.Tk):
             play = "正在启动元扫雷"
         else:
             play = "启动元扫雷"
-        buttons = [("导出 CSV", "b_csv"), ("换目录…", "b_dir"),
-                   ("重新扫描", "b_rescan"), ("诊断…", "b_diag")]
+        buttons = [("设置", "b_settings")]
         right = w - sc(22)
         bh = sc(30)
         by = cy - bh / 2.0
@@ -3258,6 +3330,8 @@ class App(tk.Tk):
                        fill="#ffffff", width=0, tags=(tag,))
             cv.create_text((x1 + right) / 2.0, by + bh / 2.0, text=text,
                            fill=C_ACCENT, font=(FAM_UI, 9, "bold"), tags=(tag,))
+            if tag == "b_settings":
+                self._settings_xy = (x1, by + bh)
             right = x1 - sc(10)
 
         # 启动元扫雷：宽度按最长文案算死，切换状态时整排按钮不会左右跳
@@ -3937,7 +4011,8 @@ class App(tk.Tk):
             if detail:
                 games = core.daily_games(self.games, row["date"], lv)
                 img = summary.levels_detail_png(
-                    [(lv, cn, row)], {lv: games}, APP_VER, row["date"])
+                    [(lv, cn, row)], {lv: games}, APP_VER, row["date"],
+                    all_games=self.games)
             else:
                 img = summary.daily_png(row, lv, cn, APP_VER)
         except Exception as e:                  # noqa: BLE001
@@ -3991,6 +4066,7 @@ class App(tk.Tk):
                        b.winfo_rooty() + b.winfo_height() + sc(2))
         finally:
             m.grab_release()
+            m.destroy()
 
     def _copy_today(self, detail=False):
         """今天的总结：把有局的级别并在一张图里。"""
@@ -4013,7 +4089,8 @@ class App(tk.Tk):
             if detail:
                 gbl = {lv: core.daily_games(self.games, day, lv)
                        for lv, _cn, _r in items}
-                img = summary.levels_detail_png(items, gbl, APP_VER, day)
+                img = summary.levels_detail_png(items, gbl, APP_VER, day,
+                                                all_games=self.games)
             else:
                 img = summary.levels_png(items, APP_VER, day)
         except Exception as e:                  # noqa: BLE001
@@ -4146,6 +4223,12 @@ class App(tk.Tk):
         games = (self.counts.get(self._pb_style) or {}).get((lv, bv), 0)
         if games:
             bits.append("%d 局" % games)
+        streak = core.pb_streak(self.games, lv, bv,
+                                nf_only=self._pb_style == "nf")
+        if streak:
+            bits.append("保持 %d 天" % streak["held"])
+            if streak["gap"] is not None:
+                bits.append("破上条纪录用 %d 天" % streak["gap"])
         self.pb_detail.config(text="  ·  ".join(bits), fg=C_TEXT)
         name = r.get("file") or ""
         if len(name) > 34:                       # 录像文件名自带时间/BV，太长
@@ -4723,6 +4806,9 @@ class App(tk.Tk):
             self._auto_tracker = autoup.Tracker(self._auto_watermark)
             if self.games:
                 self._auto_tracker.prime(self.games)
+            self._ng_tracker = autoup.Tracker(self._ng_watermark)
+            if self.ng_games:
+                self._ng_tracker.prime(self.ng_games)
             diag.log.info("自动上传：开启（水位 %s，范围 %s）",
                           self._auto_watermark,
                           "、".join(autoup.SCOPE_CN.get(s, s)
@@ -4764,27 +4850,54 @@ class App(tk.Tk):
         self._refresh_auto_view()
         self.after(150, self._auto_tick)
 
+    def toggle_ng_scope(self):
+        """强无猜上传范围（设置里的子菜单）。只存 ng_scope，不动标准模式的范围。
+
+        切到非关闭时以当前水位重建 ng 基线：历史强无猜局不补传，关机期间打的
+        补进来。它跟着自动上传总开关走 —— 总开关关着时选了也不会传。
+        """
+        self._ng_scope = str(self.ng_scope_var.get() or "")
+        save_config(ng_scope=self._ng_scope)
+        self._ng_tracker = autoup.Tracker(self._ng_watermark)
+        if self.ng_games:
+            self._ng_tracker.prime(self.ng_games)
+        diag.log.info("强无猜上传：%s",
+                      {"": "关", "top": "进榜才传", "all": "全部上传"}
+                      .get(self._ng_scope, self._ng_scope))
+        # 进榜才传需要强无猜榜成绩：选上就补读一次（已登录时）
+        if self._ng_scope == "top" and self.oms_user:
+            self.refresh_site()
+        self._refresh_auto_view()
+        self.after(150, self._auto_tick)
+
     def _auto_ready_reason(self):
         """现在能不能传（用户视角的原因），空字符串表示可以。"""
         if not self._auto_on:
             return "自动上传已关闭"
-        if not self._auto_scopes():
+        scopes = self._auto_scopes()
+        ng = self._ng_scope
+        if not scopes and not ng:
             return "还没勾选要传什么"
         if not self._watch_enabled:
             return "自动刷新关着，看不到新录像"
         if not self.oms_user:
             return "还没登录 openms.top"
-        scopes = self._auto_scopes()
-        if scopes == (autoup.ALL,):
-            # 全量不对照成绩，唯一的去重依据是网站录像列表：必须等当前这一代
-            # 请求把列表完整拉回来。PB / Top5 到没到跟它无关。
+        # 全量与强无猜全上传都不对照成绩，唯一的去重依据是网站录像列表：必须等
+        # 当前这一代请求把列表完整拉回来。PB / Top5 到没到跟它们无关。
+        if scopes == (autoup.ALL,) or ng == "all":
             if self._auto_acct_seq != self._site_seq or not self.oms_loaded:
                 return "正在读取你在网站上的录像记录…"
             if not self.oms_synced:
                 return "读取网站录像记录失败，稍后自动重试"
-        elif not autoup.ready(scopes, self.site_pb, self.site_top):
+        elif scopes and not autoup.ready(
+                scopes, self.site_pb, self.site_top,
+                pb_ok=(self.site_pb_uid is not None and not self.site_pb_err),
+                top_ok=(self.site_top_uid is not None
+                        and not self.site_top_err)):
             return "还没读到你在网站上的成绩"
-        if not self.games:
+        if ng == "top" and (self.site_ng_uid is None or self.site_ng_err):
+            return "还没读到你的强无猜榜成绩"
+        if not self.games and not (ng and self.ng_games):
             return "还没找到录像，先确认一下路径"
         return ""
 
@@ -4921,6 +5034,10 @@ class App(tk.Tk):
         if mt and mt != self._auto_watermark:
             self._auto_watermark = mt
             save_config(auto_watermark=mt)
+        ng_mt = self._ng_tracker.newest(self.ng_games)
+        if ng_mt and ng_mt != self._ng_watermark:
+            self._ng_watermark = ng_mt
+            save_config(ng_watermark=ng_mt)
 
     def check_auto_now(self):
         if not self._auto_on:
@@ -4983,7 +5100,7 @@ class App(tk.Tk):
             return
         if self._up_running or self._scanning:
             return          # 这两种收尾时都会再叫一次 _auto_tick
-        if not self._auto_tracker.pending():
+        if not self._auto_tracker.pending() and not self._ng_tracker.pending():
             return
         delay = self._auto_tracker.settle * 1000 + 250
         left = (self._auto_backoff - time.monotonic()) * 1000
@@ -5009,14 +5126,16 @@ class App(tk.Tk):
             return
         if self._auto_stop or time.monotonic() < self._auto_backoff:
             return
-        if not self.games:
+        if not self.games and not (self._ng_scope and self.ng_games):
             return
         try:
-            ready = self._auto_tracker.observe(self.games)
+            ready = self._auto_tracker.observe(self.games) if self.games else []
+            ng_ready = (self._ng_tracker.observe(self.ng_games)
+                        if self._ng_scope else [])
         except Exception as exc:            # noqa: BLE001  判定坏掉不能拖垮主流程
             diag.log.warning("自动上传：识别新录像失败：%s", exc)
             return
-        if not ready:
+        if not ready and not ng_ready:
             return
         why_not = self._auto_ready_reason()
         if why_not:
@@ -5033,6 +5152,10 @@ class App(tk.Tk):
             diag.log.info("自动上传：跳过阿比特录像（上传页没勾「含阿比特录像」）")
         cands = autoup.judge(games, scopes, set(ready),
                              site_pb=self.site_pb, site_top=self.site_top)
+        if ng_ready:
+            # 强无猜单独判：全上传走全量路径，进榜才传对照网站两榜的 personal best。
+            cands.extend(autoup.judge_ng(self.ng_games, set(ng_ready),
+                                         self._ng_scope, self.site_ng))
         keys = set()
         for v in self.oms_videos or []:
             k = openms.server_key(v)
@@ -5057,6 +5180,7 @@ class App(tk.Tk):
 
         # 判定完了才 commit：中途因为数据没就绪返回时，这局下次还能再判
         self._auto_tracker.commit(ready)
+        self._ng_tracker.commit(ng_ready)
         self._auto_save_watermark()
         if not todo:
             self._refresh_auto_status()
@@ -5084,6 +5208,7 @@ class App(tk.Tk):
         self.site_pb_err = ""
         self.pb_counts = {}
         self._clear_site_top()
+        self._clear_site_ng()
         self._site_pb_changed()
         self._site_top_changed()
         self.set_status("已登录 openms.top：%s" % (user.get("username") or ""), "ok")
@@ -5112,6 +5237,7 @@ class App(tk.Tk):
         self.site_pb_err = ""
         self.pb_counts = {}
         self._clear_site_top()
+        self._clear_site_ng()
         self._refresh_acct_label()
         self._mark_up_dirty()
         self._site_pb_changed()
@@ -5184,6 +5310,7 @@ class App(tk.Tk):
         if not u:
             self._q.put(("site_pb", (seq, None, [], "")))
             self._q.put(("site_top", (seq, None, {}, {}, "", "")))
+            self._q.put(("site_ng", (seq, None, {}, "")))
             self._q.put(("acct", (seq, None, [], [], "")))
             return
 
@@ -5224,6 +5351,17 @@ class App(tk.Tk):
                     detail_err = "网站 Top5 明细读取失败"
                     diag.log.warning("读取网站 Top5 明细失败：%s", exc)
             self._q.put(("site_top", (seq, u["id"], top, details, "", detail_err)))
+
+        # 强无猜榜只在「进榜才传」时才读：标准模式玩家不发这个请求。
+        if self._ng_scope == "top":
+            try:
+                ng = self.oms.ng_records(u["id"])
+                diag.log.info("强无猜榜：%s", "、".join(ng.keys()))
+            except Exception as exc:                 # noqa: BLE001
+                diag.log.warning("读取强无猜榜失败：%s", exc)
+                self._q.put(("site_ng", (seq, u["id"], {}, "强无猜榜读取失败")))
+            else:
+                self._q.put(("site_ng", (seq, u["id"], ng, "")))
 
         vids, idents, err = [], [], ""
         try:
@@ -5356,6 +5494,27 @@ class App(tk.Tk):
             self._refresh_up_view()
         self.after(200, self._auto_tick)
 
+    def _clear_site_ng(self):
+        self.site_ng = {}
+        self.site_ng_uid = None
+        self.site_ng_err = ""
+
+    def _on_site_ng(self, seq, uid, records, err):
+        if seq != self._site_seq:
+            return                        # 退出/换号前发出的请求，结果作废
+        if uid is None:
+            self._clear_site_ng()
+        else:
+            cur = self.oms_user or {}
+            if not cur and not self.oms.has_session():
+                return                    # 已退出登录，迟到的结果不能复活强无猜榜
+            if cur.get("id") not in (None, uid):
+                return                    # 账号已经换了，旧结果不能落盘
+            self.site_ng = records or {}
+            self.site_ng_uid = uid
+            self.site_ng_err = err
+        self.after(200, self._auto_tick)
+
     def _on_account(self, seq, user, videos, idents, err):
         if seq != self._site_seq:
             return                        # 退出/换号前发出的请求，结果作废
@@ -5381,6 +5540,8 @@ class App(tk.Tk):
             if self.site_top or self.site_top_err:
                 self._clear_site_top()
                 self._site_top_changed()
+            if self.site_ng or self.site_ng_err:
+                self._clear_site_ng()
         else:
             if self.site_pb_uid is not None and self.site_pb_uid != user.get("id"):
                 self.site_pb = []
@@ -5390,6 +5551,8 @@ class App(tk.Tk):
             if self.site_top_uid is not None and self.site_top_uid != user.get("id"):
                 self._clear_site_top()
                 self._site_top_changed()
+            if self.site_ng_uid is not None and self.site_ng_uid != user.get("id"):
+                self._clear_site_ng()
         self._refresh_acct_label()
         if not partial:
             self._mark_up_dirty()
@@ -5888,7 +6051,7 @@ class App(tk.Tk):
     def _set_up_enabled(self, flag):
         for b in (self.btn_up_sel, self.btn_up_all, self.btn_sel_all,
                   self.btn_sel_none, self.btn_sync, self.btn_login,
-                  self.btn_logout, self.btn_paths):
+                  self.btn_logout):
             b.set_enabled(flag)
         for b in self.scope_pills.values():
             b.set_enabled(flag)
@@ -5958,6 +6121,8 @@ class App(tk.Tk):
                       else "失败：" + (res.get("reason") or "?"))
         if self._up_silent:
             g = next((x for x in self.games if x["path"] == path), None)
+            if g is None:
+                g = next((x for x in self.ng_games if x["path"] == path), None)
             if g is not None:
                 if res.get("ok"):
                     self._auto_session += 1
@@ -5993,6 +6158,7 @@ class App(tk.Tk):
                         self._auto_retry[path] = n
                         if n <= 3:
                             self._auto_tracker.requeue(path)
+                            self._ng_tracker.requeue(path)
                             self._auto_backoff = max(self._auto_backoff,
                                                      time.monotonic() + 20.0 * n)
         self.pb_up.config(value=idx)
@@ -6015,7 +6181,10 @@ class App(tk.Tk):
             self._refresh_auto_view()
             # 传完必须重读网站：前端成绩 / 网站 PB / 「网站已有」全靠这份数据，
             # 不重读的话刚涨的分在界面上还是旧的，看着像没传上去。
-            self.after(400, self.refresh_site)
+            # 但 auth 失效已经把用户清掉：refresh_site 见无用户会弹模态登录窗，
+            # 静默批不许抢元扫雷的焦点。
+            if self.oms_user:
+                self.after(400, self.refresh_site)
             # 这一批传完，队列里可能还压着刚落地的局
             self.after(120, self._auto_tick)
             return
@@ -6112,6 +6281,37 @@ class App(tk.Tk):
             return
         PathsDialog(self)
 
+    def open_settings(self):
+        """横幅「设置」：不常用的操作与偏好都收在这里。"""
+        m = tk.Menu(self, tearoff=0)
+        m.add_command(label="重新扫描", command=self.start_scan)
+        m.add_command(label="换目录…", command=self.pick_dir)
+        n = len(self.roots)
+        m.add_command(label="路径 (%d)…" % n if n else "路径…",
+                      command=self.open_paths)
+        m.add_command(label="导出 CSV", command=self.export_csv)
+        m.add_command(label="诊断…", command=self.open_diagnostics)
+        m.add_separator()
+        m.add_checkbutton(label="固定 LSF 基准（不随网站更新）",
+                          variable=self.var_lsf_fixed,
+                          command=self.toggle_lsf_fixed)
+        m.add_command(label="重新取固定基准", command=self.refreeze_lsf,
+                      state="normal" if self.var_lsf_fixed.get() else "disabled")
+        m.add_separator()
+        ng_menu = tk.Menu(m, tearoff=0)
+        for val, lab in (("", "关闭"), ("top", "进榜才传"), ("all", "全部上传")):
+            ng_menu.add_radiobutton(label=lab, variable=self.ng_scope_var,
+                                    value=val, command=self.toggle_ng_scope)
+        m.add_cascade(label="强无猜上传（不计入统计）", menu=ng_menu)
+        x, y = getattr(self, "_settings_xy", (sc(22), sc(60)))
+        try:
+            m.tk_popup(self.banner.winfo_rootx() + x,
+                       self.banner.winfo_rooty() + y + sc(2))
+        finally:
+            m.grab_release()
+            ng_menu.destroy()
+            m.destroy()
+
     def apply_roots(self, roots, rescan=True):
         """目录列表变了 → 存盘、刷新按钮、重扫。"""
         if self._up_running:
@@ -6119,7 +6319,6 @@ class App(tk.Tk):
             return
         self.roots = load_roots({"roots": roots})
         save_roots(self.roots)
-        self._refresh_paths_btn()
         self.lbl_meta.config(text=self.roots_label())
         diag.log.info("录像目录更新：%s",
                       " ; ".join(r["path"] for r in self.roots) or "（空）")
@@ -6127,16 +6326,13 @@ class App(tk.Tk):
         # 换了目录：重扫出来的局一律按「旧局」算，否则刚加进来的历史录像会被
         # 当成新成绩自动传上去。保持未初始化，让下一轮扫描自己建基线。
         self._auto_tracker = autoup.Tracker(self._auto_watermark)
+        self._ng_tracker = autoup.Tracker(self._ng_watermark)
         if rescan:
             if not self.active_roots():
                 self.set_status("所有录像目录都已停用", "warn")
                 return
             self._empty_prompted = False
             self.start_scan()
-
-    def _refresh_paths_btn(self):
-        n = len(self.roots)
-        self.btn_paths.set_text("路径 (%d)…" % n if n else "路径…")
 
     # ---------- 自动刷新（盯目录时间戳，变了就重扫）----------
     WATCH_MS = 1500                    # 轻量检查间隔：只 stat 目录，一轮 0.1 ms
@@ -6280,7 +6476,6 @@ class App(tk.Tk):
         self._watch_tick()
 
     def _boot(self):
-        self._refresh_paths_btn()
         if self._need_pick:
             self.set_status("首次运行：请先指定录像目录", "warn")
             self.lbl_meta.config(text="未选择录像目录")
@@ -6396,6 +6591,8 @@ class App(tk.Tk):
                     self._on_site_prog(*payload)
                 elif kind == "site_top":
                     self._on_site_top(*payload)
+                elif kind == "site_ng":
+                    self._on_site_ng(*payload)
                 elif kind == "lsf":
                     self._on_lsf(*payload)
                 elif kind == "up":
@@ -6432,16 +6629,20 @@ class App(tk.Tk):
             self.after(60, self._poll)
 
     def _on_scan_failed(self, msg):
+        auto = self._scan_auto
+        self._scan_auto = False
         self._scanning = False
         self._progress_end()
         diag.log.error("扫描失败：%s", msg)
         self.set_status("扫描失败：" + msg, "err")
-        messagebox.showerror(APP_TITLE, "扫描失败\n\n" + msg)
+        if not auto:
+            messagebox.showerror(APP_TITLE, "扫描失败\n\n" + msg)
 
     def _on_scanned(self, games, info, pb, cnt, smy, diffs, ini_ok):
         self._scanning = False
         self._progress_end()
         self.games, self.info = games, info
+        self.ng_games = info.get("ng_games") or []
         self.pb_local_rows = pb or []
         self.counts = cnt if isinstance(cnt, dict) and "all" in cnt else {"all": cnt or {}}
         self.summary, self.diffs, self.ini_ok = smy, diffs, ini_ok
@@ -6476,6 +6677,8 @@ class App(tk.Tk):
         extra = []
         if info.get("non_std"):
             extra.append(f"跳过 {info['non_std']} 个非标准局")
+        if info.get("ng_count"):
+            extra.append(f"强无猜 {info['ng_count']} 局（不计入统计）")
         if n_fail:
             extra.append(f"跳过 {n_fail} 个没打完的")
         if dup:
@@ -6526,7 +6729,7 @@ class App(tk.Tk):
         if not games:
             self.lbl_check.config(text="未发现 .evf / .avf 录像，请用「换目录…」或「路径…」指定",
                                   foreground=C_WARN)
-            if not self._empty_prompted:
+            if not self._empty_prompted and not auto:
                 self._empty_prompted = True
                 if messagebox.askyesno(
                         APP_TITLE,
@@ -6652,7 +6855,7 @@ class App(tk.Tk):
         与 PB 无关：没破 PB 的局只要挤进某一项前五，一样涨分。
         锚点不到（没登录过、也从来没存下过）就算不出来，这时整列不显示。
         """
-        if not rows or not self.lsf_anchors:
+        if not rows or not self._lsf_anchors_eff():
             return {}
         window = [g for g in rows if g.get("path")]
         # 一键导入（解压出来的 mtime 全在同一秒）时顺序没有意义，
@@ -6660,11 +6863,11 @@ class App(tk.Tk):
         if len(window) > 5 and len({g.get("mtime") or 0 for g in window}) < 3:
             return {}
         key = (id(self.games), len(self.games), len(window),
-               id(self.lsf_anchors))
+               id(self._lsf_anchors_eff()))
         if self._gain_cache and self._gain_cache[0] == key:
             return self._gain_cache[1]
         t0 = time.perf_counter()
-        gains = core.lsf_gains(self.games, self.lsf_anchors, window)
+        gains = core.lsf_gains(self.games, self._lsf_anchors_eff(), window)
         n = sum(1 for v in gains.values() if v > 0.05)
         diag.log.info("最近 %d 局的涨分：%d 局有涨分，用时 %.0f ms",
                       len(window), n, (time.perf_counter() - t0) * 1000)
@@ -6994,6 +7197,9 @@ class App(tk.Tk):
             table.set_rows(rows)
         if hasattr(self, "lbl_top_site"):
             text, color = self._top_site_note()
+            if self.var_lsf_fixed.get() and self.lsf_fixed:
+                text += " · LSF 用固定基准（%s 冻结，设置里可改）" % time.strftime(
+                    "%Y-%m-%d", time.localtime(self.lsf_fixed_at))
             self.lbl_top_site.config(text=text, foreground=color)
         self.render_lsf()
 
@@ -7001,22 +7207,72 @@ class App(tk.Tk):
         """个人 LSF：本地 + 网站合并口径，跟上面三张表同一批数据。
 
         锚点是全站前二十名的水平，没有它算不出来；没有时卡片留「—」。
+        勾了「固定 LSF 基准」就用冻结那版锚点，不随网站更新。
         """
         card = getattr(self, "lsf_card", None)
         if card is None:
             return
-        if not self.lsf_anchors:
+        anchors = self._lsf_anchors_eff()
+        if not anchors:
             card.set_data(None)
             return
         key = (id(self.games), len(self.games), id(self.site_top),
-               id(self.site_top_details), id(self.lsf_anchors))
+               id(self.site_top_details), id(anchors))
         if self._lsf_cache and self._lsf_cache[0] == key:
             local = self._lsf_cache[1]
         else:
             local = core.lsf_report(self.games, self.site_top,
-                                    self.site_top_details, self.lsf_anchors)
+                                    self.site_top_details, anchors)
+            local["sens"] = core.lsf_sensitivity(
+                self.games, self.site_top, self.site_top_details, anchors)
             self._lsf_cache = (key, local)
         card.set_data(local)
+
+    def _lsf_anchors_eff(self):
+        if self.var_lsf_fixed.get() and self.lsf_fixed:
+            return self.lsf_fixed
+        return self.lsf_anchors
+
+    def toggle_lsf_fixed(self):
+        """固定基准：打开 = 把此刻的全站水平冻结下来；关闭 = 回到实时。"""
+        if self.var_lsf_fixed.get():
+            if not self.lsf_anchors:
+                self.var_lsf_fixed.set(False)
+                self.set_status("还没有全站水平，先读一次网站数据再固定基准", "warn")
+                return
+            self.lsf_fixed = dict(self.lsf_anchors)
+            self.lsf_fixed_at = int(time.time())
+            save_lsf_fixed(self.lsf_fixed)
+            save_config(lsf_fixed=True)
+            self.set_status("LSF 基准已固定：%s 的全站水平"
+                            % time.strftime("%Y-%m-%d", time.localtime(self.lsf_fixed_at)),
+                            "ok", hold=4000)
+        else:
+            save_config(lsf_fixed=False)
+            self.set_status("LSF 基准回到实时", "ok", hold=3000)
+        self._lsf_cache = None
+        self._gain_cache = None
+        self.render_lsf()
+        self.render_top()
+        self.render_recent()
+
+    def refreeze_lsf(self):
+        if not self.var_lsf_fixed.get():
+            return
+        if not self.lsf_anchors:
+            self.set_status("还没有全站水平，读一次网站数据后再更新基准", "warn")
+            return
+        self.lsf_fixed = dict(self.lsf_anchors)
+        self.lsf_fixed_at = int(time.time())
+        save_lsf_fixed(self.lsf_fixed)
+        self._lsf_cache = None
+        self._gain_cache = None
+        self.render_lsf()
+        self.render_top()
+        self.render_recent()
+        self.set_status("固定基准已更新到 %s 的全站水平"
+                        % time.strftime("%Y-%m-%d", time.localtime(self.lsf_fixed_at)),
+                        "ok", hold=4000)
 
     def set_status(self, text, kind="dim", hold=None, transient=False):
         """写状态栏。``hold`` 是毫秒：到点自动退回写之前那一行。
@@ -7216,7 +7472,7 @@ def main():
                 lvl = "levels_png=%dx%d" % img3.size
             except Exception as e:              # noqa: BLE001
                 lvl = "levels_png=ERR %r" % (e,)
-            # 详细版（每日页右键「详细总结」）多画分布与极值两块，打包后同样要能跑
+            # 详细版（每日页右键「详细总结」）走复盘卡版式，打包后同样要能跑
             det = "detail_png=?"
             try:
                 g6 = [{"time": 10.0 + i, "bv": 30 + i, "style": "nf",
