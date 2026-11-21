@@ -86,6 +86,9 @@ def system_info():
         if core.LITE_USED:
             lines.append("内置兜底    %d 局由纯 Python 头部解析提供 NF/FL"
                          % core.LITE_USED)
+        if core.LITE_BIT_DISAGREE:
+            lines.append("NF位不符    %d 局头部 NF 位与事件流不符，以事件流为准"
+                         % core.LITE_BIT_DISAGREE)
     except Exception:
         pass
     try:

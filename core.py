@@ -92,6 +92,7 @@ def _load_lib():
 LOAD_ERR = ""
 READ_ERR = ""
 LITE_USED = 0
+LITE_BIT_DISAGREE = 0
 MSLIB = _load_lib()
 
 # 录像文件的头部特征。ms-toollib 拿到垃圾内容不是抛异常，而是**直接让进程消失**
@@ -182,19 +183,22 @@ def clock_text(t0):
 
 
 def _evf_lite(path):
-    """纯 Python 读 evf v4 头部，不依赖 ms-toollib；读不出返回 None。
+    """纯 Python 读 evf v4，不依赖 ms-toollib；读不出返回 None。
 
-    NF 判定直接用摘要字节的 0x10 位（evf 标准定义它等价于 right_eff == 0），
-    不重演事件流。rce 数值给不出：NF 记 0、FL 记 None，上层只用 nf/style。
+    NF 用事件流判定：只要出现过「左键抬起时右键给雷格插旗」就是 FL。不数 rce
+    数值（FL 记 None），也不重演开雷/chord——完成局里雷格不可能被开，只跟踪
+    雷格的 旗/问号 状态就与重演的 rce == 0 等价。
+    头部摘要的 0x10 位只作交叉校验：ms-toollib 的 evf 生成器取的是播放位置 0
+    的 rce（恒 0），转码录像该位恒为 NF（实测 600 局 FL 全错），不可信。
     """
-    global LITE_USED
+    global LITE_USED, LITE_BIT_DISAGREE
     try:
         with open(path, "rb") as fh:
             b = fh.read()
         if len(b) < 34 or b[0] != 4:
             return None
         dig = b[1]
-        row, col = b[3], b[4]
+        row, col, size = b[3], b[4], b[7]
         mines = int.from_bytes(b[5:7], "big")
         mode = int.from_bytes(b[8:10], "big")
         bv = int.from_bytes(b[10:12], "big")
@@ -206,7 +210,82 @@ def _evf_lite(path):
             p = b.index(b"\0", p) + 1
         i = b.index(b"\0", p)
         ident = b[p:i].decode("utf-8", "replace")
-        nf = bool(dig & 0x10)
+        p = i + 1
+        for _ in range(2):                  # 比赛标识、唯一性标识
+            p = b.index(b"\0", p) + 1
+        ul = int.from_bytes(b[p:p+2], "big")
+        p += 2 + ul
+        nb = (row * col + 7) // 8
+        bits = b[p:p+nb]
+        p += nb
+        nm = int.from_bytes(b[p:p+2], "big")
+        p += 2
+        for _ in range(nm):
+            p = b.index(b"\0", p) + 1
+        mine = set()
+        for k in range(row * col):
+            if bits[k // 8] >> (7 - k % 8) & 1:
+                mine.add((k // col, k % col))
+        question = bool(b[2] & 0x80)
+        x = y = t = 0
+        left = right = False
+        first = True
+        state = {}
+        fl = False
+        while p < len(b):
+            e = b[p]
+            p += 1
+            if e == 0:
+                break
+            if 1 <= e <= 12:
+                dt = b[p]
+                if first:
+                    x = int.from_bytes(b[p+1:p+3], "big")
+                    y = int.from_bytes(b[p+3:p+5], "big")
+                    first = False
+                else:
+                    x = (x + int.from_bytes(b[p+1:p+3], "big", signed=True)) & 0xFFFF
+                    y = (y + int.from_bytes(b[p+3:p+5], "big", signed=True)) & 0xFFFF
+                p += 5
+                t += dt
+                if e == 2:
+                    left = True
+                elif e == 3:
+                    left = False
+                elif e == 5:
+                    right = False
+                elif e in (6, 9):
+                    left = right = True
+                elif e == 7:
+                    left = right = False
+                elif e in (4, 8) and t <= tms:
+                    if e == 4:
+                        if right:
+                            continue
+                        right = True
+                        if left:
+                            continue      # 左键按住时的右键是 chord 准备，不插旗
+                    cell = (y // size, x // size)
+                    if cell in mine:
+                        s0 = state.get(cell, 0)
+                        if s0 == 0:
+                            state[cell] = 1
+                            fl = True
+                        elif s0 == 1:
+                            state[cell] = 2 if question else 0
+                        else:
+                            state[cell] = 0
+            elif 81 <= e <= 99:
+                t += b[p]
+                p += 1
+            elif e == 255:
+                t += int.from_bytes(b[p:p+2], "big")
+                p += 2
+            else:
+                return None       # 局面/指标事件：toollib v4 也不消费，遇到就认输
+        nf = not fl
+        if nf != bool(dig & 0x10):
+            LITE_BIT_DISAGREE += 1
         done = bool(dig & 0x80)
         LITE_USED += 1
         return {
