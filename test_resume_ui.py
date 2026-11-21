@@ -312,6 +312,7 @@ def main():
         def __init__(self, master=None, tearoff=0):
             self.items = []
             self.destroyed = False
+            self.bindings = {}
             made.append(self)
 
         def add_command(self, label, command):
@@ -328,6 +329,9 @@ def main():
             # app.py 靠它判断末尾是不是分隔符，别再往里加重复的分隔线
             i = len(self.items) - 1 if index == "end" else int(index)
             return "separator" if self.items[i] == "-" else "command"
+
+        def bind(self, seq, fn):
+            self.bindings[seq] = fn
 
         def tk_popup(self, x, y):
             pass
@@ -353,7 +357,13 @@ def main():
     finally:
         rec.tv.identify_row = real_identify
         A.tk.Menu = real_menu
-    checks += [("右键菜单弹完就 destroy（不漏控件）",
+    alive = bool(made) and all(not m.destroyed for m in made)
+    for m in made:                      # 模拟菜单收起：<Unmap> 应触发自删
+        cb = m.bindings.get("<Unmap>")
+        if cb:
+            cb(None)
+    checks += [("右键菜单贴出后不秒删（命令才点得到）", alive),
+               ("右键菜单收起时自删（不漏控件）",
                 bool(made) and all(m.destroyed for m in made))]
     import inspect
     sig = inspect.signature(A.DailyDialog.set_status)
@@ -364,13 +374,53 @@ def main():
                 labels[:3] == ["详细信息", "-", "用元扫雷播放"]
                 and "复制路径" in labels and "打开所在文件夹" in labels)]
 
-    # 设置菜单：不常用操作收进去，强无猜 / 固定基准两个偏好项要在
-    real_menu2, made2, pops2 = A.tk.Menu, [], []
+    # 设置菜单：同风格二级菜单（StyleMenu），强无猜 / 固定基准两个偏好项要在
+    real_scan = win.start_scan
+    scan_calls = []
+    win.start_scan = lambda: scan_calls.append(1)
+    win.open_settings()
+    sm = win._settings_menu
+    sm.update_idletasks()
+    sm.update()
+    slabels = [it.get("label", "-") for it in sm._items]
+    sm._rows[0].event_generate("<Button-1>")     # 点「重新扫描」
+    win.update()
+    act_ok = scan_calls == [1] and not sm.winfo_exists()
+    win.start_scan = real_scan
+
+    win.open_settings()
+    sm = win._settings_menu
+    sm.update_idletasks()
+    sm.update()
+    pos_int = isinstance(sm.winfo_x(), int) and isinstance(sm.winfo_y(), int)
+    row_items = [it for it in sm._items if not it.get("sep")]
+    casc = [(r, it) for r, it in zip(sm._rows, row_items) if "submenu" in it]
+    ng_labels = []
+    if casc:
+        row, it = casc[0]
+        sm._open_submenu(row, it)
+        sub = sm._submenu
+        sub.update_idletasks()
+        sub.update()
+        ng_labels = [x["label"] for x in sub._items]
+    sm.close_all()
+    win.update()
+    checks += [("设置菜单收进了强无猜子菜单",
+                any("强无猜" in s for s in slabels)),
+               ("强无猜子菜单有关闭/进榜才传/全部上传",
+                ng_labels == ["关闭", "进榜才传", "全部上传"]),
+               ("设置菜单收进了固定 LSF 基准",
+                any("固定 LSF 基准" in s for s in slabels)),
+               ("设置菜单点命令会触发并收起", act_ok),
+               ("设置菜单收起即销毁（不漏窗口）", not sm.winfo_exists()),
+               ("设置菜单弹出坐标是整数", pos_int)]
+
+    # 今日总结菜单仍用原生 tk.Menu：弹出坐标必须是整数
+    real_menu2, pops2 = A.tk.Menu, []
 
     class _Menu2:
         def __init__(self, master=None, tearoff=0):
             self.items = []
-            made2.append(self)
 
         def add_command(self, label, command, state=None):
             self.items.append(label)
@@ -387,6 +437,9 @@ def main():
         def add_separator(self):
             self.items.append("-")
 
+        def bind(self, seq, fn):
+            pass
+
         def tk_popup(self, x, y):
             pops2.append((x, y))
 
@@ -398,21 +451,11 @@ def main():
 
     A.tk.Menu = _Menu2
     try:
-        win.open_settings()
         win._today_menu()
     finally:
         A.tk.Menu = real_menu2
-    slabels = made2[0].items if made2 else []
-    ng_labels = made2[1].items if len(made2) > 1 else []
-    checks += [("设置菜单收进了强无猜子菜单",
-                any("强无猜" in s for s in slabels)),
-               ("强无猜子菜单有关闭/进榜才传/全部上传",
-                ng_labels == ["关闭", "进榜才传", "全部上传"]),
-               ("设置菜单收进了固定 LSF 基准",
-                any("固定 LSF 基准" in s for s in slabels)),
-               ("设置菜单弹完就 destroy", bool(made2)),
-               ("设置/今日总结菜单弹出坐标是整数（tk_popup 不收浮点）",
-                len(pops2) == 2
+    checks += [("今日总结菜单弹出坐标是整数（tk_popup 不收浮点）",
+                len(pops2) == 1
                 and all(isinstance(x, int) and isinstance(y, int)
                         for x, y in pops2))]
 

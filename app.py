@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.37.1"
+APP_VER = "0.37.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -660,6 +660,187 @@ class Pill(tk.Canvas):
         self.configure(cursor="")
 
 
+class StyleMenu(tk.Toplevel):
+    """与应用同风格的弹出菜单：白底圆角、粉灰描边、悬停浅粉、二级飞出子菜单。
+
+    不用原生 tk.Menu（Windows 上 tk_popup 不阻塞，弹完即 destroy 会秒删菜单，
+    命令点不到）。这里自管生命周期：grab + 外部点击 / Esc / 失焦收起，收起即销毁。
+    items 每项 dict：
+      {"label","cmd","enabled"}                普通命令
+      {"sep":True}                             分隔线
+      {"label","check":BoolVar,"cmd"}          勾选项（✓）
+      {"label","radio":Var,"value","cmd"}      单选项（●）
+      {"label","submenu":[...]}                二级菜单（▸）
+    """
+
+    def __init__(self, master, items, x, y, parent=None):
+        super().__init__(master)
+        self._parent = parent
+        self._items = items
+        self._rows = []
+        self._submenu = None
+        self._sub_after = None
+        self._cascade_row = None
+        self._closed = False
+        self.overrideredirect(True)
+        self.configure(bg=C_LINE)
+        self._body = tk.Frame(self, bg=C_PANEL)
+        self._body.pack(padx=sc(1), pady=sc(1))
+        for it in items:
+            if it.get("sep"):
+                tk.Frame(self._body, bg=C_LINE, height=sc(1)).pack(
+                    fill="x", padx=sc(8), pady=sc(4))
+                continue
+            self._rows.append(self._make_row(it))
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x = max(sc(4), min(int(x), sw - w - sc(4)))
+        y = max(sc(4), min(int(y), sh - h - sc(4)))
+        self.geometry("+%d+%d" % (x, y))
+        self.bind("<Escape>", lambda e: self.close_all())
+        self.bind("<Button-1>", self._on_click)
+        if parent is None:
+            self.grab_set()
+            self.bind("<FocusOut>", lambda e: self.after(40, self._check_focus))
+            self.focus_set()
+
+    def _make_row(self, it):
+        enabled = it.get("enabled", True)
+        row = tk.Frame(self._body, bg=C_PANEL)
+        row.pack(fill="x")
+        ind = tk.Label(row, bg=C_PANEL, fg=C_ACCENT, font=FONT_UI,
+                       width=2, anchor="center")
+        ind.pack(side="left", padx=(sc(6), 0), pady=sc(5))
+        if "check" in it:
+            ind.configure(text="✓" if it["check"].get() else "")
+        elif "radio" in it:
+            ind.configure(text="●" if it["radio"].get() == it["value"] else "")
+        txt = tk.Label(row, text=it["label"], bg=C_PANEL,
+                       fg=C_TEXT if enabled else C_DIM, font=FONT_UI,
+                       anchor="w")
+        txt.pack(side="left", fill="x", expand=True,
+                 padx=(sc(2), sc(6)), pady=sc(5))
+        arrow = None
+        if "submenu" in it:
+            arrow = tk.Label(row, text="▸", bg=C_PANEL, fg=C_DIM,
+                             font=FONT_SMALL)
+            arrow.pack(side="right", padx=(0, sc(8)))
+        kids = [ind, txt] + ([arrow] if arrow else [])
+
+        def enter(_e=None):
+            if not enabled:
+                return
+            for k in kids:
+                k.configure(bg=C_SEL)
+            row.configure(bg=C_SEL)
+            if "submenu" in it:
+                self._open_submenu(row, it)
+
+        def leave(_e=None):
+            for k in kids:
+                k.configure(bg=C_PANEL)
+            row.configure(bg=C_PANEL)
+            if "submenu" in it:
+                self._schedule_sub_close()
+
+        def click(_e=None):
+            if not enabled:
+                return "break"
+            if "submenu" in it:
+                self._open_submenu(row, it)
+                return "break"
+            cmd = it.get("cmd")
+            self.close_all()
+            if cmd:
+                cmd()
+            return "break"
+
+        for w in [row] + kids:
+            w.bind("<Enter>", enter)
+            w.bind("<Leave>", leave)
+            w.bind("<Button-1>", click)
+        return row
+
+    # ---- 二级子菜单 ----
+    def _open_submenu(self, row, it):
+        if self._sub_after:
+            self.after_cancel(self._sub_after)
+            self._sub_after = None
+        if self._submenu is not None and self._cascade_row is row:
+            return
+        self._close_submenu()
+        self._cascade_row = row
+        self.update_idletasks()
+        sx = row.winfo_rootx() + row.winfo_width() - sc(2)
+        sy = row.winfo_rooty() - sc(1)
+        self._submenu = StyleMenu(self.master, it["submenu"], sx, sy, parent=self)
+        self._submenu.bind("<Enter>", lambda e: self._cancel_sub_close())
+        self._submenu.bind("<Leave>", lambda e: self._schedule_sub_close())
+
+    def _cancel_sub_close(self):
+        if self._sub_after:
+            self.after_cancel(self._sub_after)
+            self._sub_after = None
+
+    def _schedule_sub_close(self):
+        self._cancel_sub_close()
+        self._sub_after = self.after(140, self._maybe_close_sub)
+
+    def _maybe_close_sub(self):
+        self._sub_after = None
+        if self._submenu is None:
+            return
+        px, py = self.winfo_pointerxy()
+        w = self.winfo_containing(px, py)
+        if w is not None and (self._within(w, self._submenu)
+                              or self._within(w, self._cascade_row)):
+            return
+        self._close_submenu()
+
+    @staticmethod
+    def _within(w, top):
+        while w is not None:
+            if w is top:
+                return True
+            w = getattr(w, "master", None)
+        return False
+
+    def _close_submenu(self):
+        self._cancel_sub_close()
+        if self._submenu is not None:
+            self._submenu.destroy()
+            self._submenu = None
+        self._cascade_row = None
+
+    # ---- 收起 ----
+    def _on_click(self, e):
+        if e.widget is self or e.widget is self._body:
+            self.close_all()
+
+    def _check_focus(self):
+        if self._closed:
+            return
+        fg = self.focus_get()
+        if fg is None or not (self._within(fg, self)
+                              or (self._submenu and self._within(fg, self._submenu))):
+            self.close_all()
+
+    def close_all(self):
+        if self._closed:
+            return
+        self._closed = True
+        if self._parent is not None:
+            self._parent.close_all()
+            return
+        self._close_submenu()
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+
+
 # ------------------------------------------------------------------ 统计卡片
 class StatCard(tk.Canvas):
     """一级别一张卡：圆角白底 + 彩色标签 + 三行指标。"""
@@ -1278,11 +1459,11 @@ class Table(ttk.Frame):
                           command=lambda p=path: self._reveal(p))
         if m.index("end") is None:       # 两边都没东西可加，别弹一个空菜单
             return
-        try:
-            m.tk_popup(event.x_root, event.y_root)
-        finally:
-            m.grab_release()
-            m.destroy()
+        # tk_popup 不阻塞：贴完就返回。若在这里立刻 destroy，菜单还没等用户点
+        # 就被删了（命令永不触发）。改成菜单收起（<Unmap>）时再自删，既不泄漏
+        # 也不秒删。
+        m.bind("<Unmap>", lambda e: m.destroy())
+        m.tk_popup(event.x_root, event.y_root)
 
     def _copy_path_text(self, path):
         self.clipboard_clear()
@@ -4061,12 +4242,9 @@ class App(tk.Tk):
         m.add_command(label="复制今日详细总结",
                       command=lambda: self._copy_today(True))
         b = self.btn_today
-        try:
-            m.tk_popup(b.winfo_rootx(),
-                       b.winfo_rooty() + b.winfo_height() + sc(2))
-        finally:
-            m.grab_release()
-            m.destroy()
+        m.bind("<Unmap>", lambda e: m.destroy())
+        m.tk_popup(b.winfo_rootx(),
+                   int(b.winfo_rooty() + b.winfo_height() + sc(2)))
 
     def _copy_today(self, detail=False):
         """今天的总结：把有局的级别并在一张图里。"""
@@ -6282,35 +6460,35 @@ class App(tk.Tk):
         PathsDialog(self)
 
     def open_settings(self):
-        """横幅「设置」：不常用的操作与偏好都收在这里。"""
-        m = tk.Menu(self, tearoff=0)
-        m.add_command(label="重新扫描", command=self.start_scan)
-        m.add_command(label="换目录…", command=self.pick_dir)
+        """横幅「设置」：不常用的操作与偏好都收在这里（同风格二级菜单）。"""
+        old = getattr(self, "_settings_menu", None)
+        if old is not None:
+            old.close_all()
         n = len(self.roots)
-        m.add_command(label="路径 (%d)…" % n if n else "路径…",
-                      command=self.open_paths)
-        m.add_command(label="导出 CSV", command=self.export_csv)
-        m.add_command(label="诊断…", command=self.open_diagnostics)
-        m.add_separator()
-        m.add_checkbutton(label="固定 LSF 基准（不随网站更新）",
-                          variable=self.var_lsf_fixed,
-                          command=self.toggle_lsf_fixed)
-        m.add_command(label="重新取固定基准", command=self.refreeze_lsf,
-                      state="normal" if self.var_lsf_fixed.get() else "disabled")
-        m.add_separator()
-        ng_menu = tk.Menu(m, tearoff=0)
-        for val, lab in (("", "关闭"), ("top", "进榜才传"), ("all", "全部上传")):
-            ng_menu.add_radiobutton(label=lab, variable=self.ng_scope_var,
-                                    value=val, command=self.toggle_ng_scope)
-        m.add_cascade(label="强无猜上传（不计入统计）", menu=ng_menu)
+        items = [
+            {"label": "重新扫描", "cmd": self.start_scan},
+            {"label": "换目录…", "cmd": self.pick_dir},
+            {"label": "路径 (%d)…" % n if n else "路径…",
+             "cmd": self.open_paths},
+            {"label": "导出 CSV", "cmd": self.export_csv},
+            {"label": "诊断…", "cmd": self.open_diagnostics},
+            {"sep": True},
+            {"label": "固定 LSF 基准（不随网站更新）",
+             "check": self.var_lsf_fixed, "cmd": self.toggle_lsf_fixed},
+            {"label": "重新取固定基准", "cmd": self.refreeze_lsf,
+             "enabled": bool(self.var_lsf_fixed.get())},
+            {"sep": True},
+            {"label": "强无猜上传（不计入统计）", "submenu": [
+                {"label": lab, "radio": self.ng_scope_var, "value": val,
+                 "cmd": self.toggle_ng_scope}
+                for val, lab in (("", "关闭"), ("top", "进榜才传"),
+                                 ("all", "全部上传"))]},
+        ]
         x, y = getattr(self, "_settings_xy", (sc(22), sc(60)))
-        try:
-            m.tk_popup(int(self.banner.winfo_rootx() + x),
-                       int(self.banner.winfo_rooty() + y + sc(2)))
-        finally:
-            m.grab_release()
-            ng_menu.destroy()
-            m.destroy()
+        self._settings_menu = StyleMenu(
+            self, items,
+            self.banner.winfo_rootx() + x,
+            self.banner.winfo_rooty() + y + sc(2))
 
     def apply_roots(self, roots, rescan=True):
         """目录列表变了 → 存盘、刷新按钮、重扫。"""
