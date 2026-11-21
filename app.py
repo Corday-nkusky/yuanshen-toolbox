@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.37.2"
+APP_VER = "0.38.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -266,36 +266,30 @@ def save_lsf_anchors(anchors):
         pass
 
 
-def lsf_fixed_path():
-    return os.path.join(paths.data_dir(), "lsf-anchors-fixed.json")
-
-
-def load_lsf_fixed():
-    """固定基准：启用「固定 LSF 基准」那一刻冻结的锚点快照。"""
-    try:
-        import json
-        with open(lsf_fixed_path(), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        anchors = data.get("anchors")
-        if isinstance(anchors, dict) and anchors:
-            return anchors, int(data.get("saved_at") or 0)
-    except Exception:
-        pass
-    return {}, 0
-
-
-def save_lsf_fixed(anchors):
-    try:
-        import json
-        p = lsf_fixed_path()
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"saved_at": int(time.time()), "anchors": anchors},
-                      fh, ensure_ascii=False)
-        os.replace(tmp, p)
-    except Exception:
-        pass
+# 赛季 LSF 基准（硬编码）。大表（个人页 TopSummary）启动时取一次锚点就冻住，
+# 整个赛季用同一套；网站没有独立的赛季接口，实时 /top/anchors 会随纪录漂移。
+# 这里写死该赛季快照：勾「固定 LSF 基准」就用它，不随网站更新。换赛季时更新此表与日期。
+SEASON_ANCHORS_AT = "2026-11-21"
+SEASON_ANCHORS = {k: {"value": v, "sample_count": 20} for k, v in {
+    "std:bt": 1365.8899999999999,
+    "std:bs": 6.564658834704003,
+    "std:bb": 9.19692775,
+    "std:it": 8335.939999999999,
+    "std:is": 1.1402285036642597,
+    "std:ib": 6.17820753,
+    "std:et": 33402.340000000004,
+    "std:es": 0.37891644873519825,
+    "std:eb": 4.9698284600000004,
+    "nf:bt": 1477.65,
+    "nf:bs": 5.386156418285801,
+    "nf:bb": 7.44461561,
+    "nf:it": 9471.689999999999,
+    "nf:is": 0.9195603401756021,
+    "nf:ib": 5.21985137,
+    "nf:et": 38192.9,
+    "nf:es": 0.29746456482270495,
+    "nf:eb": 4.22363725,
+}.items()}
 
 
 def load_roots(seen=None):
@@ -660,186 +654,117 @@ class Pill(tk.Canvas):
         self.configure(cursor="")
 
 
-class StyleMenu(tk.Toplevel):
-    """与应用同风格的弹出菜单：白底圆角、粉灰描边、悬停浅粉、二级飞出子菜单。
+class SettingsDialog(tk.Toplevel):
+    """「设置」弹窗：与应用同风格的白底圆角卡片，模态。
 
-    不用原生 tk.Menu（Windows 上 tk_popup 不阻塞，弹完即 destroy 会秒删菜单，
-    命令点不到）。这里自管生命周期：grab + 外部点击 / Esc / 失焦收起，收起即销毁。
-    items 每项 dict：
-      {"label","cmd","enabled"}                普通命令
-      {"sep":True}                             分隔线
-      {"label","check":BoolVar,"cmd"}          勾选项（✓）
-      {"label","radio":Var,"value","cmd"}      单选项（●）
-      {"label","submenu":[...]}                二级菜单（▸）
+    操作收在一排药丸里；强无猜上传是三档单选药丸；LSF 基准是两态胶囊
+    （实时 / 固定），胶囊文案与下方说明随状态切换，不再是一句定死的勾选文案。
+    「路径」已单独放到横幅（启动元扫雷右边），不在这里。
     """
 
-    def __init__(self, master, items, x, y, parent=None):
-        super().__init__(master)
-        self._parent = parent
-        self._items = items
-        self._rows = []
-        self._submenu = None
-        self._sub_after = None
-        self._cascade_row = None
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
         self._closed = False
-        self.overrideredirect(True)
-        self.configure(bg=C_LINE)
-        self._body = tk.Frame(self, bg=C_PANEL)
-        self._body.pack(padx=sc(1), pady=sc(1))
-        for it in items:
-            if it.get("sep"):
-                tk.Frame(self._body, bg=C_LINE, height=sc(1)).pack(
-                    fill="x", padx=sc(8), pady=sc(4))
-                continue
-            self._rows.append(self._make_row(it))
+        self.title("设置")
+        self.configure(bg=C_BG)
+        self.resizable(False, False)
+        self.transient(app)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+        pad = sc(18)
+        head = tk.Frame(self, bg=C_BG)
+        head.pack(fill="x", padx=pad, pady=(pad, sc(8)))
+        tk.Label(head, text="设置", bg=C_BG, fg=C_TEXT,
+                 font=FONT_UI_B).pack(side="left")
+        Pill(head, "✕", command=self.close, bg=C_BG,
+             height=26, min_width=30, padx=10).pack(side="right")
+        card = tk.Frame(self, bg=C_PANEL, highlightbackground=C_LINE,
+                        highlightthickness=sc(1))
+        card.pack(fill="both", expand=True, padx=pad, pady=(0, pad))
+        inner = tk.Frame(card, bg=C_PANEL)
+        inner.pack(fill="both", expand=True, padx=sc(16), pady=sc(14))
+
+        tk.Label(inner, text="操作", bg=C_PANEL, fg=C_DIM,
+                 font=FONT_SMALL).pack(anchor="w")
+        row = tk.Frame(inner, bg=C_PANEL)
+        row.pack(fill="x", pady=(sc(4), sc(10)))
+        for text, cmd in (("重新扫描", app.start_scan),
+                          ("换目录…", app.pick_dir),
+                          ("导出 CSV", app.export_csv),
+                          ("诊断…", app.open_diagnostics)):
+            Pill(row, text, command=self._act(cmd), bg=C_PANEL,
+                 height=28, padx=14).pack(side="left", padx=(0, sc(8)))
+
+        tk.Frame(inner, bg=C_LINE, height=sc(1)).pack(fill="x", pady=sc(6))
+        tk.Label(inner, text="强无猜上传（不计入统计）", bg=C_PANEL, fg=C_DIM,
+                 font=FONT_SMALL).pack(anchor="w")
+        row = tk.Frame(inner, bg=C_PANEL)
+        row.pack(fill="x", pady=(sc(4), sc(10)))
+        self._ng_pills = {}
+        for val, lab in (("", "关闭"), ("top", "进榜才传"), ("all", "全部上传")):
+            p = Pill(row, lab, command=self._ng(val), bg=C_PANEL,
+                     height=28, padx=14)
+            p.pack(side="left", padx=(0, sc(8)))
+            self._ng_pills[val] = p
+
+        tk.Frame(inner, bg=C_LINE, height=sc(1)).pack(fill="x", pady=sc(6))
+        tk.Label(inner, text="LSF 基准", bg=C_PANEL, fg=C_DIM,
+                 font=FONT_SMALL).pack(anchor="w")
+        row = tk.Frame(inner, bg=C_PANEL)
+        row.pack(fill="x", pady=(sc(4), sc(2)))
+        self._lsf_pill = Pill(row, "", command=self._toggle_lsf, bg=C_PANEL,
+                              height=28, padx=16, min_width=110)
+        self._lsf_pill.pack(side="left")
+        self._lsf_note = tk.Label(inner, text="", bg=C_PANEL, fg=C_DIM,
+                                  font=FONT_SMALL, anchor="w", justify="left")
+        self._lsf_note.pack(fill="x", pady=(sc(2), 0))
+        self._refresh()
+        self.grab_set()
         self.update_idletasks()
         w, h = self.winfo_reqwidth(), self.winfo_reqheight()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        x = max(sc(4), min(int(x), sw - w - sc(4)))
-        y = max(sc(4), min(int(y), sh - h - sc(4)))
-        self.geometry("+%d+%d" % (x, y))
-        self.bind("<Escape>", lambda e: self.close_all())
-        self.bind("<Button-1>", self._on_click)
-        if parent is None:
-            self.grab_set()
-            self.bind("<FocusOut>", lambda e: self.after(40, self._check_focus))
-            self.focus_set()
+        x = app.winfo_rootx() + (app.winfo_width() - w) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - h) // 3
+        self.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        self.focus_set()
 
-    def _make_row(self, it):
-        enabled = it.get("enabled", True)
-        row = tk.Frame(self._body, bg=C_PANEL)
-        row.pack(fill="x")
-        ind = tk.Label(row, bg=C_PANEL, fg=C_ACCENT, font=FONT_UI,
-                       width=2, anchor="center")
-        ind.pack(side="left", padx=(sc(6), 0), pady=sc(5))
-        if "check" in it:
-            ind.configure(text="✓" if it["check"].get() else "")
-        elif "radio" in it:
-            ind.configure(text="●" if it["radio"].get() == it["value"] else "")
-        txt = tk.Label(row, text=it["label"], bg=C_PANEL,
-                       fg=C_TEXT if enabled else C_DIM, font=FONT_UI,
-                       anchor="w")
-        txt.pack(side="left", fill="x", expand=True,
-                 padx=(sc(2), sc(6)), pady=sc(5))
-        arrow = None
-        if "submenu" in it:
-            arrow = tk.Label(row, text="▸", bg=C_PANEL, fg=C_DIM,
-                             font=FONT_SMALL)
-            arrow.pack(side="right", padx=(0, sc(8)))
-        kids = [ind, txt] + ([arrow] if arrow else [])
+    def _act(self, cmd):
+        def run():
+            self.close()
+            cmd()
+        return run
 
-        def enter(_e=None):
-            if not enabled:
-                return
-            for k in kids:
-                k.configure(bg=C_SEL)
-            row.configure(bg=C_SEL)
-            if "submenu" in it:
-                self._open_submenu(row, it)
+    def _ng(self, val):
+        def run():
+            self.app.ng_scope_var.set(val)
+            self.app.toggle_ng_scope()
+            self._refresh()
+        return run
 
-        def leave(_e=None):
-            for k in kids:
-                k.configure(bg=C_PANEL)
-            row.configure(bg=C_PANEL)
-            if "submenu" in it:
-                self._schedule_sub_close()
+    def _toggle_lsf(self):
+        self.app.var_lsf_fixed.set(not self.app.var_lsf_fixed.get())
+        self.app.toggle_lsf_fixed()
+        self._refresh()
 
-        def click(_e=None):
-            if not enabled:
-                return "break"
-            if "submenu" in it:
-                self._open_submenu(row, it)
-                return "break"
-            cmd = it.get("cmd")
-            self.close_all()
-            if cmd:
-                cmd()
-            return "break"
+    def _refresh(self):
+        for val, p in self._ng_pills.items():
+            p.set_selected(self.app.ng_scope_var.get() == val)
+        fixed = self.app.var_lsf_fixed.get()
+        self._lsf_pill.set_text("固定基准" if fixed else "实时基准")
+        self._lsf_pill.set_selected(fixed)
+        self._lsf_note.configure(
+            text=("赛季快照 %s · 不随网站更新" % SEASON_ANCHORS_AT) if fixed
+            else "跟随网站实时锚点")
 
-        for w in [row] + kids:
-            w.bind("<Enter>", enter)
-            w.bind("<Leave>", leave)
-            w.bind("<Button-1>", click)
-        return row
-
-    # ---- 二级子菜单 ----
-    def _open_submenu(self, row, it):
-        if self._sub_after:
-            self.after_cancel(self._sub_after)
-            self._sub_after = None
-        if self._submenu is not None and self._cascade_row is row:
-            return
-        self._close_submenu()
-        self._cascade_row = row
-        self.update_idletasks()
-        sx = row.winfo_rootx() + row.winfo_width() - sc(2)
-        sy = row.winfo_rooty() - sc(1)
-        self._submenu = StyleMenu(self.master, it["submenu"], sx, sy, parent=self)
-        self._submenu.bind("<Enter>", lambda e: self._cancel_sub_close())
-        self._submenu.bind("<Leave>", lambda e: self._schedule_sub_close())
-
-    def _cancel_sub_close(self):
-        if self._sub_after:
-            self.after_cancel(self._sub_after)
-            self._sub_after = None
-
-    def _schedule_sub_close(self):
-        self._cancel_sub_close()
-        self._sub_after = self.after(140, self._maybe_close_sub)
-
-    def _maybe_close_sub(self):
-        self._sub_after = None
-        if self._submenu is None:
-            return
-        px, py = self.winfo_pointerxy()
-        w = self.winfo_containing(px, py)
-        if w is not None and (self._within(w, self._submenu)
-                              or self._within(w, self._cascade_row)):
-            return
-        self._close_submenu()
-
-    @staticmethod
-    def _within(w, top):
-        while w is not None:
-            if w is top:
-                return True
-            w = getattr(w, "master", None)
-        return False
-
-    def _close_submenu(self):
-        self._cancel_sub_close()
-        if self._submenu is not None:
-            self._submenu.destroy()
-            self._submenu = None
-        self._cascade_row = None
-
-    # ---- 收起 ----
-    def _on_click(self, e):
-        if e.widget is self or e.widget is self._body:
-            self.close_all()
-
-    def _check_focus(self):
-        if self._closed:
-            return
-        fg = self.focus_get()
-        if fg is None or not (self._within(fg, self)
-                              or (self._submenu and self._within(fg, self._submenu))):
-            self.close_all()
-
-    def close_all(self):
+    def close(self):
         if self._closed:
             return
         self._closed = True
-        if self._parent is not None:
-            self._parent.close_all()
-            return
-        self._close_submenu()
         try:
             self.grab_release()
         except tk.TclError:
             pass
         self.destroy()
-
 
 # ------------------------------------------------------------------ 统计卡片
 class StatCard(tk.Canvas):
@@ -3071,9 +2996,8 @@ class App(tk.Tk):
         self.site_ng_err = ""
         # LSF：锚点是全站前二十名的水平，只能联网取一次；断网时用上次存下来的。
         self.lsf_anchors, self.lsf_anchors_at = load_lsf_anchors()
-        self.lsf_fixed, self.lsf_fixed_at = load_lsf_fixed()
         self.var_lsf_fixed = tk.BooleanVar(
-            value=bool(load_config().get("lsf_fixed")) and bool(self.lsf_fixed))
+            value=bool(load_config().get("lsf_fixed")))
         self._lsf_cache = None         # (数据指纹, 报告)
         self._gain_cache = None        # (数据指纹, {path: 涨分})
         self._site_seq = 0             # 网站请求代次：退出/换号后旧结果直接丢弃
@@ -3371,6 +3295,7 @@ class App(tk.Tk):
         self.banner.pack(fill="x")
         self.banner.bind("<Configure>", self._draw_banner)
         for tag, cmd in (("b_settings", self.open_settings),
+                         ("b_paths", self.open_paths),
                          ("b_play", self.launch_game)):
             self.banner.tag_bind(tag, "<Button-1>", lambda _e, c=cmd: c())
 
@@ -3490,7 +3415,7 @@ class App(tk.Tk):
 
         # 右侧按钮（白底粉字）。画法是「从右往左」，所以列表最后一项在最左边：
         # 启动元扫雷放最后 —— 它在阅读顺序上最先被看到，位置也固定不随其他按钮增减。
-        # 不常用的操作（重扫 / 换目录 / 路径 / 导出 / 诊断 / 偏好）收进「设置」菜单。
+        # 路径单独成按钮（启动元扫雷右边）；其余不常用操作收进「设置」弹窗。
         font_m = tkfont.Font(family=FAM_UI, size=9, weight="bold")
         # 三态：没在跑 / 刚点过启动、等它起来 / 确认在跑。宽度按最长那句
         # 算死，所以整排按钮不会因为状态变化而左右跳。
@@ -3500,7 +3425,9 @@ class App(tk.Tk):
             play = "正在启动元扫雷"
         else:
             play = "启动元扫雷"
-        buttons = [("设置", "b_settings")]
+        n = len(self.roots)
+        buttons = [("设置", "b_settings"),
+                   ("路径 (%d)" % n if n else "路径", "b_paths")]
         right = w - sc(22)
         bh = sc(30)
         by = cy - bh / 2.0
@@ -3511,8 +3438,6 @@ class App(tk.Tk):
                        fill="#ffffff", width=0, tags=(tag,))
             cv.create_text((x1 + right) / 2.0, by + bh / 2.0, text=text,
                            fill=C_ACCENT, font=(FAM_UI, 9, "bold"), tags=(tag,))
-            if tag == "b_settings":
-                self._settings_xy = (x1, by + bh)
             right = x1 - sc(10)
 
         # 启动元扫雷：宽度按最长文案算死，切换状态时整排按钮不会左右跳
@@ -6460,35 +6385,11 @@ class App(tk.Tk):
         PathsDialog(self)
 
     def open_settings(self):
-        """横幅「设置」：不常用的操作与偏好都收在这里（同风格二级菜单）。"""
-        old = getattr(self, "_settings_menu", None)
-        if old is not None:
-            old.close_all()
-        n = len(self.roots)
-        items = [
-            {"label": "重新扫描", "cmd": self.start_scan},
-            {"label": "换目录…", "cmd": self.pick_dir},
-            {"label": "路径 (%d)…" % n if n else "路径…",
-             "cmd": self.open_paths},
-            {"label": "导出 CSV", "cmd": self.export_csv},
-            {"label": "诊断…", "cmd": self.open_diagnostics},
-            {"sep": True},
-            {"label": "固定 LSF 基准（不随网站更新）",
-             "check": self.var_lsf_fixed, "cmd": self.toggle_lsf_fixed},
-            {"label": "重新取固定基准", "cmd": self.refreeze_lsf,
-             "enabled": bool(self.var_lsf_fixed.get())},
-            {"sep": True},
-            {"label": "强无猜上传（不计入统计）", "submenu": [
-                {"label": lab, "radio": self.ng_scope_var, "value": val,
-                 "cmd": self.toggle_ng_scope}
-                for val, lab in (("", "关闭"), ("top", "进榜才传"),
-                                 ("all", "全部上传"))]},
-        ]
-        x, y = getattr(self, "_settings_xy", (sc(22), sc(60)))
-        self._settings_menu = StyleMenu(
-            self, items,
-            self.banner.winfo_rootx() + x,
-            self.banner.winfo_rooty() + y + sc(2))
+        """横幅「设置」：同风格模态弹窗（操作 / 强无猜 / LSF 两态基准）。"""
+        old = getattr(self, "_settings_dlg", None)
+        if old is not None and old.winfo_exists():
+            old.close()
+        self._settings_dlg = SettingsDialog(self)
 
     def apply_roots(self, roots, rescan=True):
         """目录列表变了 → 存盘、刷新按钮、重扫。"""
@@ -7375,9 +7276,10 @@ class App(tk.Tk):
             table.set_rows(rows)
         if hasattr(self, "lbl_top_site"):
             text, color = self._top_site_note()
-            if self.var_lsf_fixed.get() and self.lsf_fixed:
-                text += " · LSF 用固定基准（%s 冻结，设置里可改）" % time.strftime(
-                    "%Y-%m-%d", time.localtime(self.lsf_fixed_at))
+            if self.var_lsf_fixed.get():
+                text += " · LSF 用固定基准（赛季快照 %s）" % SEASON_ANCHORS_AT
+            else:
+                text += " · LSF 用实时锚点"
             self.lbl_top_site.config(text=text, foreground=color)
         self.render_lsf()
 
@@ -7385,7 +7287,7 @@ class App(tk.Tk):
         """个人 LSF：本地 + 网站合并口径，跟上面三张表同一批数据。
 
         锚点是全站前二十名的水平，没有它算不出来；没有时卡片留「—」。
-        勾了「固定 LSF 基准」就用冻结那版锚点，不随网站更新。
+        勾了「固定 LSF 基准」就用硬编码的赛季基准，不随网站更新。
         """
         card = getattr(self, "lsf_card", None)
         if card is None:
@@ -7407,23 +7309,15 @@ class App(tk.Tk):
         card.set_data(local)
 
     def _lsf_anchors_eff(self):
-        if self.var_lsf_fixed.get() and self.lsf_fixed:
-            return self.lsf_fixed
+        if self.var_lsf_fixed.get():
+            return SEASON_ANCHORS
         return self.lsf_anchors
 
     def toggle_lsf_fixed(self):
-        """固定基准：打开 = 把此刻的全站水平冻结下来；关闭 = 回到实时。"""
+        """固定基准：打开 = 用硬编码的赛季基准；关闭 = 回到实时。"""
         if self.var_lsf_fixed.get():
-            if not self.lsf_anchors:
-                self.var_lsf_fixed.set(False)
-                self.set_status("还没有全站水平，先读一次网站数据再固定基准", "warn")
-                return
-            self.lsf_fixed = dict(self.lsf_anchors)
-            self.lsf_fixed_at = int(time.time())
-            save_lsf_fixed(self.lsf_fixed)
             save_config(lsf_fixed=True)
-            self.set_status("LSF 基准已固定：%s 的全站水平"
-                            % time.strftime("%Y-%m-%d", time.localtime(self.lsf_fixed_at)),
+            self.set_status("LSF 基准已固定：赛季快照 %s" % SEASON_ANCHORS_AT,
                             "ok", hold=4000)
         else:
             save_config(lsf_fixed=False)
@@ -7433,24 +7327,6 @@ class App(tk.Tk):
         self.render_lsf()
         self.render_top()
         self.render_recent()
-
-    def refreeze_lsf(self):
-        if not self.var_lsf_fixed.get():
-            return
-        if not self.lsf_anchors:
-            self.set_status("还没有全站水平，读一次网站数据后再更新基准", "warn")
-            return
-        self.lsf_fixed = dict(self.lsf_anchors)
-        self.lsf_fixed_at = int(time.time())
-        save_lsf_fixed(self.lsf_fixed)
-        self._lsf_cache = None
-        self._gain_cache = None
-        self.render_lsf()
-        self.render_top()
-        self.render_recent()
-        self.set_status("固定基准已更新到 %s 的全站水平"
-                        % time.strftime("%Y-%m-%d", time.localtime(self.lsf_fixed_at)),
-                        "ok", hold=4000)
 
     def set_status(self, text, kind="dim", hold=None, transient=False):
         """写状态栏。``hold`` 是毫秒：到点自动退回写之前那一行。

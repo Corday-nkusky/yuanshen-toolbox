@@ -374,46 +374,66 @@ def main():
                 labels[:3] == ["详细信息", "-", "用元扫雷播放"]
                 and "复制路径" in labels and "打开所在文件夹" in labels)]
 
-    # 设置菜单：同风格二级菜单（StyleMenu），强无猜 / 固定基准两个偏好项要在
+    # 设置弹窗：操作药丸 / 强无猜三档 / LSF 两态胶囊（文案与说明随状态变）
+    def _pills(w):
+        out = []
+        for c in w.winfo_children():
+            if isinstance(c, A.Pill):
+                out.append(c)
+            out += _pills(c)
+        return out
+
     real_scan = win.start_scan
     scan_calls = []
     win.start_scan = lambda: scan_calls.append(1)
     win.open_settings()
-    sm = win._settings_menu
-    sm.update_idletasks()
-    sm.update()
-    slabels = [it.get("label", "-") for it in sm._items]
-    sm._rows[0].event_generate("<Button-1>")     # 点「重新扫描」
+    dlg = win._settings_dlg
+    dlg.update_idletasks()
+    dlg.update()
+    scan_pill = [p for p in _pills(dlg) if p._text == "重新扫描"][0]
+    no_paths = not any(p._text.startswith("路径") for p in _pills(dlg))
+    scan_pill._on_click()
     win.update()
-    act_ok = scan_calls == [1] and not sm.winfo_exists()
+    act_ok = scan_calls == [1] and not dlg.winfo_exists()
     win.start_scan = real_scan
 
     win.open_settings()
-    sm = win._settings_menu
-    sm.update_idletasks()
-    sm.update()
-    pos_int = isinstance(sm.winfo_x(), int) and isinstance(sm.winfo_y(), int)
-    row_items = [it for it in sm._items if not it.get("sep")]
-    casc = [(r, it) for r, it in zip(sm._rows, row_items) if "submenu" in it]
-    ng_labels = []
-    if casc:
-        row, it = casc[0]
-        sm._open_submenu(row, it)
-        sub = sm._submenu
-        sub.update_idletasks()
-        sub.update()
-        ng_labels = [x["label"] for x in sub._items]
-    sm.close_all()
+    dlg = win._settings_dlg
+    dlg.update_idletasks()
+    dlg.update()
+    ng_labels = [p._text for p in dlg._ng_pills.values()]
+    win.ng_scope_var.set("top")
+    dlg._refresh()
+    ng_sel = dlg._ng_pills["top"]._sel and not dlg._ng_pills[""]._sel
+    win.ng_scope_var.set("")
+    dlg._refresh()
+    win.var_lsf_fixed.set(False)
+    dlg._refresh()
+    live_txt = dlg._lsf_pill._text
+    live_note = dlg._lsf_note.cget("text")
+    dlg._lsf_pill._on_click()          # 实时 -> 固定
     win.update()
-    checks += [("设置菜单收进了强无猜子菜单",
-                any("强无猜" in s for s in slabels)),
-               ("强无猜子菜单有关闭/进榜才传/全部上传",
-                ng_labels == ["关闭", "进榜才传", "全部上传"]),
-               ("设置菜单收进了固定 LSF 基准",
-                any("固定 LSF 基准" in s for s in slabels)),
-               ("设置菜单点命令会触发并收起", act_ok),
-               ("设置菜单收起即销毁（不漏窗口）", not sm.winfo_exists()),
-               ("设置菜单弹出坐标是整数", pos_int)]
+    fix_txt = dlg._lsf_pill._text
+    fix_note = dlg._lsf_note.cget("text")
+    two_state = ("实时" in live_txt and "固定" in fix_txt
+                 and live_txt != fix_txt and dlg._lsf_pill._sel)
+    dlg._lsf_pill._on_click()          # 固定 -> 实时
+    win.update()
+    back_txt = dlg._lsf_pill._text
+    pos_int = isinstance(dlg.winfo_x(), int) and isinstance(dlg.winfo_y(), int)
+    dlg.close()
+    win.update()
+    checks += [("设置是弹窗，点命令会触发并关闭", act_ok),
+               ("路径已移出设置（单独上横幅）", no_paths),
+               ("横幅路径按钮已绑定点击",
+                bool(win.banner.tag_bind("b_paths", "<Button-1>"))),
+               ("强无猜三档药丸齐", ng_labels == ["关闭", "进榜才传", "全部上传"]),
+               ("强无猜选中态跟随", ng_sel),
+               ("LSF 两态胶囊文案随状态变", two_state),
+               ("LSF 说明随状态变（不定死）", live_note != fix_note),
+               ("LSF 胶囊再点回到实时", "实时" in back_txt),
+               ("设置弹窗收起即销毁（不漏窗口）", not dlg.winfo_exists()),
+               ("设置弹窗坐标是整数", pos_int)]
 
     # 今日总结菜单仍用原生 tk.Menu：弹出坐标必须是整数
     real_menu2, pops2 = A.tk.Menu, []
@@ -480,6 +500,19 @@ def main():
     checks += [("强无猜「全部上传」会记住", ng_all),
                ("强无猜「进榜才传」会记住", ng_top),
                ("强无猜「关闭」会记住", ng_off)]
+
+    # 固定 LSF 基准 = 硬编码赛季锚点：不依赖实时锚点，也不随其变化
+    win.lsf_anchors = {}
+    win.var_lsf_fixed.set(True)
+    fixed_ok = (win._lsf_anchors_eff() is A.SEASON_ANCHORS
+                and len(A.SEASON_ANCHORS) == 18)
+    win.lsf_anchors = {"std:bt": {"value": 1.0, "sample_count": 20}}
+    fixed_stable = win._lsf_anchors_eff() is A.SEASON_ANCHORS
+    win.var_lsf_fixed.set(False)
+    live_ok = win._lsf_anchors_eff() == win.lsf_anchors
+    checks += [("固定基准用硬编码赛季锚点（18 格）", fixed_ok),
+               ("固定基准不随实时锚点变化", fixed_stable),
+               ("不勾时回到实时锚点", live_ok)]
 
     win.destroy()
     journal.clear()
