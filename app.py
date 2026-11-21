@@ -921,7 +921,7 @@ class LsfCard(tk.Frame):
             return
 
         soft = local["soft"]
-        self.lbl_value.config(text="%.1f" % soft["lsf"], fg=C_TEXT)
+        self.lbl_value.config(text="%.2f" % soft["lsf"], fg=C_TEXT)
         grade = local.get("grade")
         et = local.get("et")
         bits = []
@@ -933,7 +933,7 @@ class LsfCard(tk.Frame):
         sens = local.get("sens") or {}
         if 1 in sens and 25 in sens:
             self.lbl_sens.config(
-                text="单局上限 %.1f · 25 局均值 %.1f"
+                text="单局上限 %.2f · 25 局均值 %.2f"
                      % (sens[1]["lsf"], sens[25]["lsf"]))
         else:
             self.lbl_sens.config(text="")
@@ -942,10 +942,10 @@ class LsfCard(tk.Frame):
                 (self.cells[0], local["levels"], soft["std:sum"]),
                 (self.cells[1], local["nf_levels"], soft["nf:sum"])):
             for (val, sub), lv in zip(line[:3], core.LEVELS):
-                val.config(text="%.1f" % levels[lv]["soft"], fg=C_TEXT)
+                val.config(text="%.2f" % levels[lv]["soft"], fg=C_TEXT)
                 sub.config(text=self._sub_text(levels[lv]))
             val, sub = line[3]
-            val.config(text="%.1f" % total, fg=C_ACCENT3)
+            val.config(text="%.2f" % total, fg=C_ACCENT3)
             sub.config(text="")
 
     def open_detail(self):
@@ -1779,7 +1779,7 @@ class LsfDetailDialog(tk.Toplevel):
                 cell.pack(side="left", padx=(sc(14), sc(22)), pady=sc(8))
                 tk.Label(cell, text="只取最好 %d 局" % n, bg=C_PANEL,
                          fg=C_DIM, font=FONT_SMALL).pack(anchor="w")
-                tk.Label(cell, text="%.1f" % sens[n]["lsf"], bg=C_PANEL,
+                tk.Label(cell, text="%.2f" % sens[n]["lsf"], bg=C_PANEL,
                          fg=C_TEXT, font=FONT_UI_B).pack(anchor="w")
                 g = sens[n].get("grade")
                 tk.Label(cell, text=("%s %.1f 阶" % g) if g else "",
