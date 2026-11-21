@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.37.0"
+APP_VER = "0.37.1"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -6305,8 +6305,8 @@ class App(tk.Tk):
         m.add_cascade(label="强无猜上传（不计入统计）", menu=ng_menu)
         x, y = getattr(self, "_settings_xy", (sc(22), sc(60)))
         try:
-            m.tk_popup(self.banner.winfo_rootx() + x,
-                       self.banner.winfo_rooty() + y + sc(2))
+            m.tk_popup(int(self.banner.winfo_rootx() + x),
+                       int(self.banner.winfo_rooty() + y + sc(2)))
         finally:
             m.grab_release()
             ng_menu.destroy()

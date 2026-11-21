@@ -365,7 +365,7 @@ def main():
                 and "复制路径" in labels and "打开所在文件夹" in labels)]
 
     # 设置菜单：不常用操作收进去，强无猜 / 固定基准两个偏好项要在
-    real_menu2, made2 = A.tk.Menu, []
+    real_menu2, made2, pops2 = A.tk.Menu, [], []
 
     class _Menu2:
         def __init__(self, master=None, tearoff=0):
@@ -388,7 +388,7 @@ def main():
             self.items.append("-")
 
         def tk_popup(self, x, y):
-            pass
+            pops2.append((x, y))
 
         def grab_release(self):
             pass
@@ -399,6 +399,7 @@ def main():
     A.tk.Menu = _Menu2
     try:
         win.open_settings()
+        win._today_menu()
     finally:
         A.tk.Menu = real_menu2
     slabels = made2[0].items if made2 else []
@@ -409,7 +410,11 @@ def main():
                 ng_labels == ["关闭", "进榜才传", "全部上传"]),
                ("设置菜单收进了固定 LSF 基准",
                 any("固定 LSF 基准" in s for s in slabels)),
-               ("设置菜单弹完就 destroy", bool(made2))]
+               ("设置菜单弹完就 destroy", bool(made2)),
+               ("设置/今日总结菜单弹出坐标是整数（tk_popup 不收浮点）",
+                len(pops2) == 2
+                and all(isinstance(x, int) and isinstance(y, int)
+                        for x, y in pops2))]
 
     # 强无猜范围：选择要落盘，且不动标准模式的范围
     ng_before = A.load_config().get("ng_scope", None)
