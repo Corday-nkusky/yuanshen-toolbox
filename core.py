@@ -80,13 +80,17 @@ TOP_SOURCE_CN = {"local": "本地", "site": "网站", "both": "两边"}
 
 def _load_lib():
     """延迟加载 ms-toollib；不可用时返回 None（统计降级为仅按文件名）。"""
+    global LOAD_ERR
     try:
         import ms_toollib as ms
-    except Exception:                     # noqa: BLE001
+    except Exception as e:                 # noqa: BLE001
+        LOAD_ERR = "%s: %s" % (type(e).__name__, e)
         return None
     return ms
 
 
+LOAD_ERR = ""
+READ_ERR = ""
 MSLIB = _load_lib()
 
 # 录像文件的头部特征。ms-toollib 拿到垃圾内容不是抛异常，而是**直接让进程消失**
@@ -184,9 +188,11 @@ def read_video(path):
     ``v.events[-1].key_dynamic_params`` 才是整局累计值——这一点很容易踩坑。
     """
     if MSLIB is None:
+        READ_ERR = "ms-toollib 未加载：" + (LOAD_ERR or "未知原因")
         return None
     src = video_src(path)
     if src is None or not looks_like_video(path, src):
+        READ_ERR = "头部特征不符（损坏或解析库不认识的新格式）：%s" % os.path.basename(path)
         return None
     try:
         v = (MSLIB.AvfVideo if src == "arb" else MSLIB.EvfVideo)(path)
@@ -233,7 +239,8 @@ def read_video(path):
             "t0": t0,
             "t1": t1,
         }
-    except BaseException:                 # noqa: BLE001  (rust panic 也是 BaseException)
+    except BaseException as e:            # noqa: BLE001  (rust panic 也是 BaseException)
+        READ_ERR = "%s: %s（%s）" % (type(e).__name__, e, os.path.basename(path))
         return None
 
 
@@ -732,6 +739,8 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
     info["elapsed"] = _time.perf_counter() - t0
     info["unique"] = len(games)
     info["with_rce"] = sum(1 for g in games if g.get("nf") is not None)
+    info["lib_missing"] = MSLIB is None
+    info["read_err"] = READ_ERR
     info["nf_count"] = sum(1 for g in games if g.get("nf") is True)
     info["fl_count"] = sum(1 for g in games if g.get("nf") is False)
     return games, info

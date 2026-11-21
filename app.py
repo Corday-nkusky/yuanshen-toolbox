@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.38.1"
+APP_VER = "0.38.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -6743,6 +6743,7 @@ class App(tk.Tk):
         # 没有 rce 数据（ms-toollib 缺失）时，本地分不出 NF/FL，前端成绩的
         # NF 榜一定是空的，退回全PB；PB 榜不强制 —— 网站 PB 不依赖本地重演，
         # NF PB 仍可能有内容（来源列会标「网站」）。
+        self._local_rce = bool(info.get("with_rce"))
         if not info.get("with_rce") and self._top_style != "all":
             self.set_top_style("all")
         self._recompute_pb()          # 顺带重画最近完成局（那列要给「距当前 PB」）
@@ -6769,6 +6770,10 @@ class App(tk.Tk):
             extra.append(f"NF {info['nf_count']} · FL {info['fl_count']}")
         if info.get("rce_failed"):
             extra.append(f"读不出 {info['rce_failed']} 条")
+        if info.get("lib_missing"):
+            extra.append("ms-toollib 未加载，本地 NF/FL 不可用")
+        elif not info.get("with_rce"):
+            extra.append("本地 NF/FL 不可用（录像重演失败）")
         if info.get("tampered"):
             extra.append(f"文件名与录像不符 {len(info['tampered'])}")
         if info.get("level_conflict"):
@@ -7281,6 +7286,9 @@ class App(tk.Tk):
                 text += " · LSF 用固定基准（赛季快照 %s）" % SEASON_ANCHORS_AT
             else:
                 text += " · LSF 用实时锚点"
+            if not getattr(self, "_local_rce", True):
+                text += " · 本地 NF/FL 不可用，NF 仅网站"
+                color = C_WARN
             self.lbl_top_site.config(text=text, foreground=color)
         self.render_lsf()
 
@@ -7538,10 +7546,17 @@ def main():
                 det = "detail_png=%dx%d" % img4.size
             except Exception as e:              # noqa: BLE001
                 det = "detail_png=ERR %r" % (e,)
+            # 本地 NF/FL 全靠 ms-toollib 重演；打包后它若加载失败会静默降级成
+            # 「仅按文件名」（整批本地局风格「?」、NF 只剩网站），回执必须报出来
+            try:
+                lib = "ms_toollib=%s" % ("ok" if core.MSLIB
+                                         else "MISSING " + (core.LOAD_ERR or ""))
+            except Exception as e:              # noqa: BLE001
+                lib = "ms_toollib=ERR %r" % (e,)
             with open(out, "w", encoding="utf-8") as fh:
-                fh.write("version=%s\nfrozen=%s\n%s\n%s\n%s\n%s\n"
+                fh.write("version=%s\nfrozen=%s\n%s\n%s\n%s\n%s\n%s\n"
                          % (APP_VER, bool(getattr(sys, "frozen", False)), png, mk,
-                            lvl, det))
+                            lvl, det, lib))
         except Exception:
             pass
         return

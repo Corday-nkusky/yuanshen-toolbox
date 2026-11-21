@@ -78,6 +78,14 @@ def system_info():
         f"架构        {platform.machine()} / {platform.architecture()[0]}",
     ]
     try:
+        import core
+        lines.append("ms-toollib  " + ("已加载" if core.MSLIB
+                                       else "未加载：" + (core.LOAD_ERR or "未知原因")))
+        if core.READ_ERR:
+            lines.append("重演失败    " + core.READ_ERR)
+    except Exception:
+        pass
+    try:
         import ctypes
         user32 = ctypes.windll.user32
         lines.append(f"屏幕        {user32.GetSystemMetrics(0)}x{user32.GetSystemMetrics(1)}")
