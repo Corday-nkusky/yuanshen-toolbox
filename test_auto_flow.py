@@ -148,6 +148,30 @@ def main():
           core.read_video(os.path.join(REPLAY, os.path.basename(sample[0]))) is not None)
     os.remove(bad)
 
+    # evf v4 第 3 字节的高 3 位是三个独立游戏设置，低 5 位保留。
+    # 穷举全部 256 种取值：8 种合法组合都必须走完整的 ms-toollib 主解析，
+    # 其余保留位非零的取值在主解析和 lite 兜底中都不能漏进去。
+    with open(sample[0], "rb") as fh:
+        settings_raw = bytearray(fh.read())
+    settings_path = os.path.join(REPLAY, "settings.evf")
+    wrong_acceptance = []
+    wrong_route = []
+    for setting in range(256):
+        settings_raw[2] = setting
+        with open(settings_path, "wb") as fh:
+            fh.write(settings_raw)
+        vid = core.read_video(settings_path)
+        valid = not (setting & 0x1F)
+        if (vid is not None) != valid:
+            wrong_acceptance.append(setting)
+        if valid and vid is not None and vid.get("via") != "lib":
+            wrong_route.append(setting)
+    check("evf 游戏设置字节：8 种合法组合全部接受、非法保留位全部拒绝",
+          not wrong_acceptance)
+    check("8 种合法游戏设置组合都走 ms-toollib 主解析，不降级 lite",
+          not wrong_route)
+    os.remove(settings_path)
+
     # ---- 4. 配置：空范围不能被 `or` 吞回默认三项 ----
     check("配置缺字段 -> 默认三项",
           A.config_auto_scopes({}) == ["top", "top_nf", "pb"])

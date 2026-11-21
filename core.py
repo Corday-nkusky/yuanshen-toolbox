@@ -97,9 +97,13 @@ MSLIB = _load_lib()
 
 # 录像文件的头部特征。ms-toollib 拿到垃圾内容不是抛异常，而是**直接让进程消失**
 # （实测：64 字节全零的 .evf，parse() 里崩在 C++ 层，Python 侧抓不到）。
-# 所以交给它之前先自己核一眼。本机全量核过：270 个 .evf 首字节都是 0x04、第三个
-# 字节都是 0x40；7198 个 .avf 首字节都是 0x34，其余字节不固定。
+# 所以交给它之前先自己核一眼。
+#
+# evf v4 第 3 字节是游戏设置，不是固定 magic：0x80=问号、0x40=鼠标指针不能
+# 越界、0x20=触雷自动重开；三项可独立组合，低 5 位保留且必须为 0。
+# 官方规范：https://github.com/eee555/ms_toollib/blob/main/evf标准.md （v4 第 3 项）
 _MAGIC = {"ms": (0, 0x04), "arb": (0, 0x34)}
+_EVF_SETTINGS_RESERVED = 0x1F
 
 
 def looks_like_video(path, src=None):
@@ -124,7 +128,7 @@ def looks_like_video(path, src=None):
     pos, val = _MAGIC[src]
     if head[pos] != val:
         return False
-    return src != "ms" or head[2] == 0x40
+    return src != "ms" or not (head[2] & _EVF_SETTINGS_RESERVED)
 
 
 def _wall_epoch(us, src):
@@ -195,7 +199,8 @@ def _evf_lite(path):
     try:
         with open(path, "rb") as fh:
             b = fh.read()
-        if len(b) < 34 or b[0] != 4:
+        if (len(b) < 34 or b[0] != 4
+                or (b[2] & _EVF_SETTINGS_RESERVED)):
             return None
         dig = b[1]
         row, col, size = b[3], b[4], b[7]
