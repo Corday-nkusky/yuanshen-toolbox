@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.38.2"
+APP_VER = "0.38.3"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -6770,7 +6770,10 @@ class App(tk.Tk):
             extra.append(f"NF {info['nf_count']} · FL {info['fl_count']}")
         if info.get("rce_failed"):
             extra.append(f"读不出 {info['rce_failed']} 条")
-        if info.get("lib_missing"):
+        if info.get("lite_used"):
+            extra.append("ms-toollib 不可用，%d 局由内置解析提供 NF/FL"
+                         % info["lite_used"])
+        elif info.get("lib_missing"):
             extra.append("ms-toollib 未加载，本地 NF/FL 不可用")
         elif not info.get("with_rce"):
             extra.append("本地 NF/FL 不可用（录像重演失败）")
@@ -7553,10 +7556,31 @@ def main():
                                          else "MISSING " + (core.LOAD_ERR or ""))
             except Exception as e:              # noqa: BLE001
                 lib = "ms_toollib=ERR %r" % (e,)
+            # 兜底路径也要在冻结产物里真跑一次：构造最小 evf v4 头部读一遍
+            try:
+                import tempfile
+                hb = bytearray()
+                hb += bytes([4, 0xF0, 0, 8, 8]) + (10).to_bytes(2, "big")
+                hb += bytes([16]) + (0).to_bytes(2, "big") + (4).to_bytes(2, "big")
+                hb += (1234).to_bytes(4, "big") + b"CN"
+                hb += (1700000000000000).to_bytes(8, "big") * 2
+                hb += b"selftest\0" + b"p\0" + b"\0" + b"\0" + (0).to_bytes(2, "big")
+                hb += b"\xff" * 8 + (0).to_bytes(2, "big") + b"\0" + (0).to_bytes(2, "big")
+                lp = os.path.join(tempfile.gettempdir(), "ytb-selftest.evf")
+                with open(lp, "wb") as fh:
+                    fh.write(hb)
+                ld = core._evf_lite(lp)
+                okl = bool(ld) and (ld["rce"] == 0 and ld["bv"] == 4
+                                    and ld["timems"] == 1234 and ld["level"] == "b"
+                                    and ld["ident"] == "p")
+                lite = "evf_lite=%s" % ("ok" if okl else "BAD %r" % (ld,))
+                os.remove(lp)
+            except Exception as e:              # noqa: BLE001
+                lite = "evf_lite=ERR %r" % (e,)
             with open(out, "w", encoding="utf-8") as fh:
-                fh.write("version=%s\nfrozen=%s\n%s\n%s\n%s\n%s\n%s\n"
+                fh.write("version=%s\nfrozen=%s\n%s\n%s\n%s\n%s\n%s\n%s\n"
                          % (APP_VER, bool(getattr(sys, "frozen", False)), png, mk,
-                            lvl, det, lib))
+                            lvl, det, lib, lite))
         except Exception:
             pass
         return

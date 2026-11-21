@@ -91,6 +91,7 @@ def _load_lib():
 
 LOAD_ERR = ""
 READ_ERR = ""
+LITE_USED = 0
 MSLIB = _load_lib()
 
 # 录像文件的头部特征。ms-toollib 拿到垃圾内容不是抛异常，而是**直接让进程消失**
@@ -180,20 +181,73 @@ def clock_text(t0):
         return ""
 
 
+def _evf_lite(path):
+    """纯 Python 读 evf v4 头部，不依赖 ms-toollib；读不出返回 None。
+
+    NF 判定直接用摘要字节的 0x10 位（evf 标准定义它等价于 right_eff == 0），
+    不重演事件流。rce 数值给不出：NF 记 0、FL 记 None，上层只用 nf/style。
+    """
+    global LITE_USED
+    try:
+        with open(path, "rb") as fh:
+            b = fh.read()
+        if len(b) < 34 or b[0] != 4:
+            return None
+        dig = b[1]
+        row, col = b[3], b[4]
+        mines = int.from_bytes(b[5:7], "big")
+        mode = int.from_bytes(b[8:10], "big")
+        bv = int.from_bytes(b[10:12], "big")
+        tms = int.from_bytes(b[12:16], "big")
+        st = int.from_bytes(b[18:26], "big")
+        en = int.from_bytes(b[26:34], "big")
+        p = 34
+        for _ in range(3 if dig & 0x08 else 1):   # 软件名；转码录像多两个串
+            p = b.index(b"\0", p) + 1
+        i = b.index(b"\0", p)
+        ident = b[p:i].decode("utf-8", "replace")
+        nf = bool(dig & 0x10)
+        done = bool(dig & 0x80)
+        LITE_USED += 1
+        return {
+            "rce": 0 if nf else None,
+            "solved": bv if done else 0,
+            "bv": bv,
+            "time": tms / 1000.0,
+            "timems": tms,
+            "level": {(8, 8, 10): "b", (16, 16, 40): "i",
+                      (16, 30, 99): "e"}.get((row, col, mines)),
+            "mode": mode,
+            "completed": done,
+            "ident": ident,
+            "valid": None,
+            "src": "ms",
+            "t0": _wall_epoch(st, "ms"),
+            "t1": _wall_epoch(en, "ms"),
+            "via": "lite",
+        }
+    except Exception:                      # noqa: BLE001  兜底再失败就维持原降级
+        return None
+
+
 def read_video(path):
     """用 ms-toollib 重演一局录像，返回权威指标；失败返回 None。
 
     注意：``analyse()`` 之后各 getter 读的是「当前播放位置」的累计值，而
     ``current_event_id`` 停在 0，所以直接取 ``v.rce`` 永远是 0。必须取
     ``v.events[-1].key_dynamic_params`` 才是整局累计值——这一点很容易踩坑。
+
+    库缺失或重演失败时，元扫雷录像退回 ``_evf_lite`` 读头部：NF/FL 与
+    时间、bv、日期照常可用，失败原因仍记在 READ_ERR 里供诊断。
     """
-    if MSLIB is None:
-        READ_ERR = "ms-toollib 未加载：" + (LOAD_ERR or "未知原因")
-        return None
+    global READ_ERR
     src = video_src(path)
     if src is None or not looks_like_video(path, src):
         READ_ERR = "头部特征不符（损坏或解析库不认识的新格式）：%s" % os.path.basename(path)
-        return None
+        return _evf_lite(path) if src == "ms" else None
+    if MSLIB is None:
+        READ_ERR = "ms-toollib 未加载：" + (LOAD_ERR or "未知原因")
+        return _evf_lite(path) if src == "ms" else None
     try:
         v = (MSLIB.AvfVideo if src == "arb" else MSLIB.EvfVideo)(path)
         v.parse()
@@ -238,10 +292,11 @@ def read_video(path):
             "src": src,
             "t0": t0,
             "t1": t1,
+            "via": "lib",
         }
     except BaseException as e:            # noqa: BLE001  (rust panic 也是 BaseException)
         READ_ERR = "%s: %s（%s）" % (type(e).__name__, e, os.path.basename(path))
-        return None
+        return _evf_lite(path) if src == "ms" else None
 
 
 def stnb_of(bv, time, level):
@@ -528,6 +583,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
         "duplicates": 0,
         "dup_removed": 0,
         "rce_failed": 0,
+        "lite_used": 0,
         "retimed": 0,
         "refilled": 0,
         "tampered": [],
@@ -597,6 +653,8 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                             _cache.put(path, mt_ns, size, vid)
                             if stale:
                                 info["refilled"] += 1
+                    if vid is not None and vid.get("via") == "lite":
+                        info["lite_used"] += 1
 
                 if src == "ms":
                     if fn[:2].lower() == CUSTOM_PREFIX:

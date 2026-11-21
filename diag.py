@@ -83,6 +83,9 @@ def system_info():
                                        else "未加载：" + (core.LOAD_ERR or "未知原因")))
         if core.READ_ERR:
             lines.append("重演失败    " + core.READ_ERR)
+        if core.LITE_USED:
+            lines.append("内置兜底    %d 局由纯 Python 头部解析提供 NF/FL"
+                         % core.LITE_USED)
     except Exception:
         pass
     try:
