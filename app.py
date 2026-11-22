@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.38.6"
+APP_VER = "0.38.7"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1445,7 +1445,8 @@ class PBGrid(tk.Frame):
         self._bv_of = {}
         self._sections = []       # (级别, 首行 BV, 控件池起点, 行数)
 
-        self.cv = tk.Canvas(self, bg=C_BG, highlightthickness=0, bd=0)
+        self.cv = tk.Canvas(self, bg=C_BG, highlightthickness=0, bd=0,
+                            yscrollincrement=sc(self.ROW_H + 2))
         self.vs = ttk.Scrollbar(self, orient="vertical", command=self.cv.yview)
         self.cv.configure(yscrollcommand=self._on_yscroll)
         self._vs_on = False
@@ -1453,7 +1454,9 @@ class PBGrid(tk.Frame):
         self.inner = tk.Frame(self.cv, bg=C_BG)
         self._win = self.cv.create_window(0, 0, window=self.inner, anchor="nw")
         self.cv.bind("<Configure>", self._on_configure)
+        self.cv.bind("<MouseWheel>", self._on_wheel)
         self.inner.bind("<Configure>", self._on_inner)
+        self.inner.bind("<MouseWheel>", self._on_wheel)
 
         tk.Label(self.inner, text="", bg=C_BG).grid(row=0, column=0)
         for c in range(self.COLS):
@@ -1474,6 +1477,8 @@ class PBGrid(tk.Frame):
                              font=FONT_SMALL, anchor="w", padx=sc(10))
             self._section_titles[lv] = title
             self._section_empty[lv] = empty
+        for child in self.inner.winfo_children():
+            child.bind("<MouseWheel>", self._on_wheel)
         self._rowlab = []
         self._cells = []
         self._max_h = 0
@@ -1515,8 +1520,9 @@ class PBGrid(tk.Frame):
         self._sync_vs()
 
     def _on_wheel(self, event):
-        if self._vs_on:
-            self.cv.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        if self._vs_on and event.delta:
+            self.cv.yview_scroll(-3 if event.delta > 0 else 3, "units")
+            return "break"
 
     # --- 控件池 ---
     def _ensure_rows(self, n):
@@ -1525,6 +1531,7 @@ class PBGrid(tk.Frame):
             lab = tk.Label(self.inner, text="", bg=C_BG, fg=C_DIM,
                            font=FONT_SMALL, anchor="e", padx=sc(8))
             lab.grid(row=i + 1, column=0, sticky="nsew", pady=(0, sc(2)))
+            lab.bind("<MouseWheel>", self._on_wheel)
             row = []
             for c in range(self.COLS):
                 cell = tk.Label(self.inner, text="", bg=PB_EMPTY_BG, fg=C_TEXT,

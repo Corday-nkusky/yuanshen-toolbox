@@ -215,9 +215,10 @@ def main():
             want = anchor if anchor in after_days else near(after_days, anchor)
             got = win._daily_top_date()
             visible = bool(tv.bbox(want)) if want in tv.get_children() else False
-            # 末尾几天下面行数不够置顶时，只要求目标那天在视口里可见
+            # 末尾几天或全表不足一屏时无法置顶，只要求目标那天在视口里可见
             tail = after_days[-8:]
-            ok = got == want or (want in tail and visible)
+            whole_page = tv.yview()[0] <= 0 and tv.yview()[1] >= 1
+            ok = got == want or (visible and (want in tail or whole_page))
             check("切到%s仍停在同一天（或最近一天 %s），实际 %s"
                   % (A.core.LEVEL_CN[dst], want, got), ok)
             win.set_daily_level(src)        # 恢复，别影响后面的测试
@@ -319,6 +320,23 @@ def main():
             check("%s 最低 BV %d 不低于网格起点 %d"
                   % (A.core.LEVEL_CN[lv], min(got), A.PB_BV_FLOOR[lv]),
                   all(bv >= A.PB_BV_FLOOR[lv] for bv in got))
+
+        if grid._vs_on:
+            grid.cv.yview_moveto(0)
+            win.update()
+            wheel = type("WheelEvent", (), {"delta": -120})()
+            before_y = grid.cv.canvasy(0)
+            grid._on_wheel(wheel)
+            win.update()
+            moved = grid.cv.canvasy(0) - before_y
+            check("PB 滚轮每格按三行滚动",
+                  abs(moved - 3 * A.sc(grid.ROW_H + 2)) <= 1)
+            wheel_targets = [grid.cv, grid.inner, grid._section_titles["b"],
+                             grid._rowlab[0], grid._cells[0][2]]
+            check("格子、行号、级别标题和空白处都响应滚轮",
+                  all(w.bind("<MouseWheel>") for w in wheel_targets))
+            grid.cv.yview_moveto(0)
+            win.update()
         shot(win, "shot_pb.png")
 
         # 搜索：只给命中格子描边，不把别的格子藏掉（藏了会造出假断层）
