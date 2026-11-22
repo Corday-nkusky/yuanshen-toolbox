@@ -382,7 +382,13 @@ def test_detail_v4():
     check("BV 累计不足 3 局不算纪录",
           not summary._record_bvs(today, summary._pb_curve(past2), hist2))
     check("BV 累计 ≥3 局且今天最快才算纪录",
-          summary._record_bvs(today, summary._pb_curve(past2), hist3) == {100})
+          summary._record_bvs(today, summary._pb_curve(past2), hist3)
+          == {id(today[0])})
+    same_bv = [{"bv": 100, "time": t} for t in (9.0, 10.0, 11.0)]
+    past = [{"bv": 100, "time": t} for t in (12.0, 13.0)]
+    check("同 BV 多局只认当天最快的那局，不认整组 BV",
+          summary._record_bvs(same_bv, summary._pb_curve(past), same_bv + past)
+          == {id(same_bv[0])})
     tie = [{"bv": 100, "time": 10.0}]
     check("平历史最快不算刷新纪录",
           not summary._record_bvs(tie, summary._pb_curve(past2),
@@ -536,9 +542,31 @@ def test_pb_line():
               abs(pb_ref[int(g["bv"])][0] - g["time"] * 1.15) < 1e-9
               for g in gs))
     check("新纪录点都在 PB 线下方（破墙看得见）",
-          recs and all(pb_ref[bv][0] > min(
-              g["time"] for g in gs if int(g["bv"]) == bv) for bv in recs))
+          recs and all(pb_ref[int(g["bv"])][0] > g["time"]
+                       for g in gs if id(g) in recs))
     check("脚注写明 PB 线口径", any("PB 线 = 今天之前" in s for s in seen))
+
+    # 同一天同 BV 的普通局不能跟着破纪录局一起画成空心环。
+    same_bv = [{"bv": 100, "time": t} for t in (9.0, 10.0, 11.0)]
+    past = [{"bv": 100, "time": t} for t in (12.0, 13.0)]
+    recs = summary._record_bvs(same_bv, summary._pb_curve(past), same_bv + past)
+    dots = []
+
+    class ScatterSheet:
+        def line(self, *a, **kw):
+            pass
+
+        def text(self, *a, **kw):
+            pass
+
+        def dot(self, *a):
+            dots.append(a)
+
+    summary._scatter(ScatterSheet(), 0, 0, 300, 100, same_bv, {},
+                     "#8f6ce8", recs, summary._pb_curve(past))
+    rings = [d for d in dots if d[2] == 3.4]
+    check("同 BV 多局只有真正破纪录的一局画空心环",
+          len(rings) == 1 and rings[0][1] == max(d[1] for d in dots))
 
     seen = _seen_texts(lambda: summary.levels_detail_png(
         [("e", "高级", row(games=16))], {"e": gs}, "0.36.0", "2026-11-15"))

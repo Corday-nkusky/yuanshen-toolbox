@@ -81,6 +81,96 @@ def test_filename():
           core.parse_avf_filename("Ju Ze En_Exp_26.1(3bv123).avf") is None)
 
 
+def test_endpoint_read():
+    """终点指标直接读 getter，不允许退回导出整局 events。"""
+    path = os.path.join(TMP, "endpoint.avf")
+    with open(path, "wb") as fh:
+        fh.write(bytes([0x34]) + b"\0" * 31)
+
+    class FakeVideo:
+        player_identifier = "tester"
+        start_time = end_time = 0
+        level, mode, is_completed = 3, 0, True
+        rtime, rtime_ms, bbbv = 1.25, 1250, 10
+
+        def __init__(self, path):
+            self.rce = self.left = self.flag = self.bbbv_solved = 0
+
+        @property
+        def events(self):
+            raise AssertionError("不应导出整局 events")
+
+        @property
+        def current_time(self):
+            return 0
+
+        @current_time.setter
+        def current_time(self, value):
+            self.rce, self.left, self.flag, self.bbbv_solved = 0, 7, 2, 10
+
+        def parse(self):
+            pass
+
+        def analyse(self):
+            pass
+
+        def is_valid(self):
+            return 1
+
+    old_lib = core.MSLIB
+    core.MSLIB = type("FakeLib", (), {"AvfVideo": FakeVideo})
+    try:
+        vid = core.read_video(path)
+    finally:
+        core.MSLIB = old_lib
+    check("终点读取不导出整局事件",
+          vid and (vid["rce"], vid["left"], vid["flag"], vid["solved"])
+          == (0, 7, 2, 10))
+
+
+def test_evf_prefilter():
+    """仅凭文件名就排除的 EVF，不做缓存查询外的内容解析。"""
+    root = os.path.join(TMP, "prefilter")
+    os.makedirs(root, exist_ok=True)
+    names = [
+        "b_0_1.000_10_10.000_X.evf",
+        "b_6_1.000_10_10.000_X.evf",
+        "b_5_1.000_10_10.000_X.evf",
+        "c_0_1.000_10_10.000_X.evf",
+        "b_0_1.000_10_10.000_X_fail.evf",
+        "broken.evf",
+    ]
+    for fn in names:
+        with open(os.path.join(root, fn), "wb") as fh:
+            fh.write(b"\0" * 32)
+
+    calls = []
+
+    def fake_read(path):
+        calls.append(os.path.basename(path))
+        rec = core.parse_filename(os.path.basename(path))
+        return {"rce": 0, "left": 0, "flag": 0, "solved": rec["bv"],
+                "bv": rec["bv"], "time": rec["time"],
+                "timems": int(round(rec["time"] * 1000)), "level": rec["level"],
+                "mode": int(rec["mode"]), "completed": True, "ident": "X",
+                "valid": 1, "src": "ms", "t0": 1763200000.0,
+                "t1": 1763200000.0 + rec["time"], "via": "lib"}
+
+    old_read = core.read_video
+    core.read_video = fake_read
+    try:
+        games, info = core.scan(root, deep=True)
+        core.scan(root, deep=True)
+    finally:
+        core.read_video = old_read
+    wanted = sorted(names[:2])
+    check("EVF 预过滤只深度解析标准局与强无猜局", sorted(calls) == wanted)
+    check("EVF 预过滤后统计与分类不变",
+          len(games) == 1 and info["ng_count"] == 1
+          and info["non_std"] == 2 and info["fail_skipped"] == 1
+          and info["unparsed"] == ["broken.evf"])
+
+
 def test_scan(ms_dir, arb_dir, n_evf, n_avf):
     games, info = core.scan([ms_dir, arb_dir], deep=True)
     by_src = info["by_src"]
@@ -316,6 +406,8 @@ def main():
         ms_dir, arb_dir, n_evf, n_avf = stage()
         test_filename()
         test_scan(ms_dir, arb_dir, n_evf, n_avf)
+        test_endpoint_read()
+        test_evf_prefilter()
         test_dedupe(arb_dir)
         test_dedupe_real()
         test_default_roots(arb_dir)

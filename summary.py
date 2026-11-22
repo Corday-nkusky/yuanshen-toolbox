@@ -473,10 +473,11 @@ def _med_curve(games, win=1):
 
 
 def _record_bvs(games, pb_ex, all_games, min_n=3):
-    """今天刷新了哪些 BV 的纪录（该 BV 累计至少 min_n 局才算数）。
+    """今天刷新 BV 纪录的具体局，返回 {id(game)}（该 BV 累计至少 min_n 局）。
 
     pb_ex 只含今天之前的局：平历史最快不算刷新，第一次打这个 BV 也不算。
-    不设门槛的话「第一次打这个 BV」也会被叫作纪录。
+    不设门槛的话「第一次打这个 BV」也会被叫作纪录。同 BV 有多局时只返回
+    当天最快的那局；调用方必须按局匹配，不能把同 BV 的其他局也标成纪录。
     """
     cnt = {}
     for g in all_games:
@@ -486,15 +487,15 @@ def _record_bvs(games, pb_ex, all_games, min_n=3):
     for g in games:
         bv = int(g.get("bv") or 0)
         t = float(g["time"])
-        if bv not in best or t < best[bv]:
-            best[bv] = t
+        if bv not in best or t < best[bv][0]:
+            best[bv] = (t, g)
     hit = set()
-    for bv, t in best.items():
+    for bv, (t, g) in best.items():
         if cnt.get(bv, 0) < min_n:
             continue
         cur = pb_ex.get(bv)
         if cur and t < cur[0] - 1e-9:
-            hit.add(bv)
+            hit.add(id(g))
     return hit
 
 
@@ -621,8 +622,11 @@ def _scatter(sh, x, y, w, h, games, ref, accent, recs, pb_ref=None):
     if pin:
         _dash_poly(sh, sorted((fx(b), fy(t)) for b, t in pin), C_DIM, 1.0)
     soft = _mix(accent, CARD_BG, 0.45)
-    for bv, t in pts:
-        if bv in recs:
+    for g in games:
+        if not g.get("bv"):
+            continue
+        bv, t = int(g["bv"]), float(g["time"])
+        if id(g) in recs:
             sh.dot(fx(bv), fy(t), 3.4, accent)
             sh.dot(fx(bv), fy(t), 1.9, CARD_BG)
         else:
@@ -648,7 +652,7 @@ def _rows_fast(sh, x, y, w, games, accent, recs=(), n=5):
         ry = y + i * 21
         sh.text(x, ry, "%.3f" % g["time"], 12, C_INK, True)
         sh.text(x + 58, ry + 1, "%d BV" % int(g.get("bv") or 0), 10.5, C_DIM)
-        if int(g.get("bv") or 0) in recs:
+        if id(g) in recs:
             sh.text(x + 104, ry + 1, "新纪录", 9.5, accent, True)
         st = core.STYLE_CN.get(g.get("style"))
         if st:
@@ -853,7 +857,7 @@ def levels_detail_png(items, games_by_level, ver="", day="", now=None,
             core.STYLE_CN.get(best.get("style"), ""),
             core.clock_text(best.get("t0") or 0)[:5])
         sh.text(cx, y + 18, chips, 12, C_DIM)
-        if int(best["bv"]) in recs:
+        if id(best) in recs:
             cw = sh.text_w(chips, 12)
             sh.text(cx + cw + 8, y + 18, "· BV 新纪录", 12, accent, True)
         y += 46

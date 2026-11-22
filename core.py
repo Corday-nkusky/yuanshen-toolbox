@@ -318,8 +318,8 @@ def read_video(path):
     """用 ms-toollib 重演一局录像，返回权威指标；失败返回 None。
 
     注意：``analyse()`` 之后各 getter 读的是「当前播放位置」的累计值，而
-    ``current_event_id`` 停在 0，所以直接取 ``v.rce`` 永远是 0。必须取
-    ``v.events[-1].key_dynamic_params`` 才是整局累计值——这一点很容易踩坑。
+    ``current_event_id`` 停在 0。把 ``current_time`` 设到末尾再读，避免通过
+    ``v.events[-1]`` 把整局事件逐个导出成 Python 对象。
 
     库缺失或重演失败时，元扫雷录像退回 ``_evf_lite`` 读头部：NF/FL 与
     时间、bv、日期照常可用，失败原因仍记在 READ_ERR 里供诊断。
@@ -336,7 +336,7 @@ def read_video(path):
         v = (MSLIB.AvfVideo if src == "arb" else MSLIB.EvfVideo)(path)
         v.parse()
         v.analyse()
-        kp = v.events[-1].key_dynamic_params
+        v.current_time = 1e8             # 库会把超出录像末尾的位置钳到最后一帧
         # 标识与审核码：上传前预检用（站点就是拿这两个字段判「进不进榜」）
         try:
             ident = str(v.player_identifier or "")
@@ -361,10 +361,10 @@ def read_video(path):
         t0 = _wall_epoch(getattr(v, "start_time", None), src)
         t1 = _wall_epoch(getattr(v, "end_time", None), src)
         return {
-            "rce": int(kp.rce),
-            "left": int(kp.left),
-            "flag": int(kp.flag),
-            "solved": int(kp.bbbv_solved),
+            "rce": int(v.rce),
+            "left": int(v.left),
+            "flag": int(v.flag),
+            "solved": int(v.bbbv_solved),
             "bv": int(v.bbbv),
             "time": float(v.rtime),
             "timems": tms,
@@ -723,6 +723,26 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
 
                 vid = None
                 is_ng = False
+                rec = None
+                if src == "ms":
+                    # 只凭文件名就会跳过的局，不再读取并重演录像内容。
+                    if fn[:2].lower() == CUSTOM_PREFIX:
+                        info["non_std"] += 1     # 自定义盘面：级别对不上任何一档
+                        continue
+                    rec = parse_filename(fn)
+                    if rec is None:
+                        info["unparsed"].append(fn)
+                        continue
+                    if rec["fail"]:
+                        info["fail_skipped"] += 1
+                        continue
+                    if rec["mode"] != str(STD_MODE):
+                        if rec["mode"] == str(NG_MODE):
+                            is_ng = True         # 强无猜：照常解析，只是另收一桶
+                        else:
+                            info["non_std"] += 1  # 无猜、可猜、win7 这类变体玩法
+                            continue
+
                 if deep:
                     vid = _cache.get(path, mt_ns, size)
                     stale = vid is not None and "t0" not in vid
@@ -740,24 +760,7 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     if vid is not None and vid.get("via") == "lite":
                         info["lite_used"] += 1
 
-                if src == "ms":
-                    if fn[:2].lower() == CUSTOM_PREFIX:
-                        info["non_std"] += 1     # 自定义盘面：级别对不上任何一档
-                        continue
-                    rec = parse_filename(fn)
-                    if rec is None:
-                        info["unparsed"].append(fn)
-                        continue
-                    if rec["fail"]:
-                        info["fail_skipped"] += 1
-                        continue
-                    if rec["mode"] != str(STD_MODE):
-                        if rec["mode"] == str(NG_MODE):
-                            is_ng = True         # 强无猜：照常解析，只是另收一桶
-                        else:
-                            info["non_std"] += 1  # 无猜、可猜、win7 这类变体玩法
-                            continue
-                else:
+                if src == "arb":
                     # 阿比特：能读内容就以内容为准，读不出才退回文件名。
                     # 内容里已经有 level 时不必再跑文件名正则 —— 2 万局实测省
                     # 0.23 s，而文件名里的 level/time/bv 后面本来就会被内容覆盖。

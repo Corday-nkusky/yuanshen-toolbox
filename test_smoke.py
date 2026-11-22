@@ -273,72 +273,76 @@ def main():
             check("今天没局时给提示，不弹空图",
                   "还没有完成局" in win.lbl_status.cget("text"))
 
-        # PB 页：级别单选 / 网格落位 / 搜索 / 指标 / 点格 / 双击播放
+        # PB 页：三级纵向同页 / 网格落位 / 搜索 / 指标 / 点格 / 双击播放
         win.show_tab("pb")
-        check("PB 级别是单选，没有「全部」",
-              set(win.pb_seg) == set(A.core.LEVELS))
-
-        win.set_pb_level("b")
         win.update()
         grid = win.pb_grid
         idx = win._pb_index
-        expect_b = {int(r["bv"]): r for r in win.pb_rows
-                    if r["level"] == "b"
-                    and (r.get("category") or "all") == win._pb_style}
-        check("PB 网格只收 b 级（%d 格）" % len(idx),
-              set(idx) == set(expect_b) and grid.level == "b" and bool(idx))
-        shot(win, "shot_pb.png")
+        expect = {(r["level"], int(r["bv"])): r for r in win.pb_rows
+                  if (r.get("category") or "all") == win._pb_style}
+        check("三级 PB 同时收进一张网格（%d 格）" % len(idx),
+              set(idx) == set(expect) and bool(idx))
+        check("三级按初级、中级、高级从上到下排列",
+              [s[0] for s in grid._sections] == list(A.core.LEVELS)
+              and not hasattr(win, "pb_seg"))
+        for lv, lo, first, n in grid._sections:
+            got = [bv for level, bv in idx if level == lv]
+            title = grid._section_titles[lv].cget("text")
+            check("%s标题写出 BV 数" % A.core.LEVEL_CN[lv],
+                  title == "%s · %d 个 BV" % (A.core.LEVEL_CN[lv], len(got)))
+            check("%s第一行从 %d–%d 开始"
+                  % (A.core.LEVEL_CN[lv], lo, lo + 9),
+                  grid._rowlab[first].cget("text") == "%d–%d" % (lo, lo + 9))
+            hi = (max(got) // 10) * 10
+            check("%s最后一行是 %d–%d" % (A.core.LEVEL_CN[lv], hi, hi + 9),
+                  grid._rowlab[first + n - 1].cget("text")
+                  == "%d–%d" % (hi, hi + 9))
 
-        # 网格的硬约束：BV n 必须落在第 n//10 行、第 n%10 列 —— 位置错了就
-        # 会「哪一段断着一眼看见」这个前提失效，界面上看不出来
+        # 同一个 BV 可在三级各出现一次，位置与选中都必须带级别。
         cells = {}
         for i, line in enumerate(grid._cells):
             for c, cell in enumerate(line):
-                bv = grid._bv_of.get(cell)
-                if bv is not None:
-                    cells[bv] = (i, c)
-        check("每个 BV 都落在（十位段, 个位）对应的格子里",
+                key = grid._bv_of.get(cell)
+                if key is not None:
+                    cells[key] = (i, c)
+        section_at = {lv: (lo, first) for lv, lo, first, _n in grid._sections}
+        check("每个 (级别, BV) 都落在自己的十位段与个位列",
               set(cells) == set(idx)
-              and all(i * 10 + c + grid._row_start == bv
-                      for bv, (i, c) in cells.items()))
-        # 网格的起止：下限固定在级别起点，上限跟着已有最大 BV 走
-        floor = A.PB_BV_FLOOR["b"]
-        lo = (floor // 10) * 10
-        check("第一行从初级起点 %d–%d 开始" % (lo, lo + 9),
-              grid._rowlab[0].cget("text") == "%d–%d" % (lo, lo + 9))
+              and all(pos == (section_at[lv][1]
+                              + (bv - section_at[lv][0]) // 10, bv % 10)
+                      for (lv, bv), pos in cells.items()))
         check("初级 BV 0 / 1 两格留空",
-              all(grid._bv_of.get(grid._cells[0][c]) is None
-                  for c in range(floor)))
-        hi = (max(idx) // 10) * 10
-        last = (hi - lo) // 10
-        check("最后一行是 %d–%d（网格到最大 BV 那一段为止）" % (hi, hi + 9),
-              grid._rowlab[last].cget("text") == "%d–%d" % (hi, hi + 9))
+              all(grid._bv_of.get(grid._cells[0][c]) is None for c in range(2)))
         # 下限是死数，低于起点的成绩会被网格遮掉 —— 真出现就是丢数据
         for lv in A.core.LEVELS:
             got = {int(r["bv"]) for r in win.pb_rows if r["level"] == lv}
             check("%s 最低 BV %d 不低于网格起点 %d"
                   % (A.core.LEVEL_CN[lv], min(got), A.PB_BV_FLOOR[lv]),
                   all(bv >= A.PB_BV_FLOOR[lv] for bv in got))
+        shot(win, "shot_pb.png")
 
         # 搜索：只给命中格子描边，不把别的格子藏掉（藏了会造出假断层）
-        bv0 = max(idx)
-        cell0 = cells[bv0]
+        bv0 = max(bv for lv, bv in idx if lv == "b")
+        key0 = ("b", bv0)
+        cell0 = cells[key0]
         win.var_q.set(str(bv0))
         win.render_pb()
-        check("搜 BV=%d 只命中这一格" % bv0, grid.hits == {bv0})
+        want_hits = {key for key in idx if key[1] == bv0}
+        check("搜 BV=%d 同时命中三级里的对应格" % bv0,
+              grid.hits == want_hits)
         check("搜索不从网格里删格子",
-              set(win._pb_index) == set(expect_b) and len(cells) == len(idx))
+              set(win._pb_index) == set(expect) and len(cells) == len(idx))
         check("命中格描了高亮边",
               grid._cells[cell0[0]][cell0[1]].cget("highlightbackground")
               == A.C_ACCENT3)
-        check("页面上写出搜到几格", "搜到 1 个" in win.pb_detail.cget("text"))
+        check("页面上写出搜到几格",
+              ("搜到 %d 个" % len(want_hits)) in win.pb_detail.cget("text"))
         win.var_q.set("")
         win.render_pb()
-        check("详情条不再报「几个位置」",
-              "个位置" not in win.pb_detail.cget("text"))
+        check("清空搜索后详情条也清空", not win.pb_detail.cget("text"))
 
         # 指标只换数字：格子位置、颜色都不该跟着动
-        row0 = idx[bv0]
+        row0 = idx[key0]
         before_bg = grid._cells[cell0[0]][cell0[1]].cget("bg")
         win.set_pb_metric("bvs")
         text_bvs = grid._cells[cell0[0]][cell0[1]].cget("text")
@@ -348,10 +352,24 @@ def main():
               grid._cells[cell0[0]][cell0[1]].cget("bg") == before_bg)
         win.set_pb_metric("time")
 
+        other = next((key for key in want_hits if key[0] != "b"), None)
+        if other:
+            grid.pick(other)
+            check("同 BV 点另一级，不串到初级记录",
+                  A.core.LEVEL_CN[other[0]] in win.pb_detail.cget("text")
+                  and "初级 ·" not in win.pb_detail.cget("text"))
+
         # 单击看数据，双击播录像
-        grid.pick(bv0)
-        check("单击格子把成绩写进详情条",
-              ("BV %d" % bv0) in win.pb_detail.cget("text"))
+        grid.pick(key0)
+        check("单击格子把级别与成绩写进详情条",
+              "初级" in win.pb_detail.cget("text")
+              and ("BV %d" % bv0) in win.pb_detail.cget("text"))
+        check("纪录历史独立成行，不与文件名抢宽度",
+              win.pb_history is not win.lbl_pb_file
+              and int(win.pb_history.cget("wraplength")) > 0
+              and int(win.lbl_pb_file.cget("wraplength")) > 0)
+        check("详情保留完整文件名，不做省略号截断",
+              (row0.get("file") or "") in win.lbl_pb_file.cget("text"))
         played = []
         orig_open = win.open_replay
         win.open_replay = lambda p: played.append(p)
@@ -365,6 +383,40 @@ def main():
         check("双击格子用元扫雷播这一局",
               bool(row0.get("path")) and played == [row0.get("path")])
         win.open_replay = orig_open
+        win.update()
+        check("宽窗口详情栏完整留在 PB 页可视区域",
+              win.pb_detail_holder.winfo_height()
+              >= win.pb_detail_holder.winfo_reqheight()
+              and win.pb_detail_holder.winfo_rooty()
+              + win.pb_detail_holder.winfo_height()
+              <= win.pages["pb"].winfo_rooty() + win.pages["pb"].winfo_height())
+        shot(win, "shot_pb_detail.png")
+
+        # 窄窗口里三行详情按实际宽度折行；高度必须真的长出来，不能裁字。
+        wide_geometry = win.winfo_geometry()
+        win.geometry("980x760")
+        win.update()
+        for _ in range(3):
+            win.update_idletasks()
+            win.update()
+        grid.pick(key0)
+        win.update()
+        check("窄窗口详情栏完整留在 PB 页可视区域",
+              win.pb_detail_holder.winfo_height()
+              >= win.pb_detail_holder.winfo_reqheight()
+              and win.pb_detail_holder.winfo_rooty()
+              + win.pb_detail_holder.winfo_height()
+              <= win.pages["pb"].winfo_rooty() + win.pages["pb"].winfo_height())
+        for label in (win.pb_detail, win.pb_history, win.lbl_pb_file):
+            if not label.winfo_ismapped():
+                continue
+            check("窄窗口详情不裁字：%s" % label.winfo_name(),
+                  label.winfo_height() >= label.winfo_reqheight()
+                  and 0 < int(label.cget("wraplength"))
+                  <= win.pb_detail_holder.winfo_width())
+        shot(win, "shot_pb_narrow.png")
+        win.geometry(wide_geometry)
+        win.update()
 
         # NF PB 榜：网格里不能混进全PB 的局
         win.set_pb_style("nf")
@@ -378,9 +430,9 @@ def main():
         win.site_pb = [{"level": "b", "bv": 999, "nf": False,
                         "timems": 1000, "video_id": 777, "rank": 1}]
         win._recompute_pb()
-        check("网站独有的 PB 会进网格（BV 999）",
-              999 in win._pb_index
-              and win._pb_index[999].get("source") == "site")
+        check("网站独有的 PB 会进网格（初级 BV 999）",
+              ("b", 999) in win._pb_index
+              and win._pb_index[("b", 999)].get("source") == "site")
         check("PB 右上角标出网站 PB 条数",
               "网站 PB 1 条" in win.lbl_pb_count.cget("text"))
         win.site_pb = []

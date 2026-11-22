@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.38.5"
+APP_VER = "0.38.6"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1427,14 +1427,7 @@ FONT_PB = (FAM_MONO, 9)
 
 
 class PBGrid(tk.Frame):
-    """PB 网格：行 = BV 十位段，列 = 个位，一格对应一个 BV。
-
-    BV 是从 1 开始的离散整数，位置固定之后"哪段密、哪段断"才看得见 ——
-    列表做不到这件事，它只显示已有的点。
-
-    用 Label 而不是 Treeview：Treeview 只能整行着色。格子建一次就复用，
-    切级别 / 切指标只改文本和底色，不销毁控件。
-    """
+    """三级 PB 纵向同页；每格以 (级别, BV) 标识，按 BV 十位段和个位落位。"""
 
     COLS = 10
     ROW_H = 26
@@ -1442,7 +1435,6 @@ class PBGrid(tk.Frame):
     def __init__(self, master, on_pick=None):
         super().__init__(master, bg=C_BG)
         self._on_pick = on_pick
-        self.level = "b"
         self.metric = "time"
         self.cat = "all"
         self.data = {}
@@ -1451,7 +1443,7 @@ class PBGrid(tk.Frame):
         self.picked = None
         self.mode = "rank"        # rank=按全国名次上色 / self=按本级快慢上色
         self._bv_of = {}
-        self._row_start = 0
+        self._sections = []       # (级别, 首行 BV, 控件池起点, 行数)
 
         self.cv = tk.Canvas(self, bg=C_BG, highlightthickness=0, bd=0)
         self.vs = ttk.Scrollbar(self, orient="vertical", command=self.cv.yview)
@@ -1472,11 +1464,16 @@ class PBGrid(tk.Frame):
         for c in range(self.COLS):
             self.inner.columnconfigure(c + 1, weight=1, uniform="pbg")
 
-        self.empty_lbl = tk.Label(self.inner, text="", bg=C_BG, fg=C_DIM,
-                                  font=FONT_UI, anchor="w")
-        self.empty_lbl.grid(row=1, column=0, columnspan=self.COLS + 1,
-                            sticky="w", pady=(sc(8), 0))
-        self.empty_lbl.grid_remove()
+        self._section_titles = {}
+        self._section_empty = {}
+        for lv in core.LEVELS:
+            title = tk.Label(self.inner, bg=C_PANEL,
+                             fg=LEVEL_ACCENT[lv][0], font=FONT_UI_B,
+                             anchor="w", padx=sc(10))
+            empty = tk.Label(self.inner, text="还没有成绩", bg=C_BG, fg=C_DIM,
+                             font=FONT_SMALL, anchor="w", padx=sc(10))
+            self._section_titles[lv] = title
+            self._section_empty[lv] = empty
         self._rowlab = []
         self._cells = []
         self._max_h = 0
@@ -1495,8 +1492,7 @@ class PBGrid(tk.Frame):
         self.vs.set(first, last)
 
     def _sync_vs(self):
-        # 用算好的内容高度判断，不看 reqheight：bind_data 刚把行 grid_remove
-        # 掉时 reqheight 还是上一级别的旧值，会平白冒出一根滚动条
+        # 隐藏行后的 reqheight 仍可能是旧值，滚动条只看已计算的内容高度。
         need = self._need_h > self.cv.winfo_height() + 2
         if need != self._vs_on:
             self._vs_on = need
@@ -1550,58 +1546,81 @@ class PBGrid(tk.Frame):
     def set_counts(self, counts):
         self.counts = counts or {}
 
-    def bind_data(self, level, metric, rows, cat="all"):
-        """灌入某一级别某一榜的数据，返回 (有成绩的 BV 数, 网格里一共多少格)。"""
-        self.level, self.metric, self.cat = level, metric, cat
+    def bind_data(self, metric, rows, cat="all"):
+        """灌入三级同榜数据，返回 (有成绩的 BV 数, 网格里一共多少格)。"""
+        self.metric, self.cat = metric, cat
         self.data = dict(rows or {})
         self.picked = None
         self.hits = set()
-        bvs = sorted(self.data)
-        if not bvs:
-            for lab in self._rowlab:
-                lab.grid_remove()
-            for row in self._cells:
-                for cell in row:
-                    cell.grid_remove()
-            self.empty_lbl.config(text="这个级别还没有成绩")
-            self.empty_lbl.grid()
-            self._need_h = sc(44)
-            self._apply_height()
-            self.cv.yview_moveto(0)
-            return 0, 0
-
-        self.empty_lbl.grid_remove()
-        # 下限固定到级别起点（初级从 0–9 段开始画，段内 0、1 两格留空），
-        # 上限跟着本机已有的最大 BV 走 —— 没成绩的十位段整行留着，
-        # 「哪一段一格没有」才看得见。
-        floor = PB_BV_FLOOR.get(level, 1)
-        lo = (floor // 10) * 10
-        hi = max(lo, (bvs[-1] // 10) * 10)
-        n = (hi - lo) // 10 + 1
-        self._row_start = lo
-        self._ensure_rows(n)
-        self.mode = "rank" if any(self.rank_of(r) for r in self.data.values()) else "self"
-        for i, lab in enumerate(self._rowlab):
-            (lab.grid if i < n else lab.grid_remove)()
-        for i, row in enumerate(self._cells):
+        self._sections = []
+        for widgets in (self._section_titles, self._section_empty):
+            for widget in widgets.values():
+                widget.grid_remove()
+        for lab in self._rowlab:
+            lab.grid_remove()
+        for row in self._cells:
             for cell in row:
-                (cell.grid if i < n else cell.grid_remove)()
+                cell.grid_remove()
+
+        grid_row = 1
+        pool_row = 0
+        total_cells = 0
+        need_h = sc(24)
+        self.mode = "rank" if any(self.rank_of(r) for r in self.data.values()) else "self"
+        for lv in core.LEVELS:
+            bvs = sorted(bv for level, bv in self.data if level == lv)
+            top_pad = sc(8) if grid_row > 1 else 0
+            self._section_titles[lv].config(
+                text="%s · %d 个 BV" % (core.LEVEL_CN[lv], len(bvs)))
+            self._section_titles[lv].grid(
+                row=grid_row, column=0, columnspan=self.COLS + 1,
+                sticky="ew", padx=(0, sc(2)), pady=(top_pad, sc(4)))
+            grid_row += 1
+            need_h += sc(30) + top_pad
+            if not bvs:
+                self._section_empty[lv].grid(
+                    row=grid_row, column=0, columnspan=self.COLS + 1,
+                    sticky="ew", pady=(0, sc(4)))
+                grid_row += 1
+                need_h += sc(26)
+                continue
+
+            # 没成绩的十位段整行留着，「哪一段一格没有」才看得见。
+            floor = PB_BV_FLOOR.get(lv, 1)
+            lo = (floor // 10) * 10
+            hi = max(lo, (bvs[-1] // 10) * 10)
+            n = (hi - lo) // 10 + 1
+            self._ensure_rows(pool_row + n)
+            self._sections.append((lv, lo, pool_row, n))
+            for i in range(n):
+                r = pool_row + i
+                self.inner.rowconfigure(grid_row + i, minsize=sc(self.ROW_H))
+                self._rowlab[r].grid(row=grid_row + i, column=0,
+                                     sticky="nsew", pady=(0, sc(2)))
+                for c, cell in enumerate(self._cells[r]):
+                    cell.grid(row=grid_row + i, column=c + 1, sticky="nsew",
+                              padx=(0, sc(2)), pady=(0, sc(2)))
+            grid_row += n
+            pool_row += n
+            need_h += n * (sc(self.ROW_H) + sc(2))
+            total_cells += n * self.COLS - sum(
+                1 for bv in range(lo, lo + n * self.COLS) if bv < floor)
+
         self._paint()
-        self._need_h = sc(24) + n * (sc(self.ROW_H) + sc(2))
+        self._need_h = need_h
         self._apply_height()
         self.cv.yview_moveto(0)
-        return len(bvs), n * self.COLS - sum(
-            1 for bv in range(lo, lo + n * self.COLS) if bv < floor)
+        return len(self.data), total_cells
 
     def set_hits(self, hits):
         self.hits = set(hits or ())
         self._paint()
 
-    def pick(self, bv):
-        self.picked = bv
+    def pick(self, key):
+        self.picked = key
         self._paint()
         if self._on_pick:
-            self._on_pick(bv)
+            self._on_pick(key)
 
     # --- 上色 ---
     def rank_of(self, row):
@@ -1616,13 +1635,14 @@ class PBGrid(tk.Frame):
 
     def count_of(self, row):
         key = "%s:%s:%d" % ("nf" if self.cat == "nf" else "std",
-                            self.level, int(row.get("bv") or 0))
+                            row["level"], int(row.get("bv") or 0))
         return self.counts.get(key)
 
-    def _tiers(self):
+    def _tiers(self, level):
         """按本级 3BV/s 三分位分档，用于没登录（拿不到名次）时。"""
         vals = sorted(((float(r.get("bvs") or 0), bv)
-                       for bv, r in self.data.items()), reverse=True)
+                       for (lv, bv), r in self.data.items() if lv == level),
+                      reverse=True)
         n = len(vals)
         return {bv: (0 if k < n / 3.0 else 1 if k < 2 * n / 3.0 else 2)
                 for k, (_v, bv) in enumerate(vals)}
@@ -1655,54 +1675,56 @@ class PBGrid(tk.Frame):
         return "%.1f" % t if t >= 10 else "%.2f" % t
 
     def _paint(self):
-        tones = PB_TONE.get(self.level, PB_TONE["b"])
-        gate = PB_GATE.get(self.level, 0)
-        floor = PB_BV_FLOOR.get(self.level, 1)
-        tiers = self._tiers() if self.mode == "self" else {}
-        for i, row in enumerate(self._cells):
-            start = self._row_start + i * self.COLS
-            self._rowlab[i].config(text="%d–%d" % (start, start + 9))
-            for c, cell in enumerate(row):
-                bv = start + c
-                if bv < floor:                # 级别起点之前的格子留空
-                    cell.config(text="", bg=C_BG, highlightbackground=C_BG,
-                                cursor="")
-                    self._bv_of[cell] = None
-                    continue
-                r = self.data.get(bv)
-                if r is None:
-                    cell.config(text="·", bg=PB_EMPTY_BG, fg="#d3c3cd",
-                                highlightbackground=PB_EMPTY_BG, cursor="")
-                    self._bv_of[cell] = None
-                    continue
-                idx = self._tone_index(r, tiers)
-                bg = tones[idx]
-                # 每格描一圈比底色深一点的边：最浅那档跟页面背景几乎同色，
-                # 没有边就分不出"有成绩的浅格子"和"空白"
-                ring = mix(bg, C_TEXT, 0.16)
-                if bv < gate:
-                    ring = tones[0]
-                if bv in self.hits:
-                    ring = C_ACCENT3
-                if bv == self.picked:
-                    ring = C_TEXT
-                cell.config(text=self._text(r), bg=bg,
-                            fg="#ffffff" if idx == 0 else C_TEXT,
-                            highlightbackground=ring, cursor="hand2")
-                self._bv_of[cell] = bv
+        for lv, lo, first, n in self._sections:
+            tones = PB_TONE.get(lv, PB_TONE["b"])
+            gate = PB_GATE.get(lv, 0)
+            floor = PB_BV_FLOOR.get(lv, 1)
+            tiers = self._tiers(lv) if self.mode == "self" else {}
+            for i in range(n):
+                r = first + i
+                start = lo + i * self.COLS
+                self._rowlab[r].config(text="%d–%d" % (start, start + 9))
+                for c, cell in enumerate(self._cells[r]):
+                    bv = start + c
+                    key = (lv, bv)
+                    if bv < floor:            # 级别起点之前的格子留空
+                        cell.config(text="", bg=C_BG, highlightbackground=C_BG,
+                                    cursor="")
+                        self._bv_of[cell] = None
+                        continue
+                    row = self.data.get(key)
+                    if row is None:
+                        cell.config(text="·", bg=PB_EMPTY_BG, fg="#d3c3cd",
+                                    highlightbackground=PB_EMPTY_BG, cursor="")
+                        self._bv_of[cell] = None
+                        continue
+                    idx = self._tone_index(row, tiers)
+                    bg = tones[idx]
+                    # 最浅档也要靠描边与空格区分。
+                    ring = mix(bg, C_TEXT, 0.16)
+                    if bv < gate:
+                        ring = tones[0]
+                    if key in self.hits:
+                        ring = C_ACCENT3
+                    if key == self.picked:
+                        ring = C_TEXT
+                    cell.config(text=self._text(row), bg=bg,
+                                fg="#ffffff" if idx == 0 else C_TEXT,
+                                highlightbackground=ring, cursor="hand2")
+                    self._bv_of[cell] = key
 
     # --- 交互 ---
     def _on_click(self, event):
-        bv = self._bv_of.get(event.widget)
-        if bv is not None:
-            self.pick(bv)
+        key = self._bv_of.get(event.widget)
+        if key is not None:
+            self.pick(key)
 
     def _on_double(self, event):
-        bv = self._bv_of.get(event.widget)
-        if bv is None:
+        key = self._bv_of.get(event.widget)
+        if key is None:
             return
-        self.pick(bv)
-        self.play(self.data.get(bv) or {})
+        self.pick(key)
+        self.play(self.data.get(key) or {})
 
     def play(self, row):
         """把这一格的录像交给元扫雷播放。"""
@@ -3010,13 +3032,12 @@ class App(tk.Tk):
         self._scan_auto = False        # 本次扫描是不是自动刷新触发的（不显示进度条）
         self._scan_sig = None          # 上次扫描的 (文件数, 局数, 最新 mtime)，判断「真的变了吗」
         self._level = "b"
-        self._pb_level = "b"
         self._daily_level = "e"        # 每日页当前级别：打开就看到高级（练习主场）
         self._daily_date = None        # 每日页选中的那一天
         self.daily_rows = []           # 每日页当前的行（测试与导出用）
         self._pb_style = "all"         # PB 榜：all=全PB / nf=NF PB
         self._pb_metric = "time"       # 格子里显示的数字：time / bvs / stnb / rank
-        self._pb_index = {}            # 当前网格里 BV -> 行
+        self._pb_index = {}            # 当前网格里 (级别, BV) -> 行
         self._pb_picked = None
         self._top_style = "all"        # 前端成绩：all=全PB / nf=NF PB
         self._rank_metric = "time"     # 排行榜看哪个指标：time / bvs / stnb
@@ -4210,17 +4231,6 @@ class App(tk.Tk):
         page = self.pages["pb"]
         top = tk.Frame(page, bg=C_BG)
         top.pack(fill="x", pady=(sc(10), sc(8)))
-        # 级别单选：三级的 BV 范围完全不同，网格里没有"全部"这种东西
-        self.pb_seg = {}
-        for lv in core.LEVELS:
-            p = Pill(top, core.LEVEL_CN[lv],
-                     command=lambda k=lv: self.set_pb_level(k),
-                     accent=LEVEL_ACCENT[lv][0], padx=16)
-            p.pack(side="left", padx=(0, sc(6)))
-            self.pb_seg[lv] = p
-
-        tk.Frame(top, bg=C_LINE, width=1).pack(side="left", fill="y",
-                                               padx=(sc(8), sc(10)), pady=sc(2))
         self.pb_style_seg = {}
         for key, label in (("all", "全PB"), ("nf", "NF PB")):
             p = Pill(top, label, command=lambda k=key: self.set_pb_style(k),
@@ -4253,9 +4263,7 @@ class App(tk.Tk):
         self.lbl_pb_hint.pack(side="right")
         self.pb_sub = sub
 
-        # 顺序：网格 → 详情条 → 撑满剩余的空白。
-        # 详情条必须紧贴网格下沿，不能钉在窗口底部 —— 点完格子抬头看最下面
-        # 一行字，中间隔着半屏空白，那个交互是断的。
+        # 详情紧贴网格下沿，别把点选结果钉到窗口底部。
         self.pb_grid = PBGrid(page, on_pick=self._on_pb_pick)
         self.pb_grid.pack(side="top", fill="x")
         self._build_pb_detail(page)
@@ -4269,9 +4277,10 @@ class App(tk.Tk):
         page = self.pages["pb"]
         if not hasattr(self, "pb_grid"):
             return
-        used = (self.pb_top.winfo_height() + self.pb_sub.winfo_height()
-                + self.pb_detail_holder.winfo_height())
-        self.pb_grid.set_max_height(page.winfo_height() - used - sc(26))
+        self.update_idletasks()
+        used = (self.pb_top.winfo_reqheight() + self.pb_sub.winfo_reqheight()
+                + self.pb_detail_holder.winfo_reqheight())
+        self.pb_grid.set_max_height(page.winfo_height() - used - sc(34))
 
     def _build_pb_detail(self, page):
         holder = tk.Frame(page, bg=C_LINE)
@@ -4279,23 +4288,53 @@ class App(tk.Tk):
         self.pb_detail_holder = holder
         bar = tk.Frame(holder, bg=C_PANEL)
         bar.pack(fill="x", padx=1, pady=1)
-        # 右侧先 pack，让它先占住位置：文件名长短不一，后 pack 会被左边的
-        # 成绩挤到贴在一起（"3 局"和文件名之间连个空格都没有）
-        self.btn_pb_play = Pill(bar, "播放", command=self._play_pb,
-                                accent=C_ACCENT, padx=12, height=24)
-        self.btn_pb_play.pack(side="right", padx=(sc(6), sc(10)), pady=sc(5))
-        self.btn_pb_reveal = Pill(bar, "定位", command=self._reveal_pb,
-                                  accent=C_ACCENT3, padx=12, height=24)
-        self.btn_pb_reveal.pack(side="right", padx=(sc(10), 0), pady=sc(5))
-        self.lbl_pb_file = tk.Label(bar, text="", bg=C_PANEL, fg=C_DIM,
-                                    font=FONT_SMALL, anchor="e")
-        self.lbl_pb_file.pack(side="right", padx=(sc(10), 0), pady=sc(7))
+        bar.columnconfigure(0, weight=1)
+
         self.pb_detail = tk.Label(bar, text="", bg=C_PANEL, fg=C_TEXT,
-                                  font=FONT_UI, anchor="w")
-        self.pb_detail.pack(side="left", fill="x", expand=True,
-                            padx=(sc(12), 0), pady=sc(7))
+                                  font=FONT_UI, anchor="w", justify="left")
+        self.pb_detail.grid(row=0, column=0, sticky="ew",
+                            padx=(sc(12), sc(8)), pady=(sc(7), sc(2)))
+        self.pb_history = tk.Label(bar, text="", bg=C_PANEL, fg=C_DIM,
+                                   font=FONT_SMALL, anchor="w", justify="left")
+        self.lbl_pb_file = tk.Label(bar, text="", bg=C_PANEL, fg=C_DIM,
+                                    font=FONT_SMALL, anchor="w", justify="left")
+
+        actions = tk.Frame(bar, bg=C_PANEL)
+        actions.grid(row=0, column=1, sticky="e",
+                     padx=(0, sc(10)), pady=sc(5))
+        self.pb_actions = actions
+        self.btn_pb_reveal = Pill(actions, "定位", command=self._reveal_pb,
+                                  accent=C_ACCENT3, padx=12, height=24)
+        self.btn_pb_reveal.pack(side="left", padx=(0, sc(6)))
+        self.btn_pb_play = Pill(actions, "播放", command=self._play_pb,
+                                accent=C_ACCENT, padx=12, height=24)
+        self.btn_pb_play.pack(side="left")
         self.btn_pb_play.set_enabled(False)
         self.btn_pb_reveal.set_enabled(False)
+        holder.bind("<Configure>", self._pb_detail_fit)
+
+    def _pb_detail_fit(self, _e=None):
+        width = self.pb_detail_holder.winfo_width()
+        if width <= 1:
+            return
+        full = max(sc(120), width - sc(28))
+        main = max(sc(120), width - self.pb_actions.winfo_reqwidth() - sc(48))
+        self.pb_detail.config(wraplength=main)
+        self.pb_history.config(wraplength=full)
+        self.lbl_pb_file.config(wraplength=full)
+        self.after_idle(self._pb_fit)
+
+    def _set_pb_detail(self, main, history="", filename="", dim=False):
+        self.pb_detail.config(text=main, fg=C_DIM if dim else C_TEXT)
+        for label, text, row in ((self.pb_history, history, 1),
+                                 (self.lbl_pb_file, filename, 2)):
+            label.config(text=text)
+            if text:
+                label.grid(row=row, column=0, columnspan=2, sticky="ew",
+                           padx=sc(12), pady=(0, sc(7)))
+            else:
+                label.grid_remove()
+        self._pb_detail_fit()
 
     def _reveal_pb(self):
         row = (self._pb_index or {}).get(self._pb_picked) or {}
@@ -4305,20 +4344,19 @@ class App(tk.Tk):
         row = (self._pb_index or {}).get(self._pb_picked) or {}
         self.pb_grid.play(row)
 
-    def _on_pb_pick(self, bv):
-        """单击格子：把这一格的成绩摊到详情条上。"""
-        self._pb_picked = bv
-        r = (self._pb_index or {}).get(bv)
+    def _on_pb_pick(self, key):
+        """单击格子：成绩、纪录历史与文件名各占一行，窄窗口内自动折行。"""
+        self._pb_picked = key
+        r = (self._pb_index or {}).get(key)
         if not r:
-            self.pb_detail.config(text="BV %d · 还没有成绩" % bv, fg=C_DIM)
-            self.lbl_pb_file.config(text="")
+            self._set_pb_detail("还没有成绩", dim=True)
             self.btn_pb_play.set_enabled(False)
             self.btn_pb_reveal.set_enabled(False)
             return
-        lv = r.get("level") or self._pb_level
+        lv, bv = key
         rank = self.pb_grid.rank_of(r)
         cnt = self.pb_grid.count_of(r)
-        bits = ["BV %d" % bv,
+        bits = [core.LEVEL_CN[lv], "BV %d" % bv,
                 "%.3f s" % float(r.get("time") or 0),
                 "%.2f 3BV/s" % float(r.get("bvs") or 0),
                 "stnb %.1f" % float(r.get("stnb") or 0)]
@@ -4327,18 +4365,17 @@ class App(tk.Tk):
         games = (self.counts.get(self._pb_style) or {}).get((lv, bv), 0)
         if games:
             bits.append("%d 局" % games)
+        history = []
         streak = core.pb_streak(self.games, lv, bv,
                                 nf_only=self._pb_style == "nf")
         if streak:
-            bits.append("保持 %d 天" % streak["held"])
+            history.append("保持 %d 天" % streak["held"])
             if streak["gap"] is not None:
-                bits.append("破上条纪录用 %d 天" % streak["gap"])
-        self.pb_detail.config(text="  ·  ".join(bits), fg=C_TEXT)
+                history.append("破上条纪录用 %d 天" % streak["gap"])
         name = r.get("file") or ""
-        if len(name) > 34:                       # 录像文件名自带时间/BV，太长
-            name = name[:15] + "…" + name[-16:]
         date = (r.get("date") or "").strip()
-        self.lbl_pb_file.config(text="%s  %s" % (date, name) if date else name)
+        filename = "%s  %s" % (date, name) if date else name
+        self._set_pb_detail("  ·  ".join(bits), "  ·  ".join(history), filename)
         self.btn_pb_play.set_enabled(bool(r.get("path")))
         self.btn_pb_reveal.set_enabled(bool(r.get("path")))
 
@@ -6747,7 +6784,6 @@ class App(tk.Tk):
         if not info.get("with_rce") and self._top_style != "all":
             self.set_top_style("all")
         self._recompute_pb()          # 顺带重画最近完成局（那列要给「距当前 PB」）
-        self.set_pb_level(self._pb_level)
         self.set_top_level(self._level)
         self.set_daily_level(self._daily_level)   # 顺带把级别按钮点亮
         self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
@@ -7108,12 +7144,6 @@ class App(tk.Tk):
         """
         return App._gaps_to_pb(g, pb)["time"]
 
-    def set_pb_level(self, key):
-        self._pb_level = key
-        for k, p in self.pb_seg.items():
-            p.set_selected(k == key)
-        self.render_pb()
-
     def set_pb_style(self, key):
         self._pb_style = key
         for k, p in self.pb_style_seg.items():
@@ -7140,43 +7170,40 @@ class App(tk.Tk):
 
     def render_pb(self):
         q = self.var_q.get().strip().lower()
-        lv, cat = self._pb_level, self._pb_style
+        cat = self._pb_style
         rows = {}
         for r in self.pb_rows:
             # 两张榜各自独立：全PB 里会出现 NF 获胜局（风格列标 NF），
             # NF PB 里的每一行必然也是 NF，但它们是不同榜，不能混在一起。
-            if r["level"] != lv or (r.get("category") or "all") != cat:
+            if (r.get("category") or "all") != cat:
                 continue
-            rows[int(r["bv"])] = r
+            rows[(r["level"], int(r["bv"]))] = r
 
         self._pb_index = rows
         grid = self.pb_grid
         grid.set_counts(self.pb_counts)
-        n, _cells = grid.bind_data(lv, self._pb_metric, rows, cat)
+        n, _cells = grid.bind_data(self._pb_metric, rows, cat)
 
         hits = set()
         if q:
             if q.isdigit():
-                hits = {bv for bv in rows if str(bv) == q}
+                hits = {key for key in rows if str(key[1]) == q}
             else:
-                hits = {bv for bv, r in rows
+                hits = {key for key, r in rows.items()
                         if q in (r.get("file") or "").lower()}
             grid.set_hits(hits)
 
         self._pb_picked = None
-        self.lbl_pb_file.config(text="")
+        self._set_pb_detail("")
         self.btn_pb_play.set_enabled(False)
         self.btn_pb_reveal.set_enabled(False)
         self.lbl_pb_hint.config(
             text=("颜色按全国名次" if grid.mode == "rank" else "颜色按本级快慢")
             if n else "")
         if not n:
-            self.pb_detail.config(
-                text="%s还没有成绩" % core.LEVEL_CN[lv], fg=C_DIM)
+            self._set_pb_detail("三个级别都还没有成绩", dim=True)
         elif q:
-            self.pb_detail.config(text="搜到 %d 个" % len(hits), fg=C_TEXT)
-        else:
-            self.pb_detail.config(text="", fg=C_TEXT)
+            self._set_pb_detail("搜到 %d 个" % len(hits))
 
         bits = []
         if self.site_pb:
