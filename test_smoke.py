@@ -465,7 +465,7 @@ def main():
         check("退出登录后迟到的网站 PB 被拒绝", not win.site_pb)
         win.oms.has_session = orig_has
 
-        # 最近完成局的涨分列：有涨分局才出现，没有就连表头收起
+        # 最近完成局的涨分列：固定表结构与列宽，没涨分的行只留空值
         disp = win.tbl_recent.tv.cget("displaycolumns")
         if isinstance(disp, (tuple, list)):
             shown = {str(x) for x in disp}
@@ -475,10 +475,18 @@ def main():
         if "#all" in shown:
             shown = {c[0] for c in win.tbl_recent.columns_def}
         gains = [r.get("gain") for r in win.tbl_recent.rows]
-        hot = sum(1 for g in gains if isinstance(g, float) and g > 0.05)
-        check("涨分列的出现/收起跟内容一致（%d 行有 %d 局涨分，显示=%s）"
-              % (len(gains), hot, "gain" in shown),
-              ("gain" in shown) == (hot > 0))
+        hot = sum(1 for g in gains if isinstance(g, float) and g > 0.005)
+        check("涨分列表头始终保留（%d 行有 %d 局涨分）" % (len(gains), hot),
+              "gain" in shown)
+        check("涨分列固定为容纳 +xx.xx 的宽度，不被窗口拉宽",
+              int(win.tbl_recent.tv.column("gain", "stretch")) == 0
+              and int(win.tbl_recent.tv.column("gain", "width")) == A.sc(64))
+        gain_col = [c[0] for c in win.tbl_recent.columns_def].index("gain")
+        check("涨分显示两位小数，微小涨分不隐藏，没涨分留空",
+              win.tbl_recent.row_values({"gain": 12.34})[gain_col] == "+12.34"
+              and win.tbl_recent.row_values({"gain": 0.01})[gain_col] == "+0.01"
+              and not win.tbl_recent.row_values({"gain": 0.004})[gain_col]
+              and not win.tbl_recent.row_values({"gain": None})[gain_col])
 
         # 前端成绩页：三张表都按 b 级渲染
         win.show_tab("top")

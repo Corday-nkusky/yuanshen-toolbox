@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.38.7"
+APP_VER = "0.38.8"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -1175,11 +1175,7 @@ class Table(ttk.Frame):
 
     # --- 数据 ---
     def set_hidden(self, keys):
-        """临时藏掉几列。
-
-        给「涨分」这种稀有列用：绝大多数局不涨分，没有内容时连表头带列宽
-        一起收掉，不让它白占一行位置。
-        """
+        """临时藏掉指定列，不改变底层 rows 里的数据。"""
         hide = set(keys or ())
         disp = tuple(c[0] for c in self.columns_def if c[0] not in hide)
         if disp != self._displayed:
@@ -1224,9 +1220,8 @@ class Table(ttk.Frame):
                 # PB，所以相对当前 PB 只会是负数（比 PB 低多少）。
                 v = _delta_text(v, 2)
             elif kind == "gain":
-                # 涨分：不涨就留空。一行里没有这个数是有意义的信息，
-                # 写成 "0.0" 只会把 96% 的行铺满噪声。
-                v = f"+{v:.1f}" if isinstance(v, (int, float)) and v > 0.05 else ""
+                # 涨分固定占一列，不涨的行留空；两位小数后仍能看清小幅涨分。
+                v = f"+{v:.2f}" if isinstance(v, (int, float)) and v > 0.005 else ""
             vals.append(v)
         return vals
 
@@ -1276,7 +1271,7 @@ class Table(ttk.Frame):
                 return _delta_num(v)
             if kind == "gain":
                 # 涨分列有一半是空的（没涨），空要能参与比较，而且不能被
-                # 当成字符串 —— "+12.3" 按字典序会排在 "+2.8" 前面。
+                # 当成字符串 —— "+12.30" 按字典序会排在 "+2.80" 前面。
                 return float(v) if isinstance(v, (int, float)) else float("-inf")
             if isinstance(v, str):
                 try:
@@ -3836,11 +3831,9 @@ class App(tk.Tk):
             ("gain", "涨分", 64, "e", "gain"),
         ]
         _, self.tbl_recent = self._table(page, cols, height=5)
-        # 这一版没有「录像文件」那种长文本列了，横向多出来的空间只塞给最后一列
-        # 会把那一列撑到 400 px、整行看着像断成两截。九列一起摊，每列宽一点，
-        # 数字仍然贴着各自的表头。
+        # 多出来的空间由其余列一起分摊；涨分固定只需容纳 +xx.xx，不跟着拉宽。
         for key in (c[0] for c in cols):
-            self.tbl_recent.tv.column(key, stretch=True)
+            self.tbl_recent.tv.column(key, stretch=(key != "gain"))
 
         # 首扫时盖在内容区正中（place 不进布局，扫完 place_forget）
         self.lbl_boot = tk.Label(page, text="正在读取录像…\n初始化要逐局重演录像，会比较慢，请耐心等待",
@@ -6975,16 +6968,12 @@ class App(tk.Tk):
             item["gain"] = gains.get(g.get("path") or "")
             out.append(item)
         self.tbl_recent.set_rows(out)
-        # 没有涨分局就把这一列收起来：涨分本来就稀有，留一列空白是白占地方
-        self.tbl_recent.set_hidden([] if any(
-            isinstance(it["gain"], float) and it["gain"] > 0.05 for it in out)
-            else ["gain"])
 
     def _recent_gains(self, rows):
         """最近这批局在各自打出来那一刻涨了多少分。
 
         与 PB 无关：没破 PB 的局只要挤进某一项前五，一样涨分。
-        锚点不到（没登录过、也从来没存下过）就算不出来，这时整列不显示。
+        锚点不到（没登录过、也从来没存下过）就算不出来，这时整列留空。
         """
         if not rows or not self._lsf_anchors_eff():
             return {}
@@ -6999,7 +6988,7 @@ class App(tk.Tk):
             return self._gain_cache[1]
         t0 = time.perf_counter()
         gains = core.lsf_gains(self.games, self._lsf_anchors_eff(), window)
-        n = sum(1 for v in gains.values() if v > 0.05)
+        n = sum(1 for v in gains.values() if v > 0.005)
         diag.log.info("最近 %d 局的涨分：%d 局有涨分，用时 %.0f ms",
                       len(window), n, (time.perf_counter() - t0) * 1000)
         self._gain_cache = (key, gains)
