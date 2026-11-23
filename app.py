@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.38.8"
+APP_VER = "0.38.9"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -655,7 +655,96 @@ class Pill(tk.Canvas):
         self.configure(cursor="")
 
 
-class SettingsDialog(tk.Toplevel):
+# ------------------------------------------------------------------ 窗口图标
+def icon_path():
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    for d in (base, os.path.dirname(os.path.abspath(__file__)),
+              os.path.dirname(sys.executable)):
+        p = os.path.join(d, "icon.ico")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+_ICON_HANDLES = {}       # dpi → (任务栏档, 标题栏档)，句柄全进程共用
+
+
+def _icon_handles(ico, dpi):
+    if dpi not in _ICON_HANDLES:
+        u = ctypes.windll.user32
+
+        def load(px):
+            px = max(8, int(round(px)))
+            return u.LoadImageW(None, ico, 1, px, px, 0x10)   # IMAGE_ICON | LR_LOADFROMFILE
+        _ICON_HANDLES[dpi] = (load(24 * dpi / 96.0), load(16 * dpi / 96.0))
+    return _ICON_HANDLES[dpi]
+
+
+def set_window_icon(win):
+    """给顶层窗口装应用图标（标题栏 / 任务栏 / Alt-Tab）。
+
+    Tk 的 `iconbitmap` 只从 ico 里取**一张**（按系统大图标尺寸），
+    任务栏按钮却按 24dp × 缩放 渲染（150% 下 36px），于是 32 被拉到 36，糊。
+    所以这里自己按「实际像素」精确 LoadImage 再 WM_SETICON：
+    ico 里有对应档位（本工具会生成 30/36/42 等非标准档）就是 1:1，零缩放。
+
+    带标题栏的外层窗口要到映射之后才建得出来，所以没映射的窗口只走 Tk 那套。
+    """
+    if not win.winfo_exists():
+        return
+    ico = icon_path()
+    if not ico:
+        return
+    try:
+        win.iconbitmap(ico)         # 兜底：Tk 自己那套也设上
+    except tk.TclError:
+        pass
+    try:
+        win.update_idletasks()
+        u = ctypes.windll.user32
+        wid = win.winfo_id()
+        hwnd = u.GetAncestor(wid, 2) or u.GetParent(wid)
+        if not hwnd or hwnd == wid:
+            return
+        try:
+            dpi = u.GetDpiForWindow(hwnd) or 96
+        except Exception:
+            dpi = 96
+        big, small = _icon_handles(ico, dpi)
+        if big:
+            u.SendMessageW(hwnd, 0x0080, 1, big)    # WM_SETICON ICON_BIG
+        if small or big:
+            u.SendMessageW(hwnd, 0x0080, 0, small or big)   # ICON_SMALL
+    except Exception:
+        pass
+
+
+class Dialog(tk.Toplevel):
+    """带应用图标的弹窗基类：标题栏不再显示 Tk 默认的羽毛图标。
+
+    Tk 在映射时会按自己的取法再设一次图标，所以隔一拍盖回来（同主窗口）。
+    """
+
+    def __init__(self, master=None):
+        super().__init__(master)
+        self._icon_job = None
+        ico = icon_path()
+        if ico:
+            try:
+                self.iconbitmap(ico)
+            except tk.TclError:
+                pass
+        self.bind("<Map>", self._icon_on_map, add="+")
+
+    def _icon_on_map(self, e):
+        if e.widget is not self:
+            return                      # <Map> 会从子控件冒泡上来
+        if self._icon_job is not None:
+            self.after_cancel(self._icon_job)
+        self._icon_job = self.after(260, lambda: set_window_icon(self))
+
+
+class SettingsDialog(Dialog):
     """「设置」弹窗：与应用同风格的白底圆角卡片，模态。
 
     操作收在一排药丸里；强无猜上传是三档单选药丸；LSF 基准是两态胶囊
@@ -1076,6 +1165,204 @@ def _auto_note(items):
     return " · ".join(items)
 
 
+# ------------------------------------------------------------------ 弹出菜单
+MENU_KEY = "#010101"      # 圆角外的透明色：文字抗锯齿怎么混也调不出这种近黑
+
+
+class StyleMenu(tk.Toplevel):
+    """与应用同风格的弹出菜单，代替原生 tk.Menu：白底圆角、粉灰描边、悬停浅粉。
+
+    只留右键菜单用得到的接口：add_command / add_separator，然后 popup(x, y) 贴出。
+    popup 不阻塞；点到菜单外、切到别的程序、Esc、点中某一项都会收起并自毁。
+    """
+
+    POLL_MS = 100
+    _current = None
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.withdraw()            # 位置算好再露面，免得先在左上角闪一下
+        self._items = []           # ("cmd", 文案, 回调) / ("sep",)
+        self._rows = []            # 每一项的纵向区间 (y0, y1)，与 _cmds 对齐
+        self._cmds = []
+        self._mw = self._mh = 0
+        self._hover = None
+        self._closed = False
+        self._job = None
+        self._prev_focus = None
+        self.configure(bg=MENU_KEY)
+        self.cv = tk.Canvas(self, bg=MENU_KEY, highlightthickness=0, bd=0, takefocus=0)
+        self.cv.pack(fill="both", expand=True)
+        # grab 生效时，菜单外的指针事件投递给 grab 窗口（本窗口），菜单内的才落到画布上，
+        # 所以两处都要绑；判定一律用屏幕坐标，不依赖事件落在谁身上。
+        for w in (self, self.cv):
+            w.bind("<Motion>", self._on_motion)
+            w.bind("<Button-1>", self._on_click)
+            w.bind("<Button-3>", self._on_right)
+        self.cv.bind("<Leave>", lambda _e: self._set_hover(None))
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<Return>", lambda _e: self._run(self._hover))
+        self.bind("<Up>", lambda _e: self._move_hover(-1))
+        self.bind("<Down>", lambda _e: self._move_hover(1))
+
+    def add_command(self, label, command=None):
+        self._items.append(("cmd", label, command))
+
+    def add_separator(self):
+        # 开头和连续两条分隔线不画；结尾那条留到贴出时去掉
+        if self._items and self._items[-1][0] != "sep":
+            self._items.append(("sep",))
+
+    def labels(self):
+        return [it[1] for it in self._items if it[0] == "cmd"]
+
+    def popup(self, x, y):
+        """在屏幕坐标 (x, y) 贴出菜单；浮点坐标取整。没有可点的项就不弹。"""
+        if StyleMenu._current is not None and StyleMenu._current.winfo_exists():
+            StyleMenu._current.close()
+        StyleMenu._current = None
+        if not self.labels():
+            self.destroy()
+            return
+        self._prev_focus = self.focus_displayof()
+        w, h = self._build()
+        left, top, aw, ah = work_area()
+        margin = sc(4)
+        x = int(max(left + margin, min(int(x), left + aw - w - margin)))
+        y = int(max(top + margin, min(int(y), top + ah - h - margin)))
+        self.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)      # 菜单开着时压过主窗口；收起即销毁
+        self.attributes("-transparentcolor", MENU_KEY)
+        self.deiconify()
+        self.update_idletasks()
+        self.grab_set()              # 应用内的点击都先交给菜单：点到外面才知道该收起
+        self.focus_set()             # Esc / 上下键要落在菜单上
+        StyleMenu._current = self
+        self._job = self.after(self.POLL_MS, self._tick)
+
+    def _build(self):
+        while self._items and self._items[-1][0] == "sep":
+            self._items.pop()
+        rh, pad, x0, x1 = sc(30), sc(5), sc(14), sc(18)
+        sep = 2 * sc(5) + sc(1)
+
+        def measure(s):
+            return int(self.tk.call("font", "measure", FONT_UI, s))
+
+        w = max([measure(it[1]) for it in self._items if it[0] == "cmd"]
+                + [sc(150)]) + x0 + x1
+        h = pad * 2 + sum(sep if it[0] == "sep" else rh for it in self._items)
+        self._mw, self._mh = w, h
+        cv = self.cv
+        cv.configure(width=w, height=h)
+        cv.delete("all")
+        round_rect(cv, 1, 1, w - 1, h - 1, sc(10), fill=C_PANEL,
+                   outline=C_LINE, width=sc(1), tags="card")
+        y, self._rows, self._cmds = pad, [], []
+        for it in self._items:
+            if it[0] == "sep":
+                cv.create_line(x0, y + sc(5), w - x1, y + sc(5),
+                               fill=C_LINE, width=sc(1))
+                y += sep
+                continue
+            cv.create_text(x0, y + rh / 2.0, text=it[1], anchor="w",
+                           fill=C_TEXT, font=FONT_UI)
+            self._rows.append((y, y + rh))
+            self._cmds.append(it[2])
+            y += rh
+        return w, h
+
+    def _row_at(self, y):
+        for i, (y0, y1) in enumerate(self._rows):
+            if y0 <= y < y1:
+                return i
+        return None
+
+    def _set_hover(self, i):
+        if i == self._hover:
+            return
+        self._hover = i
+        cv = self.cv
+        cv.delete("hover")
+        if i is None:
+            return
+        y0, y1 = self._rows[i]
+        gap = sc(3)
+        round_rect(cv, gap + 1, y0 + gap, self._mw - gap - 1, y1 - gap,
+                   (y1 - y0) / 2.0 - gap, fill=C_SEL, width=0, tags="hover")
+        cv.tag_raise("hover", "card")       # 压在卡片上、文字下
+
+    def _on_motion(self, e):
+        # 事件可能来自 grab 窗口本身，y 相对谁不固定，一律换算到画布上
+        self._set_hover(self._row_at(e.y_root - self.cv.winfo_rooty())
+                        if self._inside(e.x_root, e.y_root) else None)
+
+    def _move_hover(self, step):
+        if self._rows:
+            i = 0 if self._hover is None else (self._hover + step) % len(self._rows)
+            self._set_hover(i)
+
+    def _run(self, i):
+        if i is None:
+            return
+        cmd = self._cmds[i]
+        self.close()
+        if cmd:
+            cmd()
+
+    def _inside(self, x_root, y_root):
+        return (self.winfo_rootx() <= x_root < self.winfo_rootx() + self._mw
+                and self.winfo_rooty() <= y_root < self.winfo_rooty() + self._mh)
+
+    def _on_click(self, e):
+        if not self._inside(e.x_root, e.y_root):
+            self.close()             # 这一下不传给底下的控件，跟原生菜单一致
+            return
+        i = self._row_at(e.y)
+        if i is not None:
+            self._run(i)
+
+    def _on_right(self, e):
+        if self._inside(e.x_root, e.y_root):
+            return
+        target = self.winfo_containing(e.x_root, e.y_root)
+        self.close()
+        if target is not None and target.winfo_exists():
+            # 在本程序的别处又按了右键：换到那里重开（资源管理器也是这样）
+            target.event_generate("<Button-3>",
+                                  x=e.x_root - target.winfo_rootx(),
+                                  y=e.y_root - target.winfo_rooty(),
+                                  rootx=e.x_root, rooty=e.y_root)
+
+    def _tick(self):
+        """盯前台窗口：切到别的程序就收起（grab 管不到别的程序的点击）。"""
+        self._job = None
+        if not self._closed:
+            if not _ours(_foreground()):
+                self.close()
+            else:
+                self._job = self.after(self.POLL_MS, self._tick)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        if self._job is not None:
+            self.after_cancel(self._job)
+            self._job = None
+        if StyleMenu._current is self:
+            StyleMenu._current = None
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        prev = self._prev_focus
+        if prev is not None and prev.winfo_exists():
+            prev.focus_set()
+
+
 class Table(ttk.Frame):
     """带排序的 Treeview 封装。columns: (key, 标题, 宽度, 对齐, 类型)
 
@@ -1357,7 +1644,7 @@ class Table(ttk.Frame):
         if not iid:
             return
         self.tv.selection_set(iid)
-        m = tk.Menu(self, tearoff=0)
+        m = StyleMenu(self)
         path = self._path_of(iid)
         top = self.winfo_toplevel()
         # 详情排第一：点右键盘就是为了先看一眼这局，别让它排在播放下面。
@@ -1369,8 +1656,7 @@ class Table(ttk.Frame):
         if self.on_menu is not None:
             self.on_menu(iid, m)
         if path:
-            if m.index("end") is not None and m.type("end") != "separator":
-                m.add_separator()
+            m.add_separator()
             if mslaunch.is_replay(path) and hasattr(top, "open_replay"):
                 m.add_command(label="用元扫雷播放",
                               command=lambda p=path: top.open_replay(p))
@@ -1378,13 +1664,7 @@ class Table(ttk.Frame):
                           command=lambda p=path: self._copy_path_text(p))
             m.add_command(label="打开所在文件夹",
                           command=lambda p=path: self._reveal(p))
-        if m.index("end") is None:       # 两边都没东西可加，别弹一个空菜单
-            return
-        # tk_popup 不阻塞：贴完就返回。若在这里立刻 destroy，菜单还没等用户点
-        # 就被删了（命令永不触发）。改成菜单收起（<Unmap>）时再自删，既不泄漏
-        # 也不秒删。
-        m.bind("<Unmap>", lambda e: m.destroy())
-        m.tk_popup(event.x_root, event.y_root)
+        m.popup(event.x_root, event.y_root)
 
     def _copy_path_text(self, path):
         self.clipboard_clear()
@@ -1765,7 +2045,7 @@ class PBGrid(tk.Frame):
 
 
 # ------------------------------------------------------------------ LSF 明细
-class LsfDetailDialog(tk.Toplevel):
+class LsfDetailDialog(Dialog):
     """LSF 明细：九个格子（三级 × 三项），普通和 NF 并排。
 
     格子是「前五均值 · 软实力」。点一行看撑起它的五局，普通 / NF 用上面两枚
@@ -1945,7 +2225,7 @@ class LsfDetailDialog(tk.Toplevel):
 
 
 # ------------------------------------------------------------------ 当天明细
-class DailyDialog(tk.Toplevel):
+class DailyDialog(Dialog):
     """某一天的全部完成局（每日页双击某天，或点「当天明细」）。
 
     一天最多几百局，所以不做分页也不加搜索：一屏滚下来就是当天从晚到早
@@ -2026,7 +2306,7 @@ class DailyDialog(tk.Toplevel):
 
 
 # ------------------------------------------------------------------ 登录窗
-class LoginDialog(tk.Toplevel):
+class LoginDialog(Dialog):
     """验证码登录。
 
     站点验证码是一次性的（成功失败都作废），且登录限流 60 次/小时/IP，
@@ -2230,7 +2510,7 @@ class LoginDialog(tk.Toplevel):
             self.after(80, self._poll)
 
 
-class DiagnosticsDialog(tk.Toplevel):
+class DiagnosticsDialog(Dialog):
     """数据目录 / 日志 / 导出诊断包。
 
     存在的理由：打成 --windowed 后没有控制台，程序崩了用户手上什么都没有。
@@ -2345,7 +2625,7 @@ class DiagnosticsDialog(tk.Toplevel):
             parent=self)
 
 
-class UploadConfirmDialog(tk.Toplevel):
+class UploadConfirmDialog(Dialog):
     """上传前的二次确认：把「这一批到底要传什么」摊开给人看。
 
     为什么不直接用 messagebox：
@@ -2507,7 +2787,7 @@ class UploadConfirmDialog(tk.Toplevel):
         return bool(dlg.result)
 
 
-class IdentsDialog(tk.Toplevel):
+class IdentsDialog(Dialog):
     """账号在网站上的全部标识。
 
     为什么不在状态行里平铺：真实账号常有几十个标识（站点上每换一次玩家名就多一个），
@@ -2583,7 +2863,7 @@ class IdentsDialog(tk.Toplevel):
             pass
 
 
-class GameDetail(tk.Toplevel):
+class GameDetail(Dialog):
     """一局摊开看：成绩、这局在同 3BV / 同级别里的位置、什么时候打的。
 
     只读扫描时已经算好的字段 —— 不重演录像、不启动元扫雷，右键就出来。
@@ -2764,7 +3044,7 @@ class GameDetail(tk.Toplevel):
         self.geometry("+%d+%d" % (x, y))
 
 
-class PathsDialog(tk.Toplevel):
+class PathsDialog(Dialog):
     """录像目录管理。
 
     为什么不另开一个「阿比特」tab：阿比特只是另一种后缀，跟元扫雷的 replay
@@ -3146,8 +3426,8 @@ class App(tk.Tk):
         self._watch_ticks = 0
         self._watch_rescan = False  # 强制下一拍重扫（读到过半截文件时用）
 
-        self._set_icon()
-        self._refresh_icon()      # 窗口 map 后 Tk 会再设一次，隔一拍覆盖回来
+        set_window_icon(self)
+        self.after(260, lambda: set_window_icon(self))   # 窗口 map 后 Tk 会再设一次，隔一拍覆盖回来
         self._init_style()
         self._build_ui()
         self.after(120, self._apply_dwm)
@@ -3211,62 +3491,6 @@ class App(tk.Tk):
         FONT_BIG = (FAM_HEAD, 18, "bold")
         FONT_MONO = (FAM_MONO, 11)
         FONT_MONO_B = (FAM_MONO, 11, "bold")
-
-    def _icon_path(self):
-        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-        for d in (base, os.path.dirname(os.path.abspath(__file__)),
-                  os.path.dirname(sys.executable)):
-            p = os.path.join(d, "icon.ico")
-            if os.path.isfile(p):
-                return p
-        return None
-
-    def _set_icon(self):
-        """给窗口装图标。
-
-        Tk 的 `iconbitmap` 只从 ico 里取**一张**（按系统大图标尺寸），
-        任务栏按钮却按 24dp × 缩放 渲染（150% 下 36px），于是 32 被拉到 36，糊。
-        所以这里自己按「任务栏实际像素」精确 LoadImage 再 WM_SETICON：
-        ico 里有对应档位（本工具会生成 30/36/42 等非标准档）就是 1:1，零缩放。
-        """
-        ico = self._icon_path()
-        if not ico:
-            return
-        try:
-            self.iconbitmap(ico)         # 兜底：Tk 自己那套也设上
-        except Exception:
-            pass
-        try:
-            self.update_idletasks()
-            u = ctypes.windll.user32
-            hwnd = u.GetAncestor(self.winfo_id(), 2) or u.GetParent(self.winfo_id())
-            if not hwnd:
-                return
-            try:
-                dpi = u.GetDpiForWindow(hwnd) or 96
-            except Exception:
-                dpi = 96
-            self._hicons = []            # 保住句柄，别被回收
-
-            def load(px):
-                px = max(8, int(round(px)))
-                h = u.LoadImageW(None, ico, 1, px, px, 0x10)   # IMAGE_ICON | LR_LOADFROMFILE
-                if h:
-                    self._hicons.append(h)
-                return h
-
-            big = load(24 * dpi / 96.0)      # 任务栏 / Alt-Tab
-            small = load(16 * dpi / 96.0)    # 标题栏左上角
-            if big:
-                u.SendMessageW(hwnd, 0x0080, 1, big)    # WM_SETICON ICON_BIG
-            if small or big:
-                u.SendMessageW(hwnd, 0x0080, 0, small or big)   # ICON_SMALL
-        except Exception:
-            pass
-
-    def _refresh_icon(self):
-        """窗口 map 之后 Tk 可能再设一次图标，隔一拍补回来。"""
-        self.after(260, self._set_icon)
 
     def _apply_dwm(self):
         """Win11：把标题栏染成樱粉底深紫字，融进界面。"""
@@ -4183,15 +4407,13 @@ class App(tk.Tk):
         return out
 
     def _today_menu(self):
-        m = tk.Menu(self, tearoff=0)
+        m = StyleMenu(self)
         m.add_command(label="复制今日总结",
                       command=lambda: self._copy_today(False))
         m.add_command(label="复制今日详细总结",
                       command=lambda: self._copy_today(True))
         b = self.btn_today
-        m.bind("<Unmap>", lambda e: m.destroy())
-        m.tk_popup(b.winfo_rootx(),
-                   int(b.winfo_rooty() + b.winfo_height() + sc(2)))
+        m.popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + sc(4))
 
     def _copy_today(self, detail=False):
         """今天的总结：把有局的级别并在一张图里。"""

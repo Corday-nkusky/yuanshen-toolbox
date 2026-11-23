@@ -5,9 +5,11 @@
 依赖本机录像目录（%APPDATA%\\Metasweeper3.3.4\\replay），找不到就跳过。
 """
 
+import ctypes
 import os
 import sys
 import time
+from ctypes import windll
 
 import uitest  # 后台跑界面：窗口对用户透明，见 app.py 里 MS_PB_QUIET
 import app as A
@@ -305,48 +307,15 @@ def main():
                 bool(opened) and A.mslaunch.is_replay(opened[0])),
                ("非录像行仍然复制路径", bool(copied))]
 
-    # 右键菜单：项齐不齐、构造会不会抛（tk_popup 换成空实现，免得抢 grab）
-    real_menu, made = A.tk.Menu, []
-
-    class _Menu:
-        def __init__(self, master=None, tearoff=0):
-            self.items = []
-            self.destroyed = False
-            self.bindings = {}
-            made.append(self)
-
-        def add_command(self, label, command):
-            self.items.append(label)
-
-        def add_separator(self):
-            self.items.append("-")
-
-        def index(self, what):
-            # 与 tk.Menu 一致：空菜单返回 None，否则返回最后一项的下标
-            return None if not self.items else len(self.items) - 1
-
-        def type(self, index):
-            # app.py 靠它判断末尾是不是分隔符，别再往里加重复的分隔线
-            i = len(self.items) - 1 if index == "end" else int(index)
-            return "separator" if self.items[i] == "-" else "command"
-
-        def bind(self, seq, fn):
-            self.bindings[seq] = fn
-
-        def tk_popup(self, x, y):
-            pass
-
-        def grab_release(self):
-            pass
-
-        def destroy(self):
-            self.destroyed = True
+    # 右键菜单（同风格 StyleMenu，不再是原生 tk.Menu）：项齐不齐；贴出这一步换成
+    # 空实现，免得在测试里真弹窗口抢 grab
+    real_popup, pops = A.StyleMenu.popup, []
+    A.StyleMenu.popup = lambda self, x, y: pops.append(self)
 
     class _Evt:
         x_root = y_root = 100
         y = 0
 
-    A.tk.Menu = _Menu
     real_identify = rec.tv.identify_row
     try:
         kids = rec.tv.get_children()
@@ -356,23 +325,54 @@ def main():
             rec._on_right_click(_Evt)
     finally:
         rec.tv.identify_row = real_identify
-        A.tk.Menu = real_menu
-    alive = bool(made) and all(not m.destroyed for m in made)
-    for m in made:                      # 模拟菜单收起：<Unmap> 应触发自删
-        cb = m.bindings.get("<Unmap>")
-        if cb:
-            cb(None)
+        A.StyleMenu.popup = real_popup
+    made = pops
+    alive = bool(made) and all(m.winfo_exists() for m in made)
+    for m in made:                      # 收起：菜单应自毁
+        m.close()
     checks += [("右键菜单贴出后不秒删（命令才点得到）", alive),
-               ("右键菜单收起时自删（不漏控件）",
-                bool(made) and all(m.destroyed for m in made))]
+               ("右键菜单收起即销毁（不漏窗口）",
+                bool(made) and all(not m.winfo_exists() for m in made))]
     import inspect
     sig = inspect.signature(A.DailyDialog.set_status)
     checks += [("明细对话框 set_status 接得住 hold / transient（复制路径不崩）",
                 "hold" in sig.parameters and "transient" in sig.parameters)]
-    labels = made[0].items if made else []
+    labels = made[0].labels() if made else []
+    seps = [it for it in (made[0]._items if made else []) if it[0] == "sep"]
     checks += [("右键菜单：详细信息 / 播放 / 复制路径 / 打开所在文件夹",
-                labels[:3] == ["详细信息", "-", "用元扫雷播放"]
-                and "复制路径" in labels and "打开所在文件夹" in labels)]
+                labels == ["详细信息", "用元扫雷播放", "复制路径", "打开所在文件夹"]),
+               ("右键菜单分隔线不重复、不在首尾", len(seps) == 1)]
+
+    # 真弹一次（窗口对用户透明）：贴出即 grab、回车执行悬停项、收起释放 grab
+    win.update()
+    hits = []
+    m = A.StyleMenu(win)
+    m.add_command("甲", command=lambda: hits.append("甲"))
+    m.add_separator()
+    m.popup(100.5, 100.25)
+    win.update()
+    popped = (m.winfo_exists() and win.grab_current() is m
+              and A.StyleMenu._current is m and (m.winfo_x(), m.winfo_y()) == (100, 100))
+    m._set_hover(0)
+    m._run(m._hover)                   # <Return> 绑的就是它：后台跑时窗口拿不到键盘焦点
+    win.update()
+    checks += [("弹出菜单贴出在取整后的坐标并接管点击", popped),
+               ("弹出菜单执行悬停项后自毁",
+                hits == ["甲"] and not m.winfo_exists()
+                and win.grab_current() is None and A.StyleMenu._current is None)]
+
+    # 空菜单不弹；上一条分隔线留在结尾时自动去掉
+    m2 = A.StyleMenu(win)
+    m2.add_separator()
+    m2.popup(100, 100)
+    m3 = A.StyleMenu(win)
+    m3.add_command("乙")
+    m3.add_separator()
+    m3.popup(100, 100)
+    win.update()
+    checks += [("没有可点项的菜单不弹", not m2.winfo_exists()),
+               ("结尾的分隔线自动去掉", len(m3._rows) == 1 and len(m3._items) == 1)]
+    m3.close()
 
     # 设置弹窗：操作药丸 / 强无猜三档 / LSF 两态胶囊（文案与说明随状态变）
     def _pills(w):
@@ -435,49 +435,44 @@ def main():
                ("设置弹窗收起即销毁（不漏窗口）", not dlg.winfo_exists()),
                ("设置弹窗坐标是整数", pos_int)]
 
-    # 今日总结菜单仍用原生 tk.Menu：弹出坐标必须是整数
-    real_menu2, pops2 = A.tk.Menu, []
-
-    class _Menu2:
-        def __init__(self, master=None, tearoff=0):
-            self.items = []
-
-        def add_command(self, label, command, state=None):
-            self.items.append(label)
-
-        def add_checkbutton(self, label, variable=None, command=None):
-            self.items.append(label)
-
-        def add_radiobutton(self, label, variable=None, value=None, command=None):
-            self.items.append(label)
-
-        def add_cascade(self, label, menu=None):
-            self.items.append(label)
-
-        def add_separator(self):
-            self.items.append("-")
-
-        def bind(self, seq, fn):
-            pass
-
-        def tk_popup(self, x, y):
-            pops2.append((x, y))
-
-        def grab_release(self):
-            pass
-
-        def destroy(self):
-            pass
-
-    A.tk.Menu = _Menu2
+    # 今日总结下拉：同风格菜单，弹出坐标必须是整数
+    pops2 = []
+    real_popup = A.StyleMenu.popup
+    A.StyleMenu.popup = lambda self, x, y: pops2.append((self, x, y))
     try:
         win._today_menu()
     finally:
-        A.tk.Menu = real_menu2
-    checks += [("今日总结菜单弹出坐标是整数（tk_popup 不收浮点）",
-                len(pops2) == 1
-                and all(isinstance(x, int) and isinstance(y, int)
-                        for x, y in pops2))]
+        A.StyleMenu.popup = real_popup
+    checks += [("今日总结菜单：总结 / 详细总结两项",
+                len(pops2) == 1 and pops2[0][0].labels() == ["复制今日总结", "复制今日详细总结"]),
+               ("今日总结菜单弹出坐标是整数（浮点坐标已取整）",
+                len(pops2) == 1 and all(isinstance(v, int) for v in pops2[0][1:]))]
+    for m, _x, _y in pops2:
+        m.destroy()
+
+    # 所有弹窗都带应用图标（标题栏不再是 Tk 默认的羽毛）
+    win.update()
+    win.open_settings()
+    dlg = win._settings_dlg
+    for _ in range(40):                 # 等映射后那一下补设图标
+        win.update()
+        time.sleep(0.01)
+    try:
+        dlg_hwnd = windll.user32.GetAncestor(dlg.winfo_id(), 2)
+        has_icon = bool(windll.user32.SendMessageW(
+            ctypes.c_void_p(dlg_hwnd), 0x007F, 0, None))      # WM_GETICON ICON_SMALL
+    except Exception:
+        has_icon = False
+    dlg.close()
+    bases = {c.__name__: c.__bases__[0].__name__ for c in vars(A).values()
+             if isinstance(c, type) and c.__module__ == A.__name__
+             and c.__name__ in ("SettingsDialog", "LsfDetailDialog", "DailyDialog",
+                                "LoginDialog", "DiagnosticsDialog",
+                                "UploadConfirmDialog", "IdentsDialog", "GameDetail",
+                                "PathsDialog")}
+    checks += [("设置弹窗带应用图标", has_icon),
+               ("九个弹窗类都继承带图标的基类",
+                len(bases) == 9 and set(bases.values()) == {"Dialog"})]
 
     # 强无猜范围：选择要落盘，且不动标准模式的范围
     ng_before = A.load_config().get("ng_scope", None)

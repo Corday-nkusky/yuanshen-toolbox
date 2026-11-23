@@ -6,7 +6,6 @@
 import os
 import sys
 import time
-import tkinter as tk
 
 import uitest  # 后台跑界面：窗口对用户透明，见 app.py 里 MS_PB_QUIET
 import app as A
@@ -149,11 +148,10 @@ def main():
                   and win._daily_dialog.tab.rows[0]["date"] == rows[0]["date"])
             win._daily_dialog.destroy()
         # 右键某天：总结 / 详细总结，各自再分这一级与全部级别
-        menu = tk.Menu(win, tearoff=0)
+        menu = A.StyleMenu(win)                        # 与右键一致的同风格菜单
         win._daily_menu(r0["date"], menu)
-        items = [menu.entrycget(i, "label")             # 分隔符没有 -label 选项
-                 for i in range(menu.index("end") + 1)
-                 if menu.type(i) != "separator"]
+        items = menu.labels()
+        menu.destroy()
         cn0 = A.core.LEVEL_CN[win._daily_level]
         check("右键菜单：本级总结/详细 + 全部级别总结/详细（没有文本）",
               items == ["复制总结 · %s" % cn0,
