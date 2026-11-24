@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.39.1"
+APP_VER = "0.39.2"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -777,6 +777,7 @@ class SettingsDialog(Dialog):
 
     def __init__(self, app):
         super().__init__(app)
+        self.withdraw()            # 先藏起来：位置算好再露面，免得先在左上角闪一下
         self.app = app
         self._closed = False
         self.title("设置")
@@ -861,12 +862,14 @@ class SettingsDialog(Dialog):
                                   font=FONT_SMALL, anchor="w", justify="left")
         self._lsf_note.pack(fill="x", pady=(sc(2), 0))
         self._refresh()
-        self.grab_set()
         self.update_idletasks()
         w, h = self.winfo_reqwidth(), self.winfo_reqheight()
         x = app.winfo_rootx() + (app.winfo_width() - w) // 2
         y = app.winfo_rooty() + (app.winfo_height() - h) // 3
-        self.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        self.geometry("%dx%d+%d+%d" % (w, h, max(0, x), max(0, y)))
+        self.deiconify()           # 尺寸和位置一起出现，不再先左上角再跳中央
+        self.update_idletasks()
+        self.grab_set()
         self.focus_set()
 
     def _refresh_ms(self):
