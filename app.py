@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.39.2"
+APP_VER = "0.39.3"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -746,10 +746,19 @@ class Dialog(tk.Toplevel):
     """带应用图标的弹窗基类：标题栏不再显示 Tk 默认的羽毛图标。
 
     Tk 在映射时会按自己的取法再设一次图标，所以隔一拍盖回来（同主窗口）。
+    ``hidden=True`` 给需要先算尺寸再露面的弹窗用：从原生窗口创建起就藏到
+    屏幕外并保持透明，避免默认位置/尺寸先闪一帧。
     """
 
-    def __init__(self, master=None):
+    def __init__(self, master=None, hidden=False):
         super().__init__(master)
+        self._hidden_on_build = bool(hidden)
+        if hidden:
+            # 原生窗口可能在 iconbitmap 等调用中被 realize；先藏到屏幕外，
+            # 再用 alpha=0 过渡，等最终 geometry 生效后才恢复可见。
+            self.withdraw()
+            self.geometry("1x1+-10000+-10000")
+            self.attributes("-alpha", 0.0)
         self._icon_job = None
         ico = icon_path()
         if ico:
@@ -758,6 +767,13 @@ class Dialog(tk.Toplevel):
             except tk.TclError:
                 pass
         self.bind("<Map>", self._icon_on_map, add="+")
+
+    def _reveal(self):
+        """透明过渡结束：弹窗已经位于最终位置，恢复不透明。"""
+        try:
+            self.attributes("-alpha", 1.0)
+        except tk.TclError:
+            pass
 
     def _icon_on_map(self, e):
         if e.widget is not self:
@@ -776,8 +792,7 @@ class SettingsDialog(Dialog):
     """
 
     def __init__(self, app):
-        super().__init__(app)
-        self.withdraw()            # 先藏起来：位置算好再露面，免得先在左上角闪一下
+        super().__init__(app, hidden=True)
         self.app = app
         self._closed = False
         self.title("设置")
@@ -869,6 +884,7 @@ class SettingsDialog(Dialog):
         self.geometry("%dx%d+%d+%d" % (w, h, max(0, x), max(0, y)))
         self.deiconify()           # 尺寸和位置一起出现，不再先左上角再跳中央
         self.update_idletasks()
+        self.after_idle(self._reveal)
         self.grab_set()
         self.focus_set()
 
