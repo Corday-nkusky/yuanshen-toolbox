@@ -265,12 +265,12 @@ def main():
     real_focus, real_self = A.mslaunch.focus, A.mslaunch.foreground_is_self
     calls = []
     A.mslaunch.foreground_is_self = lambda: True
-    A.mslaunch.focus = lambda: calls.append(1) or True
+    A.mslaunch.focus = lambda name=None: calls.append(1) or True
     win._ms_want_front()
     win._ms_try_focus()
     front_ok = len(calls) == 1 and win._ms_focus_until == 0.0
 
-    A.mslaunch.focus = lambda: calls.append(1) or False       # 窗口还没建出来
+    A.mslaunch.focus = lambda name=None: calls.append(1) or False       # 窗口还没建出来
     win._ms_want_front()
     win._ms_try_focus()
     front_retry = win._ms_focus_until > 0 and len(calls) == 2

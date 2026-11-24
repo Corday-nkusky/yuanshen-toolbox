@@ -84,17 +84,13 @@ with open(not_exe, "w", encoding="utf-8") as fh:
 ok, err = mslaunch.launch(not_exe)
 check("不是可执行文件时给出原因", ok is False and bool(err))
 
-# ---------------------------------------------------------------- 进程
-running = mslaunch.find_running()
-check("find_running 不抛异常且形状正确",
-      running is None or (isinstance(running, tuple) and len(running) == 2
-                          and isinstance(running[0], int)
-                          and isinstance(running[1], str)))
-
-# ---------------------------------------------------------------- 文件名
-check("认得出元扫雷主程序",
-      mslaunch.looks_like_metasweeper(r"C:\x\metasweeper.exe"))
-check("认不出别的 exe", not mslaunch.looks_like_metasweeper(r"C:\x\notepad.exe"))
+# ---------------------------------------------------------------- 程序名识别
+check("从路径取程序名",
+      mslaunch.exe_stem(r"C:\x\metasweeper.exe") == "metasweeper"
+      and mslaunch.exe_stem(r"D:\扫雷\ms_arbiter.exe") == "ms_arbiter"
+      and mslaunch.exe_stem(r"C:\Games\puremetasweeper\PureMetaSweeper.exe")
+      == "PureMetaSweeper")
+check("空路径退回默认的 metasweeper", mslaunch.exe_stem("") == "metasweeper")
 
 # ---------------------------------------------------------------- 打开录像
 check("认得出 evf", mslaunch.is_replay("a.evf"))
@@ -147,6 +143,17 @@ check("主窗口候选：可见、无 owner、进程是元扫雷",
       and not mslaunch._is_candidate(True, None, r"C:\x\chrome.exe")
       and not mslaunch._is_candidate(True, None, ""))
 
+# 换成阿比特/非标准版本：同一个窗口枚举要按「选中程序自己的名字」认，
+# 不能再只认 metasweeper 前缀
+check("按选中程序名认窗口（阿比特）",
+      mslaunch._is_candidate(True, None, r"D:\扫雷\ms_arbiter.exe",
+                             "ms_arbiter")
+      and mslaunch._is_candidate(True, None,
+                                 r"C:\Games\puremetasweeper\PureMetaSweeper.exe",
+                                 "PureMetaSweeper")
+      and not mslaunch._is_candidate(True, None, r"D:\扫雷\ms_arbiter.exe",
+                                     "metasweeper"))
+
 _real_prefix = mslaunch._NAME_PREFIX
 mslaunch._NAME_PREFIX = "metasweeper-zzz-no-such-process"
 try:
@@ -154,6 +161,14 @@ try:
     check("没有元扫雷窗口时置前返回 False", mslaunch.focus() is False)
 finally:
     mslaunch._NAME_PREFIX = _real_prefix
+
+check("按指定名字查进程不抛异常",
+      mslaunch.find_running("metasweeper-zzz-no-such-process") is None)
+_running = mslaunch.find_running()
+check("find_running 不抛异常且形状正确",
+      _running is None or (isinstance(_running, tuple) and len(_running) == 2
+                           and isinstance(_running[0], int)
+                           and isinstance(_running[1], str)))
 
 check("allow_foreground 不抛异常", isinstance(mslaunch.allow_foreground(), bool))
 check("foreground_is_self 不抛异常",

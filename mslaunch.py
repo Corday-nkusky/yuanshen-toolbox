@@ -18,9 +18,29 @@ import socket
 import subprocess
 from ctypes import wintypes as _w
 
-# 认进程 / 认文件名都按这个前缀，大小写无关
+# 认进程 / 认文件名都按这个前缀，大小写无关。设置里登记了别的程序时，
+# 调用方会把「那个程序自己的文件名」传进来，默认行为保持不变。
 _NAME_PREFIX = "metasweeper"
 _EXE = "metasweeper.exe"
+
+
+def exe_stem(path):
+    """程序路径 → 用来认进程/窗口的名字（去掉目录和 .exe）。
+
+    非标准版本、阿比特这类文件名不带 metasweeper 的也走同一条路：
+    选中哪个程序，就按哪个程序的名字找它在不在跑、把哪个窗口提到前面。
+    """
+    stem = os.path.splitext(os.path.basename(path or ""))[0]
+    return stem or _NAME_PREFIX
+
+
+def _prefix(name_prefix=None):
+    """调用方指定的名字优先；没指定就用默认的 metasweeper。
+
+    运行时才读 ``_NAME_PREFIX``：测试会临时改它来避开真实进程。
+    """
+    return (name_prefix or _NAME_PREFIX).lower()
+
 
 # 启动后多久之内还不算「没起来」—— 元扫雷冷启动可能要几秒
 START_GRACE = 20.0
@@ -70,14 +90,15 @@ def _image_path(pid):
         k.CloseHandle(ctypes.c_void_p(h))
 
 
-def find_running():
-    """元扫雷在不在跑。返回 ``(pid, exe 全路径)`` 或 ``None``。
+def find_running(name_prefix=None):
+    """名字以 ``name_prefix`` 开头的进程在不在跑。返回 ``(pid, exe 全路径)`` 或 ``None``。
 
     路径可能拿不到（对方提权、或系统拒绝查询），这时第二项是空串，
     调用方仍可以据此判断「已经开着，别再开一个」。
     """
     if os.name != "nt":
         return None
+    prefix = _prefix(name_prefix)
     k = _kernel32()
     snap = k.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if not snap or snap == ctypes.c_void_p(-1).value:
@@ -87,7 +108,7 @@ def find_running():
         ent.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
         ok = k.Process32FirstW(ctypes.c_void_p(snap), ctypes.byref(ent))
         while ok:
-            if ent.szExeFile.lower().startswith(_NAME_PREFIX):
+            if ent.szExeFile.lower().startswith(prefix):
                 return (int(ent.th32ProcessID), _image_path(ent.th32ProcessID))
             ok = k.Process32NextW(ctypes.c_void_p(snap), ctypes.byref(ent))
         return None
@@ -196,12 +217,6 @@ def resolve(configured="", running_path="", search=True):
         if hits:
             return hits[0]
     return ""
-
-
-def looks_like_metasweeper(path):
-    """文件名看着像不像元扫雷 —— 用户手动挑文件时用，挡一下选错。"""
-    name = os.path.basename(path).lower()
-    return name.startswith(_NAME_PREFIX) and name.endswith(".exe")
 
 
 # ------------------------------------------------------------------ 启动
@@ -326,19 +341,19 @@ def allow_foreground():
         return False
 
 
-def _is_candidate(visible, owner, exe_path):
-    """枚举到的窗口该不该算元扫雷的主窗口。
+def _is_candidate(visible, owner, exe_path, name_prefix=None):
+    """枚举到的窗口该不该算目标程序的主窗口。
 
     ``owner`` 非 0 的一律跳过：那是挂在主窗口上的对话框、右键菜单、输入法
     候选框之类，把它们的父窗口提上来自然会带着它们。
     """
     if not visible or owner:
         return False
-    return os.path.basename(exe_path or "").lower().startswith(_NAME_PREFIX)
+    return os.path.basename(exe_path or "").lower().startswith(_prefix(name_prefix))
 
 
-def _main_window():
-    """元扫雷的主窗口句柄；没有返回 0。
+def _main_window(name_prefix=None):
+    """目标程序的主窗口句柄；没有返回 0。
 
     按 EnumWindows 的原始顺序取第一个命中的 —— 那是 Z 序最上面（最近用过）
     的那个窗口。元扫雷把播放窗口单开成一个顶层窗口时，用户此刻看的正是它。
@@ -357,7 +372,7 @@ def _main_window():
             pid = _w.DWORD()
             u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if not _is_candidate(True, u.GetWindow(hwnd, _GW_OWNER),
-                                 _image_path(pid.value)):
+                                 _image_path(pid.value), name_prefix):
                 return True
             hit.append(hwnd)
         except Exception:
@@ -430,14 +445,14 @@ def focus_hwnd(hwnd):
     return ok
 
 
-def focus():
-    """把元扫雷的窗口提到最前；返回是否真的抢到了前台。
+def focus(name_prefix=None):
+    """把目标程序的窗口提到最前；返回是否真的抢到了前台。
 
     窗口还没建出来（冷启动的头几百毫秒）时返回 False，调用方隔一会儿再试。
     """
     if os.name != "nt":
         return False
-    hwnd = _main_window()
+    hwnd = _main_window(name_prefix)
     if not hwnd:
         return False
     return focus_hwnd(hwnd)

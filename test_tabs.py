@@ -99,10 +99,11 @@ def capture(hwnd, path):
 
 def run(tab, out, wait=6.0):
     if "--src" in sys.argv:
-        cmd = [PYC, os.path.join(HERE, "app.py"), "--root", REPLAY, "--tab", tab]
+        cmd = [PYC, os.path.join(HERE, "app.py"), "--root", REPLAY,
+               "--tab", tab, "--no-autolaunch"]
         cwd = HERE
     else:
-        cmd = [EXE, "--root", REPLAY, "--tab", tab]
+        cmd = [EXE, "--root", REPLAY, "--tab", tab, "--no-autolaunch"]
         cwd = os.path.dirname(EXE)
     # 抓「新冒出来的那个窗口」而不是标题第一个：用户自己可能正开着一个工具箱，
     # 按标题取会截到他那份旧版本，图和代码对不上。

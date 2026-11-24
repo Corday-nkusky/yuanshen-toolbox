@@ -118,7 +118,7 @@ def run_case(label, exe, workdir, cfg_root=None, wait=14, clean=True):
                 json.dump({"roots": [{"path": cfg_root, "on": True}]},
                           fh, ensure_ascii=False)
 
-    p = subprocess.Popen([exe], cwd=workdir)
+    p = subprocess.Popen([exe, "--no-autolaunch"], cwd=workdir)
     wins = []
     deadline = time.time() + wait
     while time.time() < deadline:

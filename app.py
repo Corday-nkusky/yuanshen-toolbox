@@ -211,6 +211,29 @@ def config_auto_scopes(cfg):
     return ["top", "top_nf", "pb"]
 
 
+def ms_exes_from_cfg(cfg):
+    """设置里登记过的扫雷程序（去重、保持顺序），并把当前选中的补进来。
+
+    老配置只有 ``ms_exe`` 一个路径：这里把它并进列表，首次打开设置就能看到；
+    选中项仍然是 ``ms_exe`` —— 自动启动只认这一项，不会把整个列表都拉起来。
+    """
+    out = []
+    raw = (cfg or {}).get("ms_exes")
+    if isinstance(raw, list):
+        for p in raw:
+            if not isinstance(p, str) or not p.strip():
+                continue
+            ap = os.path.abspath(p)
+            if all(os.path.normcase(ap) != os.path.normcase(x) for x in out):
+                out.append(ap)
+    sel = str((cfg or {}).get("ms_exe") or "")
+    if sel:
+        ap = os.path.abspath(sel)
+        if all(os.path.normcase(ap) != os.path.normcase(x) for x in out):
+            out.insert(0, ap)
+    return out
+
+
 def load_config():
     try:
         import json
@@ -787,6 +810,34 @@ class SettingsDialog(Dialog):
                  height=28, padx=14).pack(side="left", padx=(0, sc(8)))
 
         tk.Frame(inner, bg=C_LINE, height=sc(1)).pack(fill="x", pady=sc(6))
+        tk.Label(inner, text="元扫雷程序", bg=C_PANEL, fg=C_DIM,
+                 font=FONT_SMALL).pack(anchor="w")
+        self._ms_quiet = True
+        self.ms_list = tk.Listbox(
+            inner, height=3, width=64, exportselection=False,
+            bg=C_BG, fg=C_TEXT, selectbackground=C_ACCENT,
+            selectforeground="#ffffff", activestyle="none",
+            highlightthickness=sc(1), highlightbackground=C_LINE,
+            font=FONT_SMALL, bd=0)
+        self.ms_list.pack(fill="x", pady=(sc(4), sc(6)))
+        self.ms_list.bind("<<ListboxSelect>>", self._on_ms_pick)
+        row = tk.Frame(inner, bg=C_PANEL)
+        row.pack(fill="x", pady=(0, sc(8)))
+        Pill(row, "添加…", command=self._add_ms_exe, bg=C_PANEL,
+             height=28, padx=14).pack(side="left")
+        Pill(row, "移除", command=self._remove_ms_exe, bg=C_PANEL,
+             height=28, padx=14).pack(side="left", padx=(sc(8), 0))
+        chk_kw = dict(bg=C_PANEL, fg=C_TEXT, activebackground=C_PANEL,
+                      activeforeground=C_TEXT, selectcolor=C_BG,
+                      font=FONT_UI, bd=0, highlightthickness=0, anchor="w")
+        self.var_ms_auto = tk.BooleanVar(value=bool(app._ms_auto_launch))
+        self.chk_ms_auto = tk.Checkbutton(
+            row, text="打开工具箱时自动启动", variable=self.var_ms_auto,
+            command=self._toggle_ms_auto, **chk_kw)
+        self.chk_ms_auto.pack(side="left", padx=(sc(24), 0))
+        self._refresh_ms()
+
+        tk.Frame(inner, bg=C_LINE, height=sc(1)).pack(fill="x", pady=sc(6))
         tk.Label(inner, text="强无猜上传（不计入统计）", bg=C_PANEL, fg=C_DIM,
                  font=FONT_SMALL).pack(anchor="w")
         row = tk.Frame(inner, bg=C_PANEL)
@@ -817,6 +868,69 @@ class SettingsDialog(Dialog):
         y = app.winfo_rooty() + (app.winfo_height() - h) // 3
         self.geometry("+%d+%d" % (max(0, x), max(0, y)))
         self.focus_set()
+
+    def _refresh_ms(self):
+        """重画设置里的程序列表，选中当前生效的那一项。"""
+        self._ms_quiet = True
+        try:
+            self.ms_list.delete(0, "end")
+            sel = None
+            for i, p in enumerate(self.app.ms_exes):
+                text = shrink_path(p, 66)
+                if not os.path.isfile(p):
+                    text += "（不存在）"
+                self.ms_list.insert("end", text)
+                if os.path.normcase(p) == os.path.normcase(self.app.ms_exe or ""):
+                    sel = i
+            if sel is not None:
+                self.ms_list.selection_set(sel)
+                self.ms_list.see(sel)
+        finally:
+            self._ms_quiet = False
+        self.var_ms_auto.set(bool(self.app._ms_auto_launch))
+
+    def _on_ms_pick(self, _e=None):
+        if self._ms_quiet:
+            return
+        sel = self.ms_list.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if 0 <= idx < len(self.app.ms_exes):
+            self.app.ms_select_exe(self.app.ms_exes[idx])
+
+    def _add_ms_exe(self):
+        initial = ""
+        if self.app.ms_exe and os.path.isfile(self.app.ms_exe):
+            initial = os.path.dirname(self.app.ms_exe)
+        else:
+            guess = mslaunch.discover()
+            if guess:
+                initial = os.path.dirname(guess[0])
+        p = filedialog.askopenfilename(
+            parent=self, title="选择扫雷主程序",
+            initialdir=initial if os.path.isdir(initial) else None,
+            filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")])
+        if not p:
+            return
+        self.app.ms_remember_exe(p)
+        self._refresh_ms()
+
+    def _remove_ms_exe(self):
+        sel = self.ms_list.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if not (0 <= idx < len(self.app.ms_exes)):
+            return
+        self.app.ms_remove_exe(self.app.ms_exes[idx])
+        self._refresh_ms()
+
+    def _toggle_ms_auto(self):
+        reason = self.app.set_ms_auto_launch(bool(self.var_ms_auto.get()))
+        if reason:
+            self.var_ms_auto.set(False)
+            messagebox.showwarning("设置", reason, parent=self)
 
     def _act(self, cmd):
         def run():
@@ -3406,7 +3520,18 @@ class App(tk.Tk):
 
         # 启动元扫雷：横幅按钮。位置来源见 mslaunch 的说明（配置 → 运行中的进程 →
         # 默认安装位置 → 用户指定一次）。这里只存状态，找路径的事全交给它。
-        self.ms_exe = str(_cfg.get("ms_exe") or "")   # 上次用过的（或者用户手选的）
+        # 设置里可以登记多份程序（不同版本、非标准版本都行），ms_exe 是"上次选中"
+        # 的那一份；自动启动只认它，不会把列表里的程序都拉起来。
+        self.ms_exes = ms_exes_from_cfg(_cfg)
+        self.ms_exe = str(_cfg.get("ms_exe") or "")
+        if not self.ms_exe and self.ms_exes:
+            self.ms_exe = self.ms_exes[0]
+            save_config(ms_exe=self.ms_exe)
+        self._ms_auto_launch = bool(_cfg.get("ms_auto_launch", False))
+        if self._ms_auto_launch and not self.ms_exe:
+            # 没有可选程序时这个开关不能是开的；把旧配置里不可能成立的状态修掉
+            self._ms_auto_launch = False
+            save_config(ms_auto_launch=False)
         self._ms_running = False   # 元扫雷此刻在不在跑
         self._ms_path = ""         # 从运行中的进程反查到的路径
         self._ms_launch_at = 0.0   # 上次点启动的时刻，用于冷启动宽限
@@ -3720,6 +3845,89 @@ class App(tk.Tk):
     MS_FOCUS_WINDOW = 10.0     # 启动之后这几秒内，补着把它的窗口提到前面
     MS_STATUS_HOLD_MS = 6000   # 「元扫雷已启动」这行挂多久（到点自己退场）
 
+    def _ms_name(self):
+        """当前选中程序的名字，用来认进程和窗口。
+
+        非标准版本、阿比特这类文件名不带 metasweeper 也按它自己的名字找；
+        没选过程序时退回默认的 metasweeper（老配置的兜底）。
+        """
+        return mslaunch.exe_stem(self.ms_exe)
+
+    def _ms_is_metasweeper(self):
+        """选中的是不是元扫雷本体 —— 只有它需要防 5555/5556 抢端口。"""
+        return self._ms_name().lower().startswith(mslaunch._NAME_PREFIX)
+
+    def ms_remember_exe(self, path):
+        """把路径登记进设置列表并选中。已登记过的只切换选中项。"""
+        path = os.path.abspath(path)
+        if all(os.path.normcase(path) != os.path.normcase(p)
+               for p in self.ms_exes):
+            self.ms_exes.append(path)
+        changed = os.path.normcase(path) != os.path.normcase(self.ms_exe or "")
+        old_name = self._ms_name()
+        self.ms_exe = path
+        save_config(ms_exe=self.ms_exe, ms_exes=self.ms_exes)
+        if changed:
+            diag.log.info("元扫雷程序切换为：%s", path)
+            if old_name.lower() != self._ms_name().lower():
+                self._ms_forget_state()
+
+    def ms_select_exe(self, path):
+        """设置列表里换一个程序。下次启动（含自动启动）就用它。"""
+        self.ms_remember_exe(path)
+
+    def ms_remove_exe(self, path):
+        """从列表里删掉一个程序；删的是当前选中项时顺延到下一项。"""
+        path = os.path.abspath(path)
+        self.ms_exes = [p for p in self.ms_exes
+                        if os.path.normcase(p) != os.path.normcase(path)]
+        if os.path.normcase(path) == os.path.normcase(self.ms_exe or ""):
+            self.ms_exe = self.ms_exes[0] if self.ms_exes else ""
+        if not self.ms_exe:
+            self._ms_auto_launch = False
+        save_config(ms_exe=self.ms_exe, ms_exes=self.ms_exes,
+                    ms_auto_launch=self._ms_auto_launch)
+        diag.log.info("设置里移除扫雷程序：%s（剩余 %d 个）",
+                      path, len(self.ms_exes))
+        self._ms_forget_state()
+
+    def set_ms_auto_launch(self, on):
+        """开关「打开工具箱自动启动」。没有可用程序时拒绝并返回原因。"""
+        on = bool(on)
+        if on and not self.ms_exe:
+            return "请先指定元扫雷位置。"
+        if on and not os.path.isfile(self.ms_exe):
+            return "指定的程序不存在，请先指定元扫雷位置。"
+        self._ms_auto_launch = on
+        save_config(ms_auto_launch=on)
+        diag.log.info("打开工具箱时自动启动元扫雷：%s", on)
+        return ""
+
+    def _ms_forget_state(self):
+        """换了程序：旧的运行状态/路径不再适用，横幅下一拍按新程序重查。"""
+        self._ms_running = False
+        self._ms_path = ""
+        self._ms_launch_at = 0.0
+        self._ms_focus_until = 0.0
+        self._draw_banner()
+
+    def auto_launch_game(self):
+        """工具箱启动后自动拉起上次选中的程序，并把它提到最前。
+
+        只认设置里选中的那一项：程序没配置/文件不在时安静地留在后台，
+        不去扫盘猜别的版本，也不弹选择框打断启动。
+        """
+        if not self._ms_auto_launch:
+            return
+        if not self.ms_exe:
+            return
+        if not os.path.isfile(self.ms_exe):
+            diag.log.warning("自动启动：程序位置不存在：%s", self.ms_exe)
+            self.set_status("没能自动启动元扫雷：设置里的程序位置不存在", "warn",
+                            hold=8000)
+            return
+        self.launch_game(auto=True)
+
     def open_replay(self, path):
         """双击录像：交给元扫雷播放。
 
@@ -3739,8 +3947,7 @@ class App(tk.Tk):
             if not exe:
                 return
         if os.path.normcase(exe) != os.path.normcase(self.ms_exe or ""):
-            self.ms_exe = exe
-            save_config(ms_exe=exe)
+            self.ms_remember_exe(exe)
         ok, err = mslaunch.open_file(exe, path)
         if not ok:
             diag.log.warning("用元扫雷打开录像失败：%s（%s）", err, path)
@@ -3776,7 +3983,8 @@ class App(tk.Tk):
         now = time.monotonic()
         if path == self._play_path and now - self._play_at < self.PLAY_REPEAT_GUARD:
             return False                    # 连点了同一局，上一次已经在打开
-        if (mslaunch.find_running() is not None
+        if (mslaunch.find_running(self._ms_name()) is not None
+                and self._ms_is_metasweeper()
                 and not mslaunch.port_open(self.MS_PLUGIN_PORT)):
             # 进程在、插件端口还没开 = 还在启动。等它起来再交，别起第二个。
             if not self._play_wait:
@@ -3839,11 +4047,12 @@ class App(tk.Tk):
         if target:
             mslaunch.focus_hwnd(target)
 
-    def launch_game(self):
+    def launch_game(self, auto=False):
         """横幅上的「启动元扫雷」：找到路径 → 启动 → 盯着它真的起来。
 
         路径一个都没有时只让用户指一次，指完记进配置；换安装位置或换台机器，
-        也只需要这一次。
+        也只需要这一次。``auto=True`` 是打开工具箱时的自动启动：只用设置里
+        选中的那一项，缺路径/启动失败都只写状态栏，不弹窗。
         """
         if self._ms_running or self._ms_pending():
             return                          # 已经在跑 / 刚点过还没确认，别开第二个
@@ -3855,28 +4064,39 @@ class App(tk.Tk):
             self._ms_running = True
             self._draw_banner()
             self.set_status("元扫雷已经在运行", "dim")
+            if auto:
+                self._ms_want_front(mslaunch.START_GRACE)
+                self._ms_try_focus()
             return
-        path = mslaunch.resolve(self.ms_exe, self._ms_path)
-        if not path:
-            path = self._ask_ms_exe()
+        if auto:
+            path = self.ms_exe if os.path.isfile(self.ms_exe or "") else ""
             if not path:
-                self.set_status("没有启动元扫雷", "dim")
+                diag.log.warning("自动启动：没有可用的程序位置（%s）",
+                                 self.ms_exe or "未配置")
+                self.set_status("没能自动启动元扫雷：请先在设置里指定程序位置",
+                                "warn", hold=8000)
                 return
+        else:
+            path = mslaunch.resolve(self.ms_exe, self._ms_path)
+            if not path:
+                path = self._ask_ms_exe()
+                if not path:
+                    self.set_status("没有启动元扫雷", "dim")
+                    return
         if os.path.normcase(path) != os.path.normcase(self.ms_exe or ""):
-            self.ms_exe = path
-            save_config(ms_exe=path)
+            self.ms_remember_exe(path)
         ok, err = mslaunch.launch(path)
         if not ok:
             diag.log.warning("启动元扫雷失败：%s（%s）", err, path)
             self.set_status("元扫雷没有启动起来", "err")
-            messagebox.showerror(
-                APP_TITLE, "没能启动元扫雷。\n\n%s\n\n程序：%s"
-                % (err, shrink_path(path, 72)))
-            if os.path.normcase(path) == os.path.normcase(self.ms_exe or ""):
-                self.ms_exe = ""            # 这个位置已经不对了，下次重新找
-                save_config(ms_exe="")
+            if auto:
+                self.set_status("没能自动启动元扫雷：%s" % err, "err", hold=8000)
+            else:
+                messagebox.showerror(
+                    APP_TITLE, "没能启动元扫雷。\n\n%s\n\n程序：%s"
+                    % (err, shrink_path(path, 72)))
             return
-        diag.log.info("启动元扫雷：%s", path)
+        diag.log.info("%s元扫雷：%s", "自动启动" if auto else "启动", path)
         # 这里只记「点过启动」，运行状态一律交给进程检测。若像以前那样抢先
         # 把 _ms_running 置 True，_poll_ms 的确认分支就永远进不去，状态栏会
         # 一直停在「正在启动元扫雷…」。
@@ -3885,44 +4105,49 @@ class App(tk.Tk):
         # 过渡话：启动成功之后要能干净地退场，不能把「正在启动…」留成底稿
         self.set_status("正在启动元扫雷…", "dim", transient=True,
                         hold=int(mslaunch.START_GRACE * 1000) + 3000)
-        self._ms_want_front()
+        # 自动启动时工具箱可能还要忙一阵（首轮扫描），多给一点置前窗口
+        self._ms_want_front(mslaunch.START_GRACE if auto
+                            else self.MS_FOCUS_WINDOW)
 
     def _ask_ms_exe(self):
-        """让用户指一次元扫雷主程序（装到哪都认）。取消返回空串。"""
-        guess = mslaunch.discover()
-        initial = (os.path.dirname(guess[0]) if guess
-                   else (os.environ.get("ProgramFiles") or ""))
+        """让用户指一次扫雷主程序（装到哪都认）。取消返回空串。
+
+        不再按文件名挡「不像元扫雷」的选择：非标准版本、阿比特都有用户
+        主动指定的场景，启动入口本身不需要替用户判断能不能开。
+        """
+        initial = ""
+        if self.ms_exe and os.path.isfile(self.ms_exe):
+            initial = os.path.dirname(self.ms_exe)
+        if not initial:
+            guess = mslaunch.discover()
+            initial = (os.path.dirname(guess[0]) if guess
+                       else (os.environ.get("ProgramFiles") or ""))
         p = filedialog.askopenfilename(
-            parent=self, title="选择元扫雷的主程序（metasweeper.exe）",
+            parent=self, title="选择扫雷主程序",
             initialdir=initial if os.path.isdir(initial) else None,
-            filetypes=[("元扫雷主程序", "metasweeper*.exe"),
-                       ("可执行文件", "*.exe")])
+            filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")])
         if not p:
             return ""
         p = os.path.abspath(p)
-        if not mslaunch.looks_like_metasweeper(p) and not messagebox.askyesno(
-                APP_TITLE, "这个文件看着不像元扫雷：\n%s\n\n仍然启动它吗？"
-                % shrink_path(p, 64)):
-            return ""
-        diag.log.info("用户指定元扫雷主程序：%s", p)
+        diag.log.info("用户指定扫雷主程序：%s", p)
         return p
 
     def _ms_probe(self):
-        """查一次元扫雷进程，返回 (在不在跑, 反查到的路径)。
+        """查一次选中的程序在不在跑，返回 (在不在跑, 反查到的路径)。
 
         从进程反查到的路径比任何猜测都准（用户自己从开始菜单开的那次也算）；
-        配置里的路径失效时顺手改过来。
+        配置里的路径失效时顺手改过来。按当前选中程序的名字找，换成阿比特
+        或非标准版本也认的是对应的进程。
         """
         try:
-            found = mslaunch.find_running()
+            found = mslaunch.find_running(self._ms_name())
         except Exception:
             found = None
         path = (found[1] if found and len(found) > 1 else "") or ""
         if path and os.path.isfile(path):
             self._ms_path = path
             if not os.path.isfile(self.ms_exe or ""):
-                self.ms_exe = path
-                save_config(ms_exe=path)
+                self.ms_remember_exe(path)
         return bool(found), path
 
     def _ms_pending(self):
@@ -3930,16 +4155,18 @@ class App(tk.Tk):
         return (bool(self._ms_launch_at)
                 and time.time() - self._ms_launch_at < mslaunch.START_GRACE)
 
-    def _ms_want_front(self):
-        """从现在起几秒内，把元扫雷的窗口提到最前面。
+    def _ms_want_front(self, seconds=None):
+        """从现在起一段时间内，把目标程序的窗口提到最前面。
 
         冷启动时窗口要过几百毫秒才建出来，一次抢不到，所以开个窗口期让
         轮询补几次；抢到、超时、或者用户已经去干别的了，就收工。
         """
-        self._ms_focus_until = time.time() + self.MS_FOCUS_WINDOW
+        if seconds is None:
+            seconds = self.MS_FOCUS_WINDOW
+        self._ms_focus_until = time.time() + seconds
 
     def _ms_try_focus(self):
-        """补一次「让元扫雷露脸」。只在前台还是工具箱自己时才动手。
+        """补一次「让目标程序露脸」。只在前台还是工具箱自己时才动手。
 
         用户双击完就去点浏览器了，说明他这会儿不想被打断 —— 这时候再把
         元扫雷拽到最前面是很讨厌的。
@@ -3952,7 +4179,7 @@ class App(tk.Tk):
         if not mslaunch.foreground_is_self():
             self._ms_focus_until = 0.0
             return
-        if mslaunch.focus():
+        if mslaunch.focus(self._ms_name()):
             self._ms_focus_until = 0.0
 
     def _poll_ms(self):
@@ -7850,6 +8077,10 @@ def main():
                                + os.path.join(paths.log_dir(), "app.log"))
         raise
     app.report_callback_exception = tk_callback   # Tk 回调异常默认只打 stderr
+    # 打开工具箱时自动拉起上次选中的程序（设置里默认关）。--probe 是布局自检，
+    # --no-autolaunch 给截图/冒烟测试用：都不该在无人值守时顺手开个游戏。
+    if "--probe" not in args and "--no-autolaunch" not in args:
+        app.after(900, app.auto_launch_game)
     if start_tab in app.pages:
         app.after(400, lambda: app.show_tab(start_tab))
     if "--probe" in args:
