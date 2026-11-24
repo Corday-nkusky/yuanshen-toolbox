@@ -37,6 +37,7 @@ C_INK = "#3c3352"
 C_DIM = "#9b8aae"
 C_LINE = "#f2e2ef"
 C_RULE = "#f6ecf3"
+C_PANEL = "#fcf8fb"
 
 SCALE = 2          # 2 倍像素渲染：发到手机上放大也不糊
 
@@ -872,10 +873,19 @@ def levels_detail_png(items, games_by_level, ver="", day="", now=None,
                 y += 18
             cw4 = (W - PAD * 2 - 90) / 4.0
             base = PAD + 90
-            sh.text(base + cw4, y, "今天", 10.5, C_DIM, anchor="mm")
-            sh.text(base + cw4 * 3, y, "近 %d 扫雷日" % WINDOW_DAYS,
-                    10.5, C_DIM, anchor="mm")
-            y += 16
+            accent_bg = LEVEL_ACCENT.get(lv, (C_INK, CARD_BG))[1]
+            # 「今天」整组一条浅色标题带；近 7 日放进右侧浅底参考框，
+            # 两组之间留空隙，避免把右边的三列读成并列的历史数据。
+            sh.rect(base - 10, y - 4, 2 * cw4 + 10, 24, accent_bg, radius=12)
+            sh.text(base + cw4, y + 8, "今天", 11, accent, True, anchor="mm")
+            panel_x = base + 2 * cw4 + 12
+            panel_w = W - PAD - panel_x
+            sh.rect(panel_x, y - 6, panel_w, 3 * 25 + 46, C_PANEL, radius=10)
+            sh.text(panel_x + panel_w / 2.0, y + 8,
+                    "近 %d 扫雷日" % WINDOW_DAYS, 11, C_DIM, anchor="mm")
+            sh.text(panel_x + panel_w - 10, y + 8, "参考", 9.5, C_DIM,
+                    anchor="rm")
+            y += 26
             for i, h in enumerate(("最好", "平均", "最好", "平均")):
                 sh.text(base + cw4 * (i + 1), y, h, 10.5, C_DIM, anchor="rt")
             y += 18
