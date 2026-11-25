@@ -308,6 +308,13 @@ def _evf_lite(path):
             "src": "ms",
             "t0": _wall_epoch(st, "ms"),
             "t1": _wall_epoch(en, "ms"),
+            # 头部读不出过程指标；占位 None 让缓存行带上字段，
+            # 免得每次扫描都把它当「缺字段的老缓存」重解析一遍。
+            "op": None,
+            "isl": None,
+            "ce": None,
+            "cl": None,
+            "path16": None,
             "via": "lite",
         }
     except Exception:                      # noqa: BLE001  兜底再失败就维持原降级
@@ -356,6 +363,18 @@ def read_video(path):
             mode = int(v.mode)
         except BaseException:                  # noqa: BLE001
             mode = -1
+        # 过程指标：op/is、有效点击、总点击、路径。库把 path 按 16px/格归一
+        # （distance * 16 / pix_size），除回 16 就是格数，和大表 path 列同口径。
+        # 老版本库或转码录像读不出时给 None，界面显示「—」，不让整局解析失败。
+        try:
+            op = int(v.op)
+            isl = int(v.isl)
+            ce = int(v.ce)
+            cl = int(v.cl)
+            path16 = float(v.path) / 16.0
+        except BaseException:                  # noqa: BLE001
+            op = isl = ce = cl = None
+            path16 = None
         # 录制时刻：t0 是开始、t1 是结束（真本地 epoch 秒）。读不到给 None，
         # 由 scan() 退回文件时间，不让一个坏录像带崩整个扫描。
         t0 = _wall_epoch(getattr(v, "start_time", None), src)
@@ -376,6 +395,11 @@ def read_video(path):
             "src": src,
             "t0": t0,
             "t1": t1,
+            "op": op,
+            "isl": isl,
+            "ce": ce,
+            "cl": cl,
+            "path16": path16,
             "via": "lib",
         }
     except BaseException as e:            # noqa: BLE001  (rust panic 也是 BaseException)
@@ -745,11 +769,12 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
 
                 if deep:
                     vid = _cache.get(path, mt_ns, size)
-                    stale = vid is not None and "t0" not in vid
+                    stale = vid is not None and ("t0" not in vid or "op" not in vid)
                     if stale:
                         # 这一版以前的缓存里没有录像内时间（那时「日期」其实来自
-                        # 文件 mtime）。就地重解析一次写回，之后永不复发：
-                        # 2 万局热盘约 40 秒，只在第一次升级时付这笔钱。
+                        # 文件 mtime），也没有过程指标（op/is/ce/cl/路径）。
+                        # 就地重解析一次写回，之后永不复发：2 万局热盘约 1–2 分钟，
+                        # 只在第一次升级时付这笔钱。
                         vid = None
                     if vid is None:
                         vid = read_video(path)
@@ -837,6 +862,8 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                 rec["nf"] = None
                 rec["style"] = None
                 rec["tampered"] = False
+                rec["op"] = rec["isl"] = rec["ce"] = rec["cl"] = None
+                rec["path16"] = None
                 if vid is not None:
                     rec["rce"] = vid["rce"]
                     rec["nf"] = vid["rce"] == 0
@@ -846,6 +873,11 @@ def scan(roots, progress=None, deep=True, max_dirs=MAX_SCAN_DIRS, dedupe=True):
                     rec["vc_time"] = vid["time"]
                     rec["ident"] = vid.get("ident") or ""
                     rec["valid"] = vid.get("valid")
+                    rec["op"] = vid.get("op")
+                    rec["isl"] = vid.get("isl")
+                    rec["ce"] = vid.get("ce")
+                    rec["cl"] = vid.get("cl")
+                    rec["path16"] = vid.get("path16")
                     if src == "ms":
                         # 文件名与录像内不一致 → 可能被改名改数据。
                         # 阿比特的文件名是另一个程序生成的、小数位不统一，不做这个比对。

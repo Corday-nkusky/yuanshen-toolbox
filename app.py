@@ -15,7 +15,7 @@ import ctypes
 import os
 import queue
 import subprocess
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import sys
 import threading
 import time
@@ -36,7 +36,7 @@ import summary
 
 APP_TITLE = "YuanshenToolbox"
 APP_SUB = "MINESWEEPER REPLAY TOOLBOX"
-APP_VER = "0.39.3"
+APP_VER = "0.40.0"
 APP_DISPLAY = f"{APP_TITLE} v{APP_VER}"
 
 # 随程序打包的字体：MiSans（小米，免费商用）。私有注册，不装进系统字体目录。
@@ -988,6 +988,140 @@ class SettingsDialog(Dialog):
         except tk.TclError:
             pass
         self.destroy()
+
+
+# ------------------------------------------------------------------ 日期范围
+def _rank_presets():
+    """日期预设：相对今天算，打开弹窗时取一次。"""
+    today = date.today()
+    return [
+        ("全部", ("", "")),
+        ("今年", (today.replace(month=1, day=1).isoformat(), today.isoformat())),
+        ("本月", (today.replace(day=1).isoformat(), today.isoformat())),
+        ("近30天", ((today - timedelta(days=29)).isoformat(), today.isoformat())),
+    ]
+
+
+class DateDialog(Dialog):
+    """排行榜的日期范围弹窗：预设 + 自定义起止；应用后按局日期过滤榜单。"""
+
+    def __init__(self, app):
+        super().__init__(app, hidden=True)
+        self.app = app
+        self._closed = False
+        self.title("日期范围")
+        self.configure(bg=C_BG)
+        self.resizable(False, False)
+        self.transient(app)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+        pad = sc(16)
+        head = tk.Frame(self, bg=C_BG)
+        head.pack(fill="x", padx=pad, pady=(pad, sc(6)))
+        tk.Label(head, text="日期范围", bg=C_BG, fg=C_TEXT,
+                 font=FONT_UI_B).pack(side="left")
+        Pill(head, "✕", command=self.close, bg=C_BG,
+             height=26, min_width=30, padx=10).pack(side="right")
+        card = tk.Frame(self, bg=C_PANEL, highlightbackground=C_LINE,
+                        highlightthickness=sc(1))
+        card.pack(fill="both", expand=True, padx=pad, pady=(0, pad))
+        inner = tk.Frame(card, bg=C_PANEL)
+        inner.pack(fill="both", expand=True, padx=sc(14), pady=sc(12))
+
+        tk.Label(inner, text="按每局的日期筛选；留空 = 不限",
+                 bg=C_PANEL, fg=C_DIM, font=FONT_SMALL).pack(anchor="w")
+        row = tk.Frame(inner, bg=C_PANEL)
+        row.pack(fill="x", pady=(sc(6), sc(10)))
+        frm, to = app._rank_date
+        self._presets = _rank_presets()
+        self._preset_pills = {}
+        for label, rng in self._presets:
+            p = Pill(row, label, command=lambda r=rng: self._preset(r),
+                     bg=C_PANEL, height=28, padx=14)
+            p.pack(side="left", padx=(0, sc(8)))
+            self._preset_pills[label] = p
+            if rng == (frm, to):
+                p.set_selected(True)
+
+        tk.Frame(inner, bg=C_LINE, height=sc(1)).pack(fill="x", pady=sc(4))
+        row = tk.Frame(inner, bg=C_PANEL)
+        row.pack(fill="x", pady=(sc(6), sc(4)))
+        self.var_from = tk.StringVar(value=frm)
+        self.var_to = tk.StringVar(value=to)
+        for lab, var in (("从", self.var_from), ("到", self.var_to)):
+            tk.Label(row, text=lab, bg=C_PANEL, fg=C_DIM,
+                     font=FONT_UI).pack(side="left", padx=(0, sc(6)))
+            e = tk.Entry(row, textvariable=var, width=12, font=FONT_MONO,
+                         bg=C_BG, fg=C_TEXT, insertbackground=C_TEXT,
+                         relief="flat", highlightthickness=sc(1),
+                         highlightbackground=C_LINE, highlightcolor=C_ACCENT,
+                         justify="center")
+            e.pack(side="left", ipady=sc(3), padx=(0, sc(16)))
+            e.bind("<Return>", lambda *_: self._apply())
+        self._err = tk.Label(inner, text="", bg=C_PANEL, fg=C_ERR,
+                             font=FONT_SMALL, anchor="w")
+        self._err.pack(fill="x", pady=(sc(2), sc(6)))
+
+        row = tk.Frame(inner, bg=C_PANEL)
+        row.pack(fill="x", pady=(sc(4), 0))
+        Pill(row, "应用", command=self._apply, bg=C_PANEL, padx=20,
+             height=28).pack(side="right")
+        Pill(row, "取消", command=self.close, bg=C_PANEL, padx=18,
+             height=28).pack(side="right", padx=(0, sc(8)))
+
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        pill = getattr(app, "rank_date_pill", None)
+        if pill:
+            x = pill.winfo_rootx()
+            y = pill.winfo_rooty() + pill.winfo_height() + sc(6)
+        else:
+            x = app.winfo_rootx() + (app.winfo_width() - w) // 2
+            y = app.winfo_rooty() + (app.winfo_height() - h) // 3
+        x = max(0, min(x, self.winfo_screenwidth() - w))
+        y = max(0, min(y, self.winfo_screenheight() - h))
+        self.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self.deiconify()
+        self.update_idletasks()
+        self.after_idle(self._reveal)
+        self.grab_set()
+        self.focus_set()
+
+    def _preset(self, rng):
+        self.var_from.set(rng[0])
+        self.var_to.set(rng[1])
+        self._apply()
+
+    def _apply(self):
+        bad = "日期格式应为 YYYY-MM-DD，例如 2026-11-26"
+        frm = self.var_from.get().strip()
+        to = self.var_to.get().strip()
+        for s in (frm, to):
+            if not s:
+                continue
+            try:
+                if len(s) != 10:
+                    raise ValueError(s)
+                date.fromisoformat(s)
+            except ValueError:
+                self._err.configure(text=bad)
+                return
+        if frm and to and frm > to:
+            self._err.configure(text="开始日期晚于结束日期")
+            return
+        self.app._set_rank_date(frm, to)
+        self.close()
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+
 
 # ------------------------------------------------------------------ 统计卡片
 class StatCard(tk.Canvas):
@@ -3455,12 +3589,11 @@ class App(tk.Tk):
         self._pb_index = {}            # 当前网格里 (级别, BV) -> 行
         self._pb_picked = None
         self._top_style = "all"        # 前端成绩：all=全PB / nf=NF PB
+        self._rank_level = "b"         # 排行榜当前级别
         self._rank_metric = "time"     # 排行榜看哪个指标：time / bvs / stnb
         self._rank_style = "all"       # 排行榜风格：all / nf
-        self._rank_n = 10              # 排行榜每个级别显示几条，0 = 全部录像
-        self.rank_grid = None          # 排行榜的三列表格容器（量高度用）
-        self._rank_fit_job = None      # 「等页面排好版再量一次」的定时器
-        self._rank_fit_tries = 0       # 已经重试过几拍
+        self._rank_n = 50              # 排行榜显示几条，0 = 全部录像
+        self._rank_date = ("", "")     # 日期范围（从, 到），空串 = 不限
         self._bvmin_level = None
         self._bvmin_eff = 0            # BV 下限当前生效值（输入框里可能是半截）
         self._bv_guard = False
@@ -3515,11 +3648,11 @@ class App(tk.Tk):
         self._auto_on = self._auto_start
         self._auto_watermark = int(_cfg.get("auto_watermark") or 0)
         # 排行榜看多少条记着上次的：调成 50 之后重开还是 50，不用每次重新填。
-        # 0 表示「全部」，存的就是这个口径。
+        # 0 表示「全部」，存的就是这个口径。默认 50，和大表一致。
         try:
-            self._rank_n = max(0, int(_cfg.get("rank_n", 10)))
+            self._rank_n = max(0, int(_cfg.get("rank_n", 50)))
         except (TypeError, ValueError):
-            self._rank_n = 10
+            self._rank_n = 50
         self._auto_tracker = autoup.Tracker(self._auto_watermark)
         # 强无猜上传：小众选项，收在设置里。它复用自动上传的总开关与队列，
         # 只是候选池换成 ng_games，不碰标准模式的任何统计。
@@ -4931,13 +5064,25 @@ class App(tk.Tk):
 
     # ---------- 排行榜 ----------
     def _build_rank(self):
-        """本地全部录像的三级别排行：指标切换 + 全部/NF + 自定义条数。"""
+        """单级别全宽榜：级别 / 排序 / 风格 / 日期 / 条数都在工具条上。"""
         page = self.pages["rank"]
         bar = tk.Frame(page, bg=C_BG)
         bar.pack(fill="x", pady=(sc(10), sc(6)))
         self.rank_bar = bar
 
-        # 三指标和 3BV 同时上表，这三个按钮只决定按哪一列排。
+        tk.Label(bar, text="级别", bg=C_BG, fg=C_DIM,
+                 font=FONT_UI).pack(side="left", padx=(0, sc(8)))
+        self.rank_level_seg = {}
+        for lv in core.LEVELS:
+            p = Pill(bar, core.LEVEL_CN[lv],
+                     command=lambda k=lv: self.set_rank_level(k),
+                     accent=LEVEL_ACCENT[lv][0], padx=18)
+            p.pack(side="left", padx=(0, sc(6)))
+            self.rank_level_seg[lv] = p
+
+        tk.Frame(bar, bg=C_LINE, width=1).pack(side="left", fill="y",
+                                               padx=(sc(8), sc(10)), pady=sc(2))
+        # 三指标同时上表，这三个按钮只决定按哪一列排。
         tk.Label(bar, text="排序", bg=C_BG, fg=C_DIM,
                  font=FONT_UI).pack(side="left", padx=(0, sc(8)))
         self.rank_metric_seg = {}
@@ -4958,6 +5103,12 @@ class App(tk.Tk):
 
         tk.Frame(bar, bg=C_LINE, width=1).pack(side="left", fill="y",
                                                padx=(sc(8), sc(10)), pady=sc(2))
+        self.rank_date_pill = Pill(bar, "日期", command=self._open_rank_date,
+                                   accent=C_ACCENT, padx=14)
+        self.rank_date_pill.pack(side="left", padx=(0, sc(6)))
+
+        tk.Frame(bar, bg=C_LINE, width=1).pack(side="left", fill="y",
+                                               padx=(sc(8), sc(10)), pady=sc(2))
         tk.Label(bar, text="Top", bg=C_BG, fg=C_DIM,
                  font=FONT_MONO_B).pack(side="left", padx=(0, sc(6)))
         self.var_rank_n = tk.StringVar(
@@ -4973,41 +5124,37 @@ class App(tk.Tk):
             box.bind(ev, lambda *_: self._on_rank_n())
         box.bind("<FocusOut>", lambda *_: self._on_rank_n(settle_focus=False))
 
-        grid = tk.Frame(page, bg=C_BG)
-        grid.pack(fill="both", pady=(sc(6), 0))
-        self.rank_grid = grid
-        for i in range(3):
-            grid.columnconfigure(i, weight=1, uniform="rank")
-
-        self.rank_tables = {}
-        for i, lv in enumerate(core.LEVELS):
-            cell = tk.Frame(grid, bg=C_BG)
-            cell.grid(row=0, column=i, sticky="nwe",
-                      padx=(0 if i == 0 else sc(12), 0))
-            # cell 被 grid 拉宽了，但里面的表格是 pack 的：不给 column 权重，
-            # 表格只占它自己请求的宽度，右边留一条空档，像没画完。
-            cell.columnconfigure(0, weight=1)
-            self._section(cell, core.LEVEL_CN[lv],
-                          LEVEL_ACCENT[lv][0]).grid(row=0, column=0, sticky="w")
-            holder = tk.Frame(cell, bg=C_LINE)
-            holder.grid(row=1, column=0, sticky="ew", pady=(sc(6), 0))
-            cols = [
-                ("rank", "#", 44, "e", "int"),
-                ("time", "time", 62, "e", "f3"),
-                ("bvs", "3BV/s", 62, "e", "f3"),
-                ("stnb", "stnb", 56, "e", "f2"),
-                ("bv", "3BV", 44, "e", "int"),
-                ("style_cn", "风格", 52, "center", "str"),
-            ]
-            t = Table(holder, cols, height=10, fit=False)
-            t.pack(fill="x", padx=1, pady=1)
-            # 三个指标列吸收多余宽度，表就铺满这一格，右端不会留一条空档；
-            # 窗口变窄时也是它们先收缩，名次和 3BV 不会第一个被裁掉。
-            for key in ("time", "bvs", "stnb"):
-                t.tv.column(key, stretch=True)
-            self.rank_tables[lv] = t
-        page.bind("<Configure>", lambda _e: self._rank_fit())
+        holder = tk.Frame(page, bg=C_LINE)
+        holder.pack(fill="both", expand=True, pady=(sc(6), 0))
+        # 列照大表主表：去掉「右」（NF 榜里恒 0），加「风格」；过程指标来自扫描缓存。
+        cols = [
+            ("rank", "#", 34, "e", "int"),
+            ("style_cn", "风格", 46, "center", "str"),
+            ("ops", "op/is", 76, "center", "str"),
+            ("bv", "3BV", 44, "e", "int"),
+            ("ce", "有效点击", 62, "e", "int"),
+            ("time", "时间", 66, "e", "f3"),
+            ("bvs", "3BV/s", 62, "e", "f3"),
+            ("ce_s", "ces", 58, "e", "f2"),
+            ("cl_s", "cls", 58, "e", "f2"),
+            ("stnb", "stnb", 54, "e", "f2"),
+            ("mov", "移速", 52, "e", "f2"),
+            ("path16", "路径", 52, "e", "f2"),
+            ("date", "日期", 88, "center", "str"),
+        ]
+        t = Table(holder, cols, height=10, fit=True)
+        t.pack(fill="both", expand=True, padx=1, pady=1)
+        for key in (c[0] for c in cols):
+            t.tv.column(key, stretch=True)
+        self.rank_table = t
+        self.set_rank_level(self._rank_level)
         self.set_rank_metric(self._rank_metric)
+
+    def set_rank_level(self, lv):
+        self._rank_level = lv
+        for k, p in self.rank_level_seg.items():
+            p.set_selected(k == lv)
+        self.render_rank()
 
     def set_rank_metric(self, key):
         self._rank_metric = key
@@ -5043,92 +5190,69 @@ class App(tk.Tk):
             self.rank_n_box.tk_focusNext().focus_set()
 
     def render_rank(self):
-        """三级别各取前 N 局；N=0 时放开到这个级别的全部录像。"""
-        if not getattr(self, "rank_tables", None):
+        """当前级别取前 N 局：先按日期范围过滤，再截 Top，名次重排。"""
+        t = getattr(self, "rank_table", None)
+        if not t:
             return
-        self._rank_fit_tries = 0        # 每次重画都重新给「等排版」的预算
+        # 清掉上一次点表头留下的排序键和箭头：榜的名次由 core.top_n 定，
+        # 不能让残留的 sort_key 在 set_rows 时把它重排成别的顺序。
+        t._sort_key = None
+        for key, title, _w, _a, _k in t.columns_def:
+            t.tv.heading(key, text=title)
+        lv = self._rank_level
         metric = self._rank_metric
         style = None if self._rank_style == "all" else "nf"
-        for lv, t in self.rank_tables.items():
-            # 清掉上一次点表头留下的排序键和箭头：榜的名次由 core.top_n 定，
-            # 不能让残留的 sort_key 在 set_rows 时把它重排成别的顺序。
-            t._sort_key = None
-            for key, title, _w, _a, _k in t.columns_def:
-                t.tv.heading(key, text=title)
-            pool = core.top_n(self.games, lv, metric,
-                              core.BV_MIN_DEFAULT[lv], style, self._rank_n)
-            rows = []
-            for i, g in enumerate(pool, 1):
-                rows.append({
-                    "rank": i,
-                    "time": g.get("time") or 0,
-                    "bvs": g.get("bvs") or 0,
-                    "stnb": g.get("stnb") or 0,
-                    "bv": g.get("bv") or 0,
-                    "style_cn": core.STYLE_CN.get(g.get("style"), ""),
-                    "path": g.get("path") or "",
-                })
-            t.set_rows(rows)
-            # 换指标/风格/条数后视图必须回顶：Treeview 换数据时保留旧的
-            # yview，看过「全部」再切回 Top50 会卡在半截，只见 #35–49。
-            t.tv.yview_moveto(0)
-        self._rank_fit()
-        # 刚切到这一页时 page 的高度还是上一次布局的值（或半截），
-        # 量出来只有三四行；<Configure> 又恰好不会再触发。隔一拍补量。
-        if self._rank_fit_job is None:
-            self._rank_fit_job = self.after(60, self._rank_fit_again)
+        pool = core.top_n(self.games, lv, metric,
+                          core.BV_MIN_DEFAULT[lv], style, 0)
+        frm, to = self._rank_date
+        if frm or to:
+            pool = [g for g in pool
+                    if g.get("date") and (not frm or g["date"] >= frm)
+                    and (not to or g["date"] <= to)]
+        self.rank_date_pill.set_selected(bool(frm or to))
+        shown = pool if self._rank_n <= 0 else pool[:self._rank_n]
+        rows = []
+        for i, g in enumerate(shown, 1):
+            sec = float(g.get("time") or 0)
+            ce, cl = g.get("ce"), g.get("cl")
+            op, isl = g.get("op"), g.get("isl")
+            p16 = g.get("path16")
+            # 老缓存 / 头部降级行没有点击流：过程列留「—」，成绩列照常。
+            has = ce is not None and cl is not None and ce > 0 and cl > 0
+            rows.append({
+                "rank": i,
+                "style_cn": core.STYLE_CN.get(g.get("style"), ""),
+                "ops": ("%dop %dis" % (op, isl))
+                       if has and op is not None and isl is not None else "—",
+                "bv": g.get("bv") or 0,
+                "ce": ce if has else "",
+                "time": sec,
+                "bvs": g.get("bvs") or 0,
+                "ce_s": (ce / sec) if has and sec > 0 else "",
+                "cl_s": (cl / sec) if has and sec > 0 else "",
+                "stnb": g.get("stnb") or 0,
+                "mov": (p16 / sec) if has and p16 is not None and sec > 0 else "",
+                "path16": p16 if has and p16 is not None else "",
+                "date": g.get("date") or "",
+                # 文件路径不是列，但右键详情 / 双击播放要靠它。
+                "path": g.get("path") or "",
+            })
+        t.set_rows(rows)
+        # 换指标/风格/条数后视图必须回顶：Treeview 换数据时保留旧的
+        # yview，看过「全部」再切回 Top50 会卡在半截，只见 #35–49。
+        t.tv.yview_moveto(0)
 
-    def _rank_fit(self):
-        """表格高度 = 数据行数，最多到页面放得下；不拉出一截空框。
-
-        每列行数可能差很多（全部时初/中/高 1 万/1 万/400），
-        但页面高度只够显示一屏 —— 超出部分留给滚动条，绝不让表格撑满。
-
-        可用高度必须**量**出来，不能用常数推：每列表格上方还有 40px 的级别
-        标题和边距，行高也随缩放变（1.5 倍屏上一行 48px，不是 45px）。
-        以前按常数算，多算出一行，最后一行正好被挤出可视区。
-        """
-        if not getattr(self, "rank_tables", None):
+    def _open_rank_date(self):
+        dlg = getattr(self, "_date_dlg", None)
+        if dlg and dlg.winfo_exists():
+            dlg.lift()
+            dlg.focus_set()
             return
-        page = self.pages["rank"]
-        ph = page.winfo_height()
-        top = self.rank_grid.winfo_y()  # 工具条占掉的高度（含页面上下 padding）
-        if ph < sc(120) or top <= 0:    # 页面刚切过来，尺寸还没定，过一拍再量
-            self._rank_fit_retry()
-            return
-        avail = ph - top - sc(8)        # 三张表一共能用的高度，底部留一点空
-        for t in self.rank_tables.values():
-            tv = t.tv
-            cell = t.master.master      # holder -> cell（cell 里还有级别标题）
-            head, row_h = sc(47), max(1, sc(32))
-            kids = tv.get_children()
-            if kids:
-                bb = tv.bbox(kids[0])   # bbox 的 y 是表头高，h 是一行的高
-                if bb:
-                    head, row_h = bb[1], max(1, bb[3])
-            # 表格上方只有级别标题 + 6px 间距。不能拿 cell 高减 tv 高：
-            # 表格还没画出来时 tv 的高度是 1，减出来是一个几百像素的假标题，
-            # 能把一屏 15 行压成 4 行。
-            gb = cell.grid_bbox(0, 0)
-            extra = (gb[3] + sc(6)) if gb and gb[3] > sc(10) else sc(36)
-            cap = max(3, int((avail - extra - head) // row_h))
-            n = len(t.rows)
-            tv.configure(height=min(n, cap) if n else 3)
-        self._rank_fit_tries = 0
+        self._date_dlg = DateDialog(self)
 
-    def _rank_fit_retry(self):
-        """页面刚切过来时尺寸还没定，隔一拍再量；只重试几拍，别空转。"""
-        if not self.winfo_exists() or self._rank_fit_tries >= 12:
-            return
-        if self._rank_fit_job is not None:
-            return
-        self._rank_fit_tries += 1
-        self._rank_fit_job = self.after(40, self._rank_fit_again)
-
-    def _rank_fit_again(self):
-        self._rank_fit_job = None
-        if self.winfo_exists():
-            self._rank_fit()
+    def _set_rank_date(self, frm, to):
+        self._rank_date = (frm, to)
+        self.render_rank()
 
     # ---------- 右键详情 ----------
     def show_game_detail(self, path):
@@ -7254,6 +7378,10 @@ class App(tk.Tk):
         self._recompute_pb()          # 顺带重画最近完成局（那列要给「距当前 PB」）
         self.set_top_level(self._level)
         self.set_daily_level(self._daily_level)   # 顺带把级别按钮点亮
+        # 排行榜不在上面那串 setter 里：启动直接落在排行榜、或停留在排行榜时
+        # 自动刷新扫完，都要重画，否则看到的是一张空表 / 旧数据。
+        if self._tab == "rank":
+            self.render_rank()
         self._mark_up_dirty()           # 上传页跟着新数据刷新（不在该页就先不算）
 
         elapsed = info["elapsed"] * 1000
@@ -7286,8 +7414,8 @@ class App(tk.Tk):
         if info.get("level_conflict"):
             extra.append(f"级别不符 {len(info['level_conflict'])}")
         if info.get("refilled"):
-            # 一次性迁移：老缓存里没有录像内时间，这一轮就地补上了
-            extra.append(f"补齐 {info['refilled']} 局录像时间")
+            # 一次性迁移：老缓存缺录像内时间 / 过程指标，这一轮就地补上了
+            extra.append(f"补齐 {info['refilled']} 局缓存字段")
         if info.get("retimed"):
             extra.append(f"{info['retimed']} 局读不出录制时间，按文件时间归日")
         n_arb = (info.get("by_src") or {}).get("arb") or 0

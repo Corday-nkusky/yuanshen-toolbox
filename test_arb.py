@@ -154,7 +154,9 @@ def test_evf_prefilter():
                 "timems": int(round(rec["time"] * 1000)), "level": rec["level"],
                 "mode": int(rec["mode"]), "completed": True, "ident": "X",
                 "valid": 1, "src": "ms", "t0": 1763200000.0,
-                "t1": 1763200000.0 + rec["time"], "via": "lib"}
+                "t1": 1763200000.0 + rec["time"],
+                "op": 1, "isl": 1, "ce": rec["bv"], "cl": rec["bv"],
+                "path16": 10.0, "via": "lib"}
 
     old_read = core.read_video
     core.read_video = fake_read

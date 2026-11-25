@@ -528,6 +528,53 @@ def main():
         else:
             print("跳过：没有锚点（首次离线启动只能显示「—」）")
         shot(win, "shot_top.png")
+
+        # 排行榜：单张全宽表 + 级别药丸 + 日期范围弹窗
+        win.show_tab("rank")
+        win.update()
+        check("排行榜有级别单选（三个）",
+              set(win.rank_level_seg) == set(A.core.LEVELS))
+        win.set_rank_level("b")
+        win._rank_n = 50
+        win.var_rank_n.set("50")
+        win.render_rank()
+        rows = win.rank_table.rows
+        check("Top50 序号连续",
+              [r["rank"] for r in rows] == list(range(1, len(rows) + 1)))
+        check("过程指标来自扫描缓存（op/is 有值）",
+              bool(rows) and rows[0]["ops"] != "—")
+        check("行里留着录像路径供右键/双击",
+              bool(rows) and os.path.exists(rows[0]["path"]))
+        win._open_rank_date()
+        dlg = win._date_dlg
+        check("日期弹窗有四个预设", len(dlg._preset_pills) == 4)
+        dlg.var_from.set("2026-13-99")
+        dlg._apply()
+        check("坏日期被红字拦下、弹窗不关",
+              dlg.winfo_exists() and bool(dlg._err.cget("text")))
+        dlg.var_from.set("2026-11-26")
+        dlg.var_to.set("2026-10-01")
+        dlg._apply()
+        check("开始晚于结束被拦下",
+              dlg.winfo_exists() and bool(dlg._err.cget("text")))
+        frm, to = A._rank_presets()[3][1]      # 近30天
+        dlg.var_from.set(frm)
+        dlg.var_to.set(to)
+        dlg._apply()
+        win.update()
+        check("应用后弹窗关闭、日期按钮点亮",
+              not dlg.winfo_exists() and win.rank_date_pill._sel)
+        rows = win.rank_table.rows
+        want = [g for g in win.games if g["level"] == win._rank_level
+                and g.get("date") and frm <= g["date"] <= to]
+        if want:
+            check("近30天榜上行行在范围内（%d 行）" % len(rows),
+                  bool(rows) and all(frm <= r["date"] <= to for r in rows))
+        else:
+            print("跳过：该级别近30天没有局")
+        win._set_rank_date("", "")
+        check("清空范围后日期按钮熄灭", not win.rank_date_pill._sel)
+        shot(win, "shot_rank.png")
     finally:
         try:
             win.destroy()
